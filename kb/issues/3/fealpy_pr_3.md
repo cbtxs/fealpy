@@ -1,4 +1,4 @@
-# fealpy | PR｜Design｜SST k-omega 模型有限元求解器程序设计
+# fealpy | PR｜Design｜SST k-omega 模型有限元求解程序设计
 
 ## 1. 基本信息
 

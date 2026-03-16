@@ -1,6 +1,6 @@
 # Suanhai | Gate Decision | Issue #3 门禁裁决书
 
-- **关联 Issue**：https://github.com/suanhaitech/tiangong/issues/3
+- **关联 Issue**：https://github.com/suanhaitech/fealpy/issues/3
 - **主价值工作流节点**：`Design`
 - **当前 Issue 状态**：`pending-decision` 
 - **裁决结论**：
