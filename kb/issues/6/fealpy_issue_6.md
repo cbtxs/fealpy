@@ -85,7 +85,7 @@ Issue 类型（Issue Type）：
 ### 完成定义（DoD）
 满足以下条件时，本 Issue 视为完成：
 - 已形成完整的 **液压管件流固耦合算法设计文档**，并提交 Pull Request。
-- 算法设计文档已存放于知识库算法目录`docs/design/fealpy_hydraulic_pipe_fsi_algorithm_design.md`。
+- 算法设计文档已存放于知识库算法目录`docs/design/hydraulic_pipe_fsi_optimization/fealpy_hydraulic_pipe_fsi_algorithm_design.md`。
 
 文档内容至少覆盖以下核心内容：
  - 流体域与结构域的耦合关系说明
@@ -132,10 +132,7 @@ Issue 类型（Issue Type）：
 ### 当前关键 Gate
 
 本 Issue 涉及以下关键 Gate：
-- `fsi-scope-confirmed`
-- `fsi-coupling-strategy-confirmed`
 - `fsi-solver-interface-defined`
-- `gate-fsi-algorithm-design-review`
 
 ### 当前关键判断概览
 
@@ -169,7 +166,7 @@ Issue 类型（Issue Type）：
 
 
 ### 知识抽取相关关键入口（按需填写，仅列当前关键文件）
-`docs/design/fealpy_hydraulic_pipe_fsi_algorithm_design.md`。
+`docs/design/hydraulic_pipe_fsi_optimization/fealpy_hydraulic_pipe_fsi_algorithm_design.md`。
 
 ### 知识抽取缺口或待补动作（按需填写）
 
@@ -180,7 +177,7 @@ Issue 类型（Issue Type）：
 
 ### 当前关键 Gate 文件入口（按需填写，仅列当前关键文件）
 - `kb/issues/6/gate/decision.md`
-- `docs/design/fealpy_hydraulic_pipe_fsi_algorithm_design.md`
+- `docs/design/hydraulic_pipe_fsi_optimization/fealpy_hydraulic_pipe_fsi_algorithm_design.md`
 
 ## 六、后续动作与待确认项
 
@@ -189,7 +186,7 @@ Issue 类型（Issue Type）：
 - 负责人拉取分支 `design/issue-6-hydraulic-pipe-fsi-algorithm-design` 开始设计文档编写。
 
 待确认项：
-暂无
+暂无。
 
 跨实例关系入口（按需填写）：
-暂无
+暂无。
