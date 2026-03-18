@@ -1,5 +1,6 @@
 from typing import Union, Callable, Dict
 from .base import BaseEquation
+from fealpy.backend import backend_manager as bm
 
 CoefType = Union[int, float, Callable]
 
@@ -39,16 +40,27 @@ class StationaryIncompressibleRANS(BaseEquation):
             - 设置 velocity 和 pressure 的初始值。
         """
         # 处理物理参数
-        if hasattr(pde, 'rho') and hasattr(pde, 'mu') and hasattr(pde, 'mu_t'):
-            rho = pde.rho
-            mu = pde.mu
-            mu_t = pde.mu_t
-        elif hasattr(pde, 'R'):
-            rho = 1.0  # 默认 rho=1
-            mu = rho / pde.R  # mu = rho / R
-        else:
-            rho = 1.0
-            mu = 1.0
+        rho = pde.rho
+        beta_s = pde.beta_s
+        mu = pde.mu
+        a1 = pde.a1
+        
+
+        def tur_mu(u0, k0, omega0, p, bcs, index):
+            d = pde.d_wall(p)
+            def shear_stress_limit_function():
+                arg2 = bm.max(2 * bm.sqrt(k0)/(beta_s * omega0 * d),
+                              500 * mu/(d**2 * rho * omega0))
+                F2 = bm.tanh(arg2)
+                return F2
+            F2 = shear_stress_limit_function()
+            S_ij = u0.grad_value(bcs, index) + u0.grad_value(bcs, index).T
+            S = bm.sqrt(2 * bm.sum(S_ij * S_ij, axis=1))
+            mu_t = a1 * k0
+            mu_t /= bm.max(a1 * omega0, S * F2)
+            return mu_t
+        
+        mu_t = tur_mu(pde.velocity, pde.k, pde.omega, pde.p)
 
         # 设置系数 
         self._coefs['convection'] = rho

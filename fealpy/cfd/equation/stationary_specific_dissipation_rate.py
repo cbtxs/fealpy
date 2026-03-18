@@ -54,7 +54,7 @@ class StationarySpecificDissipationRate(BaseEquation):
         self._coefs['dissipation'] = - beta * rho
         self._coefs['diffusion'] = mu + sigma_omega * mu_t
         self._coefs['cross_diffusion'] = 2 * (1 - F1) * rho * sigma_omega2
-        self._coefs['production'] = gamma * rho/ mu_t
+        self._coefs['production'] = gamma * rho/ mu_t * getattr(pde, 'source', 0)
     
     # 定义属性访问
     @property

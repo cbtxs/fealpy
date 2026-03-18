@@ -35,13 +35,15 @@ class Ossen(IterativeMethod):
         q = self.q
 
         L0 = LinearForm(uspace)
+        self.u_LSI = SourceIntegrator(q=q)
         self.u_source_LSI = SourceIntegrator(q=q)
+        L0.add_integrator(self.u_LSI)
         L0.add_integrator(self.u_source_LSI) 
         L1 = LinearForm(pspace)
         L = LinearBlockForm([L0, L1])
         return L
 
-    def update(self, u0): 
+    def update(self, u0, k0): 
         equation = self.equation
         cv = equation.coef_viscosity
         cc = equation.coef_convection
@@ -59,5 +61,11 @@ class Ossen(IterativeMethod):
         self.u_BC.coef = u_BC_coef
 
         ## LinearForm 
+        @barycentric
+        def u_LSI_coef(bcs, index):
+            scoef = -2/3 * self.equation.pde.rho
+            result = scoef * k0.grad_value(bcs, index)
+            return result
+        self.u_LSI.source = u_LSI_coef
         self.u_source_LSI.source = cbf
        
