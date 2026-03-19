@@ -54,6 +54,12 @@ class Ossen(IterativeMethod):
         self.u_BVW.coef = cv
         self.u_BPW.coef = -pc
 
+        # @barycentric
+        # def u_BVM_coef(bcs, index):
+        #     mu_t = equation.pde.tur_mu
+        #     cvcoef = cv(bcs, index)[..., bm.newaxis] if callable(cv) else cv
+
+
         @barycentric
         def u_BC_coef(bcs, index):
             cccoef = cc(bcs, index)[..., bm.newaxis] if callable(cc) else cc

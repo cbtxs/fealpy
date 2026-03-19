@@ -41,31 +41,12 @@ class StationaryIncompressibleRANS(BaseEquation):
         """
         # 处理物理参数
         rho = pde.rho
-        beta_s = pde.beta_s
         mu = pde.mu
-        a1 = pde.a1
-        
-
-        def tur_mu(u0, k0, omega0, p, bcs, index):
-            d = pde.d_wall(p)
-            def shear_stress_limit_function():
-                arg2 = bm.max(2 * bm.sqrt(k0)/(beta_s * omega0 * d),
-                              500 * mu/(d**2 * rho * omega0))
-                F2 = bm.tanh(arg2)
-                return F2
-            F2 = shear_stress_limit_function()
-            S_ij = u0.grad_value(bcs, index) + u0.grad_value(bcs, index).T
-            S = bm.sqrt(2 * bm.sum(S_ij * S_ij, axis=1))
-            mu_t = a1 * k0
-            mu_t /= bm.max(a1 * omega0, S * F2)
-            return mu_t
-        
-        mu_t = tur_mu(pde.velocity, pde.k, pde.omega, pde.p)
-
+    
         # 设置系数 
         self._coefs['convection'] = rho
         self._coefs['pressure'] = 1
-        self._coefs['viscosity'] = mu + mu_t
+        self._coefs['viscosity'] = mu
         self._coefs['body_force'] = rho
     
     #定义属性访问
