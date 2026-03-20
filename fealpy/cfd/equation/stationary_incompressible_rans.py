@@ -47,7 +47,7 @@ class StationaryIncompressibleRANS(BaseEquation):
         self._coefs['convection'] = rho
         self._coefs['pressure'] = 1
         self._coefs['viscosity'] = mu
-        self._coefs['body_force'] = rho
+        self._coefs['body_force'] = getattr(pde, 'source', 0)
     
     #定义属性访问
     @property

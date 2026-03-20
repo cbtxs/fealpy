@@ -18,7 +18,7 @@ class PipeBendTurbulentFlow():
         u = bm.zeros(p.shape)
         u[..., 0] = 0.0
         u[..., 1] = 0.0
-        u[..., 2] = 1.224(1.0 - bm.sqrt(x**2 + y**2)/R)**(1/7)
+        u[..., 2] = 1.224*(1.0 - bm.sqrt(x**2 + y**2)/R)**(1/7)
         return u
 
     def outlet_boundary(self, p: TensorLike) -> TensorLike:
@@ -88,36 +88,46 @@ class PipeBendTurbulentFlow():
         d = bm.where(z <= 0, d_up, d_tail)
         return d
     
-    def tur_mu(self, u0, k0, omega0, bcs, index: Index = _S):
+    def tur_mu(self, u0, k0, omega0, points, bcs, index: Index = _S):
         beta_s = self.beta_s
         mu = self.mu
         rho = self.rho
         a1 = self.a1
-        p = u0.space.mesh.bc_to_point(bcs, index)
-        print("p", p.shape)
-        d = self.distance_t0_centerline(p)
+        d = self.distance_t0_centerline(points)
+        print("d", d.shape)
         def shear_stress_limit_function():
-            arg2 = bm.maximum(2 * bm.sqrt(k0)/(beta_s * omega0 * d),
-                            500 * mu/(d**2 * rho * omega0))
+            arg2 = bm.maximum(2 * bm.sqrt(k0(bcs, index))/(beta_s * omega0(bcs, index) * d),
+                            500 * mu/(d**2 * rho * omega0(bcs, index)))
             F2 = bm.tanh(arg2**2)
             return F2
         F2 = shear_stress_limit_function()
         print("F2", F2.shape)
 
         def strain_rate(bcs, index):
+            c2d = k0.space.cell_to_dof()
+            flat_ids = c2d.reshape(-1)
+            GD = u0.space.mesh.GD
             grad_u = u0.grad_value(bcs, index)
             grad_u_T = bm.swapaxes(grad_u, -1, -2)
-            print("grad_u", grad_u.shape)
-            print("grad_u_T", grad_u_T.shape)
+
+            # grad_u = grad_u.reshape((-1, GD, GD))
+            # g_u = bm.zeros((len(points), GD, GD))
+            # g_u[flat_ids] = grad_u
+            # grad_u_T = grad_u_T.reshape((-1, GD, GD))
+            # g_u_T = bm.zeros((len(points), GD, GD))
+            # g_u_T[flat_ids] = grad_u_T
+
+            # print("g_u", g_u.shape)
+            # print("g_u_T", g_u_T.shape)
             S_ij = 1/2 * (grad_u + grad_u_T)
             print("S_ij", S_ij.shape)
-            S = bm.sqrt(2 * bm.sum(S_ij * S_ij, axis=(1,2,3)))
+            S = bm.sqrt(2 * bm.sum(S_ij * S_ij, axis=(2, 3)))
             print("S", S.shape)
             return S
         S = strain_rate(bcs, index)
         print("S", S)
-        mu_t = a1 * k0
-        mu_t /= bm.maximum(a1 * omega0, S * F2)
+        mu_t = a1 * k0(bcs, index)
+        mu_t /= bm.maximum(a1 * omega0(bcs, index), S * F2)
         return mu_t
     
     def is_velocity_boundary(self, p: TensorLike) -> TensorLike:
@@ -128,10 +138,10 @@ class PipeBendTurbulentFlow():
             return 1
         return self.is_outlet_boundary(p)
     
-    def velocity_boundary(self, p: TensorLike) -> TensorLike:
+    def velocity_dirichlet(self, p: TensorLike) -> TensorLike:
         return self.inlet_boundary(p) | self.wall_boundary(p)
     
-    def pressure_boundary(self, p: TensorLike) -> TensorLike:
+    def pressure_dirichlet(self, p: TensorLike) -> TensorLike:
         return self.outlet_boundary(p)
     
 

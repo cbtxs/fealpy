@@ -29,7 +29,7 @@ class Ossen(IterativeMethod):
         A = BlockForm([[A00, A01], [A01.T, None]]) 
         return A
         
-    def LForm(self):
+    def LForm(self):        
         pspace = self.pspace
         uspace = self.uspace
         q = self.q
@@ -43,7 +43,7 @@ class Ossen(IterativeMethod):
         L = LinearBlockForm([L0, L1])
         return L
 
-    def update(self, u0, k0): 
+    def update(self, u0, k0, omega0): 
         equation = self.equation
         cv = equation.coef_viscosity
         cc = equation.coef_convection
@@ -51,26 +51,32 @@ class Ossen(IterativeMethod):
         cbf = equation.coef_body_force
         
         ## BilinearForm
-        self.u_BVW.coef = cv
         self.u_BPW.coef = -pc
 
-        # @barycentric
-        # def u_BVM_coef(bcs, index):
-        #     mu_t = equation.pde.tur_mu
-        #     cvcoef = cv(bcs, index)[..., bm.newaxis] if callable(cv) else cv
+        @barycentric
+        def u_BVM_coef(bcs, index):
+            points = self.uspace.mesh.bc_to_point(bcs, index)
+            print("points", points.shape)
+            mu_t = equation.pde.tur_mu(u0=u0, k0=k0, omega0=omega0, bcs=bcs, points= points)
+            cvcoef = cv(bcs, index)[..., bm.newaxis] if callable(cv) else cv
+            cvcoef += mu_t
+            return cvcoef
+        self.u_BVW.coef = u_BVM_coef
 
 
         @barycentric
         def u_BC_coef(bcs, index):
             cccoef = cc(bcs, index)[..., bm.newaxis] if callable(cc) else cc
-            return cccoef * u0(bcs, index)
+            cccoef *= u0(bcs, index)
+            return cccoef
         self.u_BC.coef = u_BC_coef
 
         ## LinearForm 
         @barycentric
         def u_LSI_coef(bcs, index):
-            scoef = -2/3 * self.equation.pde.rho
-            result = scoef * k0.grad_value(bcs, index)
+            scoef = self.equation.pde.rho
+            scoef *= -2/3
+            result = scoef * k0.grad_value(bcs, index)[..., 0]
             return result
         self.u_LSI.source = u_LSI_coef
         self.u_source_LSI.source = cbf

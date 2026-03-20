@@ -35,7 +35,7 @@ parser.add_argument('--nz',
     help = "Number of divisions in the z direction, default is 8 (only for 3D problems)")
 
 parser.add_argument('--method',
-    default = 'Ossen', type = str,
+    default = 'Newton', type = str,
     help = "Method for solving the PDE, default is Newton, options are Newton, Ossen, Stokes")
 
 parser.add_argument('--solve',
