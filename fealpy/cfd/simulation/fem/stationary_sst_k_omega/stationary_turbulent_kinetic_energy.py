@@ -3,6 +3,7 @@ from fealpy.fem import LinearForm, BilinearForm
 from fealpy.fem import (ScalarConvectionIntegrator, ScalarDiffusionIntegrator,
                      SourceIntegrator, ScalarMassIntegrator)
 from fealpy.decorator import barycentric
+from fealpy.functionspace import LagrangeFESpace
 
 from ..iterative_method import IterativeMethod 
 
@@ -13,8 +14,9 @@ class StationaryTurbulentKineticEnergyPicard(IterativeMethod):
     """
 
     def BForm(self):
-        kspace = self.pspace
-        q = self.q
+        self.kspace = LagrangeFESpace(self.mesh, p=2)
+        kspace = self.kspace
+        q = 5
 
         A = BilinearForm(kspace)
         self.k_BC = ScalarConvectionIntegrator(q=q)
@@ -28,16 +30,16 @@ class StationaryTurbulentKineticEnergyPicard(IterativeMethod):
         return A
     
     def LForm(self):
-        kspace = self.pspace
-        q = self.q
+        kspace = self.kspace
+        q = 5
 
         L = LinearForm(kspace)
-        self.k_source = SourceIntegrator(q=q)
-        L.add_integrator(self.k_source)
+        self.k_LP = SourceIntegrator(q=q)
+        L.add_integrator(self.k_LP)
         
         return L
     
-    def update(self, u1, omega0):
+    def update(self, u1, k0, omega0, mu_t):
         equation = self.equation
         cc = equation.coef_convection
         cd = equation.coef_diffusion
@@ -51,7 +53,12 @@ class StationaryTurbulentKineticEnergyPicard(IterativeMethod):
             return cccoef * u1(bcs, index)
         self.k_BC.coef = k_BC_coef
 
-        self.k_BD.coef = cd
+        @barycentric
+        def k_BD_coef(bcs, index):
+            cdcoef = cd(bcs, index)[..., bm.newaxis] if callable(cd) else cd
+            cdcoef -= equation.pde.sigma_k * mu_t
+            return cdcoef
+        self.k_BD.coef = k_BD_coef
 
         @barycentric
         def k_BM_coef(bcs, index):
@@ -60,5 +67,14 @@ class StationaryTurbulentKineticEnergyPicard(IterativeMethod):
         self.k_BM.coef = k_BM_coef
 
         ## LinearForm
-        self.k_source.source = cp
+        @barycentric
+        def k_LP_coef(bcs, index):
+            result = equation.pde.production_k(u0 = u1, 
+                                               k0 = k0, 
+                                               omega0 = omega0, 
+                                               mu_t = mu_t, 
+                                               bcs = bcs, 
+                                               index = index)
+            return result
+        self.k_LP.source = k_LP_coef
 

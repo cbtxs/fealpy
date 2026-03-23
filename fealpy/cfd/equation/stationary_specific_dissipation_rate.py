@@ -42,19 +42,17 @@ class StationarySpecificDissipationRate(BaseEquation):
         # 处理物理参数
         rho = pde.rho
         mu = pde.mu
-        mu_t = pde.mu_t
         gamma = pde.gamma
         beta = pde.beta
         sigma_omega = pde.sigma_omega
         sigma_omega2 = pde.sigma_omega2
-        F1 = pde.F1
 
         # 设置系数 
         self._coefs['convection'] = rho
-        self._coefs['dissipation'] = - beta * rho
-        self._coefs['diffusion'] = mu + sigma_omega * mu_t
-        self._coefs['cross_diffusion'] = 2 * (1 - F1) * rho * sigma_omega2
-        self._coefs['production'] = gamma * rho/ mu_t * getattr(pde, 'source', 0)
+        self._coefs['dissipation'] = beta * rho
+        self._coefs['diffusion'] = -mu
+        self._coefs['cross_diffusion'] = 2 * rho * sigma_omega2
+        self._coefs['production'] = gamma * rho
     
     # 定义属性访问
     @property

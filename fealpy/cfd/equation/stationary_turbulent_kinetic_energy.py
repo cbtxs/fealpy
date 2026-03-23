@@ -40,15 +40,13 @@ class StationaryTurbulentKineticEnergy(BaseEquation):
         # 处理物理参数
         rho = pde.rho
         mu = pde.mu
-        mu_t = pde.mu_t
         beta_s = pde.beta_s
-        sigma_k = pde.sigma_k
 
         # 设置系数 
         self._coefs['convection'] = rho
-        self._coefs['reaction'] = - beta_s * rho
-        self._coefs['diffusion'] = mu + sigma_k * mu_t
-        self._coefs['production'] = getattr(pde, 'source', 0)
+        self._coefs['reaction'] = beta_s * rho
+        self._coefs['diffusion'] = -mu
+        self._coefs['production'] = 0.0
 
     # 定义属性访问
     @property

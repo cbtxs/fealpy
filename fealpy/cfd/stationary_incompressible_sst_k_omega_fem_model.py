@@ -14,8 +14,8 @@ class StationaryIncompressibleSSTKOmegaFEMModel(ComputationalModel):
         self.options = options
         self.pde = pde
         self.equation_rans = StationaryIncompressibleRANS(pde)
-        self.equation_k = StationaryTurbulentKineticEnergy(pde)
-        self.equation_omega = StationarySpecificDissipationRate(pde)
+        # self.equation_k = StationaryTurbulentKineticEnergy(pde)
+        # self.equation_omega = StationarySpecificDissipationRate(pde)
 
         self.mesh = mesh
 
@@ -31,10 +31,21 @@ class StationaryIncompressibleSSTKOmegaFEMModel(ComputationalModel):
                                                     StationarySpecificDissipationRatePicard,
                                                     StationaryTurbulentKineticEnergyPicard)
         self.fem_rans = Ossen(self.equation_rans, self.mesh)
-        self.fem_k = StationaryTurbulentKineticEnergyPicard(self.equation_k, self.mesh)
-        self.fem_omega = StationarySpecificDissipationRatePicard(self.equation_omega, self.mesh)
+        # self.fem_k = StationaryTurbulentKineticEnergyPicard(self.equation_k, self.mesh)
+        # self.fem_omega = StationarySpecificDissipationRatePicard(self.equation_omega, self.mesh)
 
-        return (self.fem_rans, self.fem_k, self.fem_omega)
+        return self.fem_rans
+    
+    def linear_system(self):
+        BForm = self.fem_rans.BForm()
+        LForm = self.fem_rans.LForm()
+        return BForm, LForm
+    
+    def run(self):
+        BForm, LForm = self.linear_system()
+        # A = BForm.assembly()
+        b = LForm.assembly()
+
     
     
 

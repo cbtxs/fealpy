@@ -3,14 +3,16 @@ from fealpy.fem import LinearForm, BilinearForm
 from fealpy.fem import (ScalarConvectionIntegrator, ScalarDiffusionIntegrator,
                      SourceIntegrator, ScalarMassIntegrator)
 from fealpy.decorator import barycentric
+from fealpy.functionspace import LagrangeFESpace
 
 from ..iterative_method import IterativeMethod 
 
 class StationarySpecificDissipationRatePicard(IterativeMethod):
     """Stationary Specific Dissipation Rate Picard Iterative Method"""
     def BForm(self):
-        omegasapce = self.pspace
-        q = self.q
+        self.omegaspace = LagrangeFESpace(self.mesh, p=2)
+        omegasapce = self.omegaspace
+        q = 5
 
         A = BilinearForm(omegasapce)
         self.omega_BC = ScalarConvectionIntegrator(q=q)
@@ -18,24 +20,24 @@ class StationarySpecificDissipationRatePicard(IterativeMethod):
         self.omega_BM = ScalarMassIntegrator(q=q)
         self.omega_BCD = ScalarConvectionIntegrator(q=q)
 
-        A.add_integrator(self.BC)
-        A.add_integrator(self.BD)   
-        A.add_integrator(self.BM)
-        A.add_integrator(self.BCD)
+        A.add_integrator(self.omega_BC)
+        A.add_integrator(self.omega_BD)   
+        A.add_integrator(self.omega_BM)
+        A.add_integrator(self.omega_BCD)
 
         return A
 
     def LForm(self):
-        omegasapce = self.pspace
-        q = self.q
+        omegasapce = self.omegaspace
+        q = 5
 
         L = LinearForm(omegasapce)
-        self.omega_source = SourceIntegrator(q=q)
-        L.add_integrator(self.S)
+        self.omega_LP = SourceIntegrator(q=q)
+        L.add_integrator(self.omega_LP)
 
         return L
     
-    def update(self, u1, k1, omega0):
+    def update(self, u1, k1, omega0, mu_t):
         equation = self.equation 
         cc = equation.coef_convection
         cds = equation.coef_dissipation
@@ -52,15 +54,27 @@ class StationarySpecificDissipationRatePicard(IterativeMethod):
 
         @barycentric
         def omega_BM_coef(bcs, index):
-            cdscoef = cds(bcs, index)[bm.newaxis, bm.newaxis] if callable(cds) else cds
+            cdscoef = cds(bcs, index)[..., bm.newaxis] if callable(cds) else cds
             return cdscoef * omega0(bcs, index)
         self.omega_BM.coef = omega_BM_coef
 
-        self.omega_BD.coef = cd
+        @barycentric
+        def omega_BD_coef(bcs, index):
+            cdcoef = cd(bcs, index)[..., bm.newaxis] if callable(cd) else cd
+            cdcoef -= equation.pde.sigma_omega * mu_t
+            return cdcoef
+        self.omega_BD.coef = omega_BD_coef
 
         @barycentric
         def omega_BCD_coef(bcs, index):
             ccdcoef = ccd(bcs, index)[bm.newaxis, bm.newaxis] if callable(ccd) else ccd
+            points = self.omegaspace.mesh.bc_to_point(bcs, index)
+            F1 = equation.pde.cross_diffuison_f1(k1=k1, 
+                                                 omega0=omega0, 
+                                                 points=points, 
+                                                 bcs=bcs, 
+                                                 index=index)
+            ccdcoef *= (1 - F1)
             reciprocal_omega0 = 1/omega0
             ccdcoef *= reciprocal_omega0(bcs, index)
             ccdcoef *= k1.grad_value(bcs, index)
@@ -68,8 +82,18 @@ class StationarySpecificDissipationRatePicard(IterativeMethod):
         self.omega_BCD.coef = omega_BCD_coef
 
         ## LinearForm
-        self.omega_source = cp
-
+        @barycentric
+        def omega_LP_coef(bcs, index):
+            result = cp(bcs, index)[bm.newaxis, bm.newaxis] if callable(cp) else cp
+            result /= mu_t
+            result *= equation.pde.production_omega(u0 = u1, 
+                                               k0 = k1, 
+                                               omega0 = omega0, 
+                                               mu_t = mu_t, 
+                                               bcs = bcs, 
+                                               index = index)
+            return result
+        self.omega_LP.source = omega_LP_coef
 
 
 

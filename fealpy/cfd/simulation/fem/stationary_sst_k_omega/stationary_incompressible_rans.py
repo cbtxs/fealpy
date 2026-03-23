@@ -56,8 +56,8 @@ class Ossen(IterativeMethod):
         @barycentric
         def u_BVM_coef(bcs, index):
             points = self.uspace.mesh.bc_to_point(bcs, index)
-            print("points", points.shape)
             mu_t = equation.pde.tur_mu(u0=u0, k0=k0, omega0=omega0, bcs=bcs, points= points)
+            self.mu_t = mu_t
             cvcoef = cv(bcs, index)[..., bm.newaxis] if callable(cv) else cv
             cvcoef += mu_t
             return cvcoef
@@ -74,10 +74,9 @@ class Ossen(IterativeMethod):
         ## LinearForm 
         @barycentric
         def u_LSI_coef(bcs, index):
-            scoef = self.equation.pde.rho
-            scoef *= -2/3
-            result = scoef * k0.grad_value(bcs, index)[..., 0]
-            return result
+            scoef = -2/3 * self.equation.pde.rho
+            scoef = k0.grad_value(bcs, index)
+            return scoef
         self.u_LSI.source = u_LSI_coef
         self.u_source_LSI.source = cbf
        

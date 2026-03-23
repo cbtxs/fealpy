@@ -8,7 +8,12 @@ class PipeBendTurbulentFlow():
         self.rho = 1.0
         self.mu = 2.3256e-5
         self.beta_s = 0.09
+        self.beta = 1.0
         self.a1 = 0.31
+        self.sigma_k = 1.0
+        self.sigma_omega = 0.856
+        self.sigma_omega2 = 1.0
+        self.gamma = 1.0
     
     def inlet_boundary(self, p: TensorLike) -> TensorLike:
         x = p[..., 0]
@@ -88,6 +93,14 @@ class PipeBendTurbulentFlow():
         d = bm.where(z <= 0, d_up, d_tail)
         return d
     
+    def strain_rate(self, u0, bcs, index):
+            grad_u = u0.grad_value(bcs, index)
+            grad_u_T = bm.swapaxes(grad_u, -1, -2)
+            print("grad_u", grad_u.shape)
+
+            S_ij = 1/2 * (grad_u + grad_u_T)
+            return S_ij
+    
     def tur_mu(self, u0, k0, omega0, points, bcs, index: Index = _S):
         beta_s = self.beta_s
         mu = self.mu
@@ -95,6 +108,7 @@ class PipeBendTurbulentFlow():
         a1 = self.a1
         d = self.distance_t0_centerline(points)
         print("d", d.shape)
+
         def shear_stress_limit_function():
             arg2 = bm.maximum(2 * bm.sqrt(k0(bcs, index))/(beta_s * omega0(bcs, index) * d),
                             500 * mu/(d**2 * rho * omega0(bcs, index)))
@@ -103,29 +117,10 @@ class PipeBendTurbulentFlow():
         F2 = shear_stress_limit_function()
         print("F2", F2.shape)
 
-        def strain_rate(bcs, index):
-            c2d = k0.space.cell_to_dof()
-            flat_ids = c2d.reshape(-1)
-            GD = u0.space.mesh.GD
-            grad_u = u0.grad_value(bcs, index)
-            grad_u_T = bm.swapaxes(grad_u, -1, -2)
-
-            # grad_u = grad_u.reshape((-1, GD, GD))
-            # g_u = bm.zeros((len(points), GD, GD))
-            # g_u[flat_ids] = grad_u
-            # grad_u_T = grad_u_T.reshape((-1, GD, GD))
-            # g_u_T = bm.zeros((len(points), GD, GD))
-            # g_u_T[flat_ids] = grad_u_T
-
-            # print("g_u", g_u.shape)
-            # print("g_u_T", g_u_T.shape)
-            S_ij = 1/2 * (grad_u + grad_u_T)
-            print("S_ij", S_ij.shape)
-            S = bm.sqrt(2 * bm.sum(S_ij * S_ij, axis=(2, 3)))
-            print("S", S.shape)
-            return S
-        S = strain_rate(bcs, index)
-        print("S", S)
+        S_ij = self.strain_rate(u0, bcs, index)
+        print("S_ij", S_ij.shape)
+        S = bm.sqrt(2 * bm.sum(S_ij * S_ij, axis=(2, 3)))
+        print("S", S.shape)
         mu_t = a1 * k0(bcs, index)
         mu_t /= bm.maximum(a1 * omega0(bcs, index), S * F2)
         return mu_t
@@ -134,20 +129,78 @@ class PipeBendTurbulentFlow():
         return self.is_inlet_boundary(p) | self.is_wall_boundary(p)
     
     def is_pressure_boundary(self, p: TensorLike = None) -> TensorLike:
-        if p == None:
+        if p is None:
             return 1
         return self.is_outlet_boundary(p)
     
     def velocity_dirichlet(self, p: TensorLike) -> TensorLike:
-        return self.inlet_boundary(p) | self.wall_boundary(p)
+        result = bm.zeros(p.shape)
+        inlet = self.inlet_boundary(p)
+        wall = self.wall_boundary(p)
+        is_inlet = self.is_inlet_boundary(p)
+        is_wall = self.is_wall_boundary(p)
+
+        result[is_inlet] = inlet[is_inlet]
+        result[is_wall] = wall[is_wall]
+        return result
     
     def pressure_dirichlet(self, p: TensorLike) -> TensorLike:
         return self.outlet_boundary(p)
     
-
-
-
-
+    @cartesian
+    def source(self, p: TensorLike) -> TensorLike:
+        x = p[..., 0]
+        y = p[..., 1]
+        z = p[..., 2]
+        result = bm.zeros(p.shape)
+        return result
+    
+    @cartesian
+    def production_k(self, u0, k0, omega0, mu_t, bcs, index) -> TensorLike:
+        result_0 = self.production_omega(u0, k0, mu_t, bcs, index)
+        result_1 = 10 * self.beta_s * self.rho * k0(bcs, index) * omega0(bcs, index)
+        result = bm.minimum(result_0, result_1)
+        return result
+    
+    @cartesian
+    def production_omega(self, u0, k0, mu_t, bcs, index) -> TensorLike:
         
+        S_ij = self.strain_rate(u0, bcs, index)
+        grad_u = u0.grad_value(bcs, index)
+        
+        P = mu_t * bm.sum(S_ij * grad_u, axis=(2, 3))
+        P -= 2/3 * k0(bcs, index) * bm.einsum("...ii -> ...", grad_u)
+        return P
+    
+    @cartesian
+    def cross_diffuison_f1(self, k1, omega0, points, bcs, index):
+        d = self.distance_t0_centerline(p=points)
+        rho = self.rho
+        arg1_11 = bm.sqrt(k1(bcs, index))
+        arg1_11 /= self.beta_s * omega0(bcs, index) * d
+        arg1_12 = 500 * self.mu / (d**2 * rho * omega0(bcs, index))
+        arg1_1 = bm.maximum(arg1_11, arg1_12)
+
+        def cross_diddusion():
+            CD1 = 2 * rho * self.sigma_omega2
+            reciprocal_omega0 = 1/omega0
+            CD1 *= reciprocal_omega0(bcs, index)
+            grad_k1 = k1.grad_value(bcs, index)
+            grad_omega0 = omega0.grad_value(bcs, index)
+            CD1 *= bm.sum(grad_k1 * grad_omega0, axis=(2))
+
+            CD2 = 10e-10
+
+            CD = bm.maximum(CD1, CD2)
+            return CD
+        CD = cross_diddusion()
+        arg1_2 = 4 * rho * self.sigma_omega2 * k1(bcs, index)
+        arg1_2 /= CD * d**2
+
+        arg1 = bm.minimum(arg1_1, arg1_2)
+
+        F1 = bm.tanh(arg1**4)
+        return F1
+
     
 
