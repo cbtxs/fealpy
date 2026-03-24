@@ -50,8 +50,8 @@ class StationarySpecificDissipationRate(BaseEquation):
         # 设置系数 
         self._coefs['convection'] = rho
         self._coefs['dissipation'] = beta * rho
-        self._coefs['diffusion'] = -mu
-        self._coefs['cross_diffusion'] = 2 * rho * sigma_omega2
+        self._coefs['diffusion'] = mu
+        self._coefs['cross_diffusion'] = -2 * rho * sigma_omega2
         self._coefs['production'] = gamma * rho
     
     # 定义属性访问

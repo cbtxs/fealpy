@@ -75,7 +75,7 @@ class Ossen(IterativeMethod):
         @barycentric
         def u_LSI_coef(bcs, index):
             scoef = -2/3 * self.equation.pde.rho
-            scoef = k0.grad_value(bcs, index)
+            scoef *= k0.grad_value(bcs, index)
             return scoef
         self.u_LSI.source = u_LSI_coef
         self.u_source_LSI.source = cbf

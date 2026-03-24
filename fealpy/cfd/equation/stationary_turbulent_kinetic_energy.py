@@ -45,7 +45,7 @@ class StationaryTurbulentKineticEnergy(BaseEquation):
         # 设置系数 
         self._coefs['convection'] = rho
         self._coefs['reaction'] = beta_s * rho
-        self._coefs['diffusion'] = -mu
+        self._coefs['diffusion'] = mu
         self._coefs['production'] = 0.0
 
     # 定义属性访问

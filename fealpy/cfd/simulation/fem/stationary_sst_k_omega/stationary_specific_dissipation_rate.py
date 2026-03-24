@@ -61,7 +61,7 @@ class StationarySpecificDissipationRatePicard(IterativeMethod):
         @barycentric
         def omega_BD_coef(bcs, index):
             cdcoef = cd(bcs, index)[..., bm.newaxis] if callable(cd) else cd
-            cdcoef -= equation.pde.sigma_omega * mu_t
+            cdcoef = equation.pde.sigma_omega * mu_t
             return cdcoef
         self.omega_BD.coef = omega_BD_coef
 
@@ -77,7 +77,7 @@ class StationarySpecificDissipationRatePicard(IterativeMethod):
             ccdcoef *= (1 - F1)
             reciprocal_omega0 = 1/omega0
             ccdcoef *= reciprocal_omega0(bcs, index)
-            ccdcoef *= k1.grad_value(bcs, index)
+            ccdcoef = ccdcoef[..., None] * k1.grad_value(bcs, index)
             return ccdcoef
         self.omega_BCD.coef = omega_BCD_coef
 
@@ -88,7 +88,6 @@ class StationarySpecificDissipationRatePicard(IterativeMethod):
             result /= mu_t
             result *= equation.pde.production_omega(u0 = u1, 
                                                k0 = k1, 
-                                               omega0 = omega0, 
                                                mu_t = mu_t, 
                                                bcs = bcs, 
                                                index = index)

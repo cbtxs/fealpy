@@ -56,7 +56,7 @@ class StationaryTurbulentKineticEnergyPicard(IterativeMethod):
         @barycentric
         def k_BD_coef(bcs, index):
             cdcoef = cd(bcs, index)[..., bm.newaxis] if callable(cd) else cd
-            cdcoef -= equation.pde.sigma_k * mu_t
+            cdcoef += equation.pde.sigma_k * mu_t
             return cdcoef
         self.k_BD.coef = k_BD_coef
 
