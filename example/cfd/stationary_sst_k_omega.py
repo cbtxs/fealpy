@@ -6,7 +6,7 @@ from fealpy.cfd.simulation.fem.stationary_sst_k_omega.stationary_turbulent_kinet
 from fealpy.cfd.simulation.fem.stationary_sst_k_omega.stationary_specific_dissipation_rate import StationarySpecificDissipationRatePicard
 import matplotlib.pyplot as plt
 from fealpy.functionspace import LagrangeFESpace
-from fealpy.solver import cg, spsolve
+from fealpy.solver import cg, spsolve, minres, gmres
 from fealpy.backend import backend_manager as bm
 
 geom = PipeGeometry()
@@ -55,10 +55,10 @@ for i in range(1000):
     A = BForm.assembly()
     b = LForm.assembly()
     A, b = fem.apply_bc(A, b, pde=pde)
-    # A, b = fem.lagrange_multiplier(A, b)
-    x = cg(A, b)
+    A, b = fem.lagrange_multiplier(A, b)
+    x, info = cg(A, b)
     u1[:] = x[:ugdof]
-    p1[:] = x[ugdof:]
+    p1[:] = x[ugdof:-1]
 
     mesh.nodedata["uh"] = u1.reshape(3, -1).T
     mesh.nodedata["ph"] = p1
@@ -80,7 +80,7 @@ for i in range(1000):
     A_k = BForm_k.assembly()
     b_k = LForm_k.assembly()
     # A_k, b_k = fem_k.apply_bc(A_k, b_k, pde=pde)
-    k1[:] = cg(A_k, b_k)
+    k1[:], info = cg(A_k, b_k)
     k1[:] = bm.maximum(k1[:], 1e-8)
     res_k = mesh.error(k0, k1)
     print(f"res_k", res_k)
@@ -92,7 +92,7 @@ for i in range(1000):
     fem_omega.update(u1, k1, omega0, mu_t = fem.mu_t)
     A_omega = BForm_omega.assembly()
     b_omega = LForm_omega.assembly()
-    omega1[:] = cg(A_omega, b_omega)
+    omega1[:], info = cg(A_omega, b_omega)
     omega1[:] = bm.maximum(omega1[:], 1e-8)
     res_omega = mesh.error(omega0, omega1)
     print(f"res_omega", res_omega)
