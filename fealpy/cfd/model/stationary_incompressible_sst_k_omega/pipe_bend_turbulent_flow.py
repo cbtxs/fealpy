@@ -14,74 +14,9 @@ class PipeBendTurbulentFlow():
         self.sigma_omega = 0.5
         self.sigma_omega2 = 0.856
         self.gamma = 0.5
-    
-    def inlet_boundary(self, p: TensorLike) -> TensorLike:
-        x = p[..., 0]
-        y = p[..., 1]
-        z = p[..., 2]
-        R = 0.5
-        d = self.distance_t0_centerline(p)
-        u = bm.zeros(p.shape)
-        u[..., 0] = 0.0
-        u[..., 1] = 0.0
-        u[..., 2] = 1.224*(1.0 - d/R)**(1/7)
-        return u
-    
-    def outlet_velocity(self, p: TensorLike) -> TensorLike:
-        x = p[..., 0]
-        y = p[..., 1]
-        z = p[..., 2]
-        R = 0.5
-        d = self.distance_t0_centerline(p)
-        u = bm.zeros(p.shape)
-        u[..., 0] = 1.224*(1.0 - d/R)**(1/7)
-        u[..., 1] = 0.0
-        u[..., 2] = 0.0
-        return u
 
-    def outlet_pressure(self, p: TensorLike) -> TensorLike:
-        x = p[..., 0]
-        y = p[..., 1]
-        z = p[..., 2]
-        pressure = bm.zeros(x.shape)
-        return pressure
-    
-    def wall_boundary(self, p: TensorLike) -> TensorLike:
-        x = p[..., 0]
-        y = p[..., 1]
-        z = p[..., 2]
-        u = bm.zeros(p.shape)
-        return u
-
-    def is_inlet_boundary(self, p: TensorLike) -> TensorLike:
-        x = p[..., 0]
-        y = p[..., 1]
-        z = p[..., 2]
-        atol = 1e-12
-        on_boundary = (bm.abs(z + 10) < atol)
-        return on_boundary
-    
-    def is_outlet_boundary(self, p: TensorLike) -> TensorLike:
-        x = p[..., 0]
-        y = p[..., 1]
-        z = p[..., 2]
-        atol = 1e-12
-        on_boundary = (bm.abs(x - 17.8) < atol)
-        return on_boundary
-    
-    def is_wall_boundary(self, p: TensorLike) -> TensorLike:
-        x = p[..., 0]
-        y = p[..., 1]
-        z = p[..., 2]
-
-        r = 0.5
-        d = self.distance_t0_centerline(p)
-        atol = 1e-12
-        on_boundary = (bm.abs(d - r) < atol)
-        return on_boundary
-
-
-    def distance_t0_centerline(self, p: TensorLike) -> TensorLike:
+    @cartesian
+    def distance_t0_wallline(self, p: TensorLike) -> TensorLike:
         """计算点到中心轴的距离"""
         R = 2.8
         x = p[..., 0]
@@ -95,8 +30,8 @@ class PipeBendTurbulentFlow():
         d_down = bm.minimum(bm.sqrt(y**2 + (z - R)**2), 0.5)
         
         # 情况3: 弯管段
-        dist_to_center_xz = bm.sqrt((x - R)**2 + z**2)
-        dist_to_arc_xz = bm.abs(dist_to_center_xz - R)
+        dist_to_wall_xz = bm.sqrt((x - R)**2 + z**2)
+        dist_to_arc_xz = bm.abs(dist_to_wall_xz - R)
         d_bend = bm.minimum(bm.sqrt(dist_to_arc_xz**2 + y**2), 0.5)
         
         # 根据x坐标选择合适的距离
@@ -107,6 +42,7 @@ class PipeBendTurbulentFlow():
 
         return d
     
+    @cartesian
     def strain_rate(self, u0, bcs, index):
             grad_u = u0.grad_value(bcs, index)
             grad_u_T = bm.swapaxes(grad_u, -1, -2)
@@ -114,12 +50,13 @@ class PipeBendTurbulentFlow():
             S_ij = 1/2 * (grad_u + grad_u_T)
             return S_ij
     
+    @cartesian
     def tur_mu(self, u0, k0, omega0, points, bcs, index: Index = _S):
         beta_s = self.beta_s
         mu = self.mu
         rho = self.rho
         a1 = self.a1
-        d = self.distance_t0_centerline(points)
+        d = self.distance_t0_wallline(points)
 
         def shear_stress_limit_function():
             k0_value = bm.maximum(k0(bcs, index), 1e-10)
@@ -135,21 +72,97 @@ class PipeBendTurbulentFlow():
         mu_t /= bm.maximum(a1 * omega0(bcs, index), S * F2)
         return mu_t
     
+    @cartesian
+    def is_inlet_boundary(self, p: TensorLike) -> TensorLike:
+        x = p[..., 0]
+        y = p[..., 1]
+        z = p[..., 2]
+        atol = 1e-12
+        on_boundary = (bm.abs(z + 10) < atol)
+        return on_boundary
+    
+    @cartesian
+    def is_outlet_boundary(self, p: TensorLike) -> TensorLike:
+        x = p[..., 0]
+        y = p[..., 1]
+        z = p[..., 2]
+        atol = 1e-12
+        on_boundary = (bm.abs(x - 17.8) < atol)
+        return on_boundary
+    
+    @cartesian
+    def is_wall_boundary(self, p: TensorLike) -> TensorLike:
+        x = p[..., 0]
+        y = p[..., 1]
+        z = p[..., 2]
+
+        r = 0.5
+        d = self.distance_t0_wallline(p)
+        atol = 1e-12
+        on_boundary = (bm.abs(d - r) < atol)
+        return on_boundary
+    
+    # 动量方程
+    @cartesian
+    def inlet_velocity(self, p: TensorLike) -> TensorLike:
+        x = p[..., 0]
+        y = p[..., 1]
+        z = p[..., 2]
+        R = 0.5
+        d = self.distance_t0_wallline(p)
+        u = bm.zeros(p.shape)
+        u[..., 0] = 0.0
+        u[..., 1] = 0.0
+        u[..., 2] = 1.224*(1.0 - d/R)**(1/7)
+        return u
+    
+    @cartesian
+    def outlet_velocity(self, p: TensorLike) -> TensorLike:
+        x = p[..., 0]
+        y = p[..., 1]
+        z = p[..., 2]
+        R = 0.5
+        d = self.distance_t0_wallline(p)
+        u = bm.zeros(p.shape)
+        u[..., 0] = 1.224*(1.0 - d/R)**(1/7)
+        u[..., 1] = 0.0
+        u[..., 2] = 0.0
+        return u
+    
+    @cartesian
+    def outlet_pressure(self, p: TensorLike) -> TensorLike:
+        x = p[..., 0]
+        y = p[..., 1]
+        z = p[..., 2]
+        pressure = bm.zeros(x.shape)
+        return pressure
+    
+    @cartesian
+    def wall_velocity(self, p: TensorLike) -> TensorLike:
+        x = p[..., 0]
+        y = p[..., 1]
+        z = p[..., 2]
+        u = bm.zeros(p.shape)
+        return u
+    
+    @cartesian
     def is_velocity_boundary(self, p: TensorLike) -> TensorLike:
         # return self.is_inlet_boundary(p) | self.is_wall_boundary(p)
         return None
     
+    @cartesian
     def is_pressure_boundary(self, p: TensorLike = None) -> TensorLike:
         # if p is None:
         #     return 1
         # return self.is_outlet_boundary(p)
         return 0
     
+    @cartesian
     def velocity_dirichlet(self, p: TensorLike) -> TensorLike:
         result = bm.zeros(p.shape)
-        inlet = self.inlet_boundary(p)
+        inlet = self.inlet_velocity(p)
         outlet = self.outlet_velocity(p)
-        wall = self.wall_boundary(p)
+        wall = self.wall_velocity(p)
         is_inlet = self.is_inlet_boundary(p)
         is_wall = self.is_wall_boundary(p)
         is_outlet = self.is_outlet_boundary(p)
@@ -159,6 +172,7 @@ class PipeBendTurbulentFlow():
         result[is_outlet] = outlet[is_outlet]
         return result
     
+    @cartesian
     def pressure_dirichlet(self, p: TensorLike) -> TensorLike:
         return self.outlet_pressure(p)
     
@@ -170,12 +184,51 @@ class PipeBendTurbulentFlow():
         result = bm.zeros(p.shape)
         return result
     
+    # k 方程
+    @cartesian
+    def k_dirichlet(self, p: TensorLike) -> TensorLike:
+        is_inlet = self.is_inlet_boundary(p)
+        is_outlet = self.is_outlet_boundary(p)
+        is_wall = self.is_wall_boundary(p)
+        k = bm.zeros(p[..., 0].shape)
+        k[is_inlet] = 0.00375
+        k[is_outlet] = 0.00375
+        k[is_wall] = 0
+        return k
+    
+    @cartesian
+    def is_k_boundary(self, p: TensorLike) -> TensorLike:
+        is_inlet = self.is_inlet_boundary(p)
+        is_outlet = self.is_outlet_boundary(p)
+        is_wall = self.is_wall_boundary(p)
+        return is_wall | is_inlet 
+    
     @cartesian
     def production_k(self, u0, k0, omega0, mu_t, bcs, index) -> TensorLike:
         result_0 = self.production_omega(u0, k0, mu_t, bcs, index)
         result_1 = 10 * self.beta_s * self.rho * k0(bcs, index) * omega0(bcs, index)
         result = bm.minimum(result_0, result_1)
         return result
+    
+    # omega 方程
+    @cartesian
+    def omega_dirichlet(self, p: TensorLike) -> TensorLike:
+        d = self.distance_t0_wallline(p)
+        nu = self.mu/self.rho
+        is_inlet = self.is_inlet_boundary(p)
+        is_outlet = self.is_outlet_boundary(p)
+        is_wall = self.is_wall_boundary(p)
+        omega = bm.zeros(p[..., 0].shape)
+        omega[is_inlet] = 1.597
+        omega[is_wall] = (60 * nu / (self.beta * d**2))[is_wall]
+        return omega
+    
+    @cartesian
+    def is_omega_boundary(self, p: TensorLike) -> TensorLike:
+        is_inlet = self.is_inlet_boundary(p)
+        is_outlet = self.is_outlet_boundary(p)
+        is_wall = self.is_wall_boundary(p)
+        return is_inlet | is_wall
     
     @cartesian
     def production_omega(self, u0, k0, mu_t, bcs, index) -> TensorLike:
@@ -188,7 +241,7 @@ class PipeBendTurbulentFlow():
     
     @cartesian
     def cross_diffuison_f1(self, k1, omega0, points, bcs, index):
-        d = self.distance_t0_centerline(p=points)
+        d = self.distance_t0_wallline(p=points)
         rho = self.rho
         k1_value = k1(bcs, index)
         k1_value = bm.maximum(k1_value, 1e-10)

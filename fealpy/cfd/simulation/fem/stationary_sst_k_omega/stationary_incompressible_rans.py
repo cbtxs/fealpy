@@ -57,12 +57,12 @@ class Ossen(IterativeMethod):
         def u_BVM_coef(bcs, index):
             points = self.uspace.mesh.bc_to_point(bcs, index)
             mu_t = equation.pde.tur_mu(u0=u0, k0=k0, omega0=omega0, bcs=bcs, points= points)
+            mu_t = bm.minimum(mu_t, 1000 * equation.pde.mu)
             self.mu_t = mu_t
             cvcoef = cv(bcs, index)[..., bm.newaxis] if callable(cv) else cv
             cvcoef += mu_t
             return cvcoef
         self.u_BVW.coef = u_BVM_coef
-
 
         @barycentric
         def u_BC_coef(bcs, index):
