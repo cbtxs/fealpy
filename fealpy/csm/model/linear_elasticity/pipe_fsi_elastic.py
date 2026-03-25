@@ -3,6 +3,8 @@ from fealpy.typing import TensorLike
 from fealpy.backend import backend_manager as bm
 from fealpy.decorator import cartesian
 
+from ...mesh.pipe_mesh import PipeGeometry, PipeMesh
+
 
 class PipeFsiElastic:
     def __init__(self):
@@ -20,7 +22,7 @@ class PipeFsiElastic:
     def init_mesh(self):
         """
         """
-        pass
+        return mesh
     
     @cartesian
     def body_force(self, p: TensorLike) -> TensorLike:
