@@ -49,8 +49,8 @@ options = vars(parser.parse_args())
 from fealpy.backend import bm
 bm.set_backend(options['backend'])
 
-from fealpy.fem.linear_elasticity_lfem_model import  LinearElasticityLFEMModel
-model = LinearElasticityLFEMModel()
+from fealpy.csm.fem.hydraulic_pipe_linear_elastic_model import  HydraulicPipeLinearElasticModel
+model = HydraulicPipeLinearElasticModel()
 
 model.set_pde(7)
 
