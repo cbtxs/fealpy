@@ -16,20 +16,24 @@ parser.add_argument('--pde',
                     help="index of the linear elasticity  model, default is 4")
 
 parser.add_argument('--mesh_type',
-                    default='uniform_tet', type=str,
-                    help="Type of mesh, default is uniform_tet")
+                    default='tet', type=str,
+                    help="Type of mesh, default is tet")
 
 parser.add_argument('--space_degree',
         default=1, type=int,
         help="Degree of Lagrange finite element space, default is 1")
 
 parser.add_argument('--E', 
-                    default=70.0, type=float, 
+                    default=2.1e5, type=float, 
                     help="Young's modulus (E) in GPa for the elastic material")
 
 parser.add_argument('--nu',
                     default=0.3, type=float,
                     help="Poisson's ratio (nu) for the elastic material, default is 0.3")
+
+parser.add_argument('--rho',
+                    default=7850, type=float,
+                    help="density for the elastic material, default is 7800")
 
 # parser.add_argument('--neigen',
 #         default=6, type=int,
@@ -50,16 +54,4 @@ from fealpy.backend import bm
 bm.set_backend(options['backend'])
 
 from fealpy.csm.fem.hydraulic_pipe_linear_elastic_model import  HydraulicPipeLinearElasticModel
-model = HydraulicPipeLinearElasticModel()
-
-model.set_pde(7)
-
-#model.set_init_mesh(meshtype='uniform_tri')
-model.set_init_mesh(meshtype='custom_hex')
-# model.set_init_mesh(meshtype='uniform_tet', nx=10, ny=10, nz=10)
-
-
-model.set_space_degree(p=1)
-
-model.run['uniform_refine']()
-print("-----------------------------")
+model = HydraulicPipeLinearElasticModel(options)

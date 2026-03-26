@@ -69,5 +69,6 @@ DATA_TABLE = {
     1: ("cantilever_beam_model", "CantileverBeamModel"),
     2: ("gear_box_model", "GearBoxModel"),
     3: ("linear_elasticity_data_3d", "LinearElasticityData3D"),
-    4: ("hydraulic_pipe_model", "HydraulicPipeModel")
+    4: ("hydraulic_single_pipe_model", "HydraulicSinglePipeModel"),
+    5: ("hydraulic_tee_pipe_model", "HydraulicTeePipeModel")
 }
