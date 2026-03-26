@@ -6,14 +6,14 @@ from fealpy.cfd.simulation.fem.stationary_sst_k_omega.stationary_turbulent_kinet
 from fealpy.cfd.simulation.fem.stationary_sst_k_omega.stationary_specific_dissipation_rate import StationarySpecificDissipationRatePicard
 import matplotlib.pyplot as plt
 from fealpy.functionspace import LagrangeFESpace
-from fealpy.solver import cg, spsolve, minres, gmres
+from fealpy.solver import cg, spsolve, minres, gmres, bicgstab
 from fealpy.backend import backend_manager as bm
 from fealpy.fem import DirichletBC, LinearForm, BlockForm, SourceIntegrator
 from fealpy.sparse import COOTensor
 
 geom = PipeGeometry()
 geom.build()
-mesher = PipeMesh(geom, mesh_size=0.3)
+mesher = PipeMesh(geom, mesh_size=0.2)
 mesh = mesher.generate_mesh()
 
 # 网格可视化
@@ -53,7 +53,7 @@ alpha_u = 0.5  # 速度松弛因子 (通常 0.3 - 0.7)
 alpha_p = 0.3  # 压力松弛因子 (通常 0.2 - 0.5)
 alpha_k_omega = 0.5 # 湍流变量松弛因子
 
-for i in range(1000):
+for i in range(1):
     print(f"第{i}步")
     # rans 方程求解
     BForm = fem.BForm()
@@ -119,7 +119,7 @@ for i in range(1000):
     )
     A_omega, b_omega = BC_omega.apply(A_omega, b_omega)
     omega1[:] = cg(A_omega, b_omega)
-    omega1[:] = bm.maximum(omega1[:], 1e-8)
+    omega1[:] = bm.minimum(bm.maximum(omega1[:], 1e-8), 2e6)
     omega1[:] = alpha_k_omega * omega1[:] + (1 - alpha_k_omega) * omega0[:]
     res_omega = mesh.error(omega0, omega1)
     print(f"res_omega", res_omega)
@@ -128,8 +128,8 @@ for i in range(1000):
     # 更新初始值
     u0[:] = u1
     p0[:] = p1
-    k0[:] = k1
-    omega0[:] = omega1
+    # k0[:] = k1
+    # omega0[:] = omega1
 
     mesh.to_vtk(f"stationary_sst_k_omega_{i+1}.vtu")
 

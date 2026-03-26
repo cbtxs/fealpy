@@ -24,15 +24,15 @@ class PipeBendTurbulentFlow():
         z = p[..., 2]
         
         # 情况1: 上游直管
-        d_up = bm.minimum(bm.sqrt(x**2 + y**2), 0.5)
+        d_up = 0.5 - bm.minimum(bm.sqrt(x**2 + y**2), 0.5)
         
         # 情况2: 下游直管
-        d_down = bm.minimum(bm.sqrt(y**2 + (z - R)**2), 0.5)
+        d_down = 0.5 - bm.minimum(bm.sqrt(y**2 + (z - R)**2), 0.5)
         
         # 情况3: 弯管段
         dist_to_wall_xz = bm.sqrt((x - R)**2 + z**2)
         dist_to_arc_xz = bm.abs(dist_to_wall_xz - R)
-        d_bend = bm.minimum(bm.sqrt(dist_to_arc_xz**2 + y**2), 0.5)
+        d_bend = 0.5 - bm.minimum(bm.sqrt(dist_to_arc_xz**2 + y**2), 0.5)
         
         # 根据x坐标选择合适的距离
         d_tail = bm.where(x >= R, d_down, d_bend)
@@ -99,7 +99,7 @@ class PipeBendTurbulentFlow():
         r = 0.5
         d = self.distance_t0_wallline(p)
         atol = 1e-12
-        on_boundary = (bm.abs(d - r) < atol)
+        on_boundary = (bm.abs(d) < atol)
         return on_boundary
     
     # 动量方程
@@ -113,7 +113,7 @@ class PipeBendTurbulentFlow():
         u = bm.zeros(p.shape)
         u[..., 0] = 0.0
         u[..., 1] = 0.0
-        u[..., 2] = 1.224*(1.0 - d/R)**(1/7)
+        u[..., 2] = 1.224*(1.0 - (0.5 - d)/R)**(1/7)
         return u
     
     @cartesian
@@ -124,7 +124,7 @@ class PipeBendTurbulentFlow():
         R = 0.5
         d = self.distance_t0_wallline(p)
         u = bm.zeros(p.shape)
-        u[..., 0] = 1.224*(1.0 - d/R)**(1/7)
+        u[..., 0] = 1.224*(1.0 - (0.5-d)/R)**(1/7)
         u[..., 1] = 0.0
         u[..., 2] = 0.0
         return u
@@ -220,7 +220,7 @@ class PipeBendTurbulentFlow():
         is_wall = self.is_wall_boundary(p)
         omega = bm.zeros(p[..., 0].shape)
         omega[is_inlet] = 1.597
-        omega[is_wall] = (60 * nu / (self.beta * d**2))[is_wall]
+        omega[is_wall] = bm.minimum((60 * nu / (self.beta * d**2)), 2e6)[is_wall]
         return omega
     
     @cartesian
