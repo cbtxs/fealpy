@@ -4,7 +4,7 @@ from fealpy.backend import backend_manager as bm
 from fealpy.decorator import cartesian
 
 
-class PipeFsiElastic:
+class ElbowPipeModel:
     def __init__(self):
         super().__init__()
 
@@ -12,7 +12,11 @@ class PipeFsiElastic:
         self.GD = self.geo_dimension()
         
         self.mesh = self.init_mesh()
-        
+    
+    
+    def __str__():
+        pass
+    
     def geo_dimension(self) -> int:
         """Returns the geometric dimension of the domain."""
         return 3

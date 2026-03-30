@@ -49,17 +49,7 @@ options = vars(parser.parse_args())
 from fealpy.backend import bm
 bm.set_backend(options['backend'])
 
-from fealpy.fem.linear_elasticity_lfem_model import  LinearElasticityLFEMModel
-model = LinearElasticityLFEMModel()
+from fealpy.csm.fem.hydraulic_pipe_lfem_model import  HydraulicPipeLFEMModel
+model = HydraulicPipeLFEMModel()
 
-model.set_pde(7)
-
-#model.set_init_mesh(meshtype='uniform_tri')
-model.set_init_mesh(meshtype='custom_hex')
-# model.set_init_mesh(meshtype='uniform_tet', nx=10, ny=10, nz=10)
-
-
-model.set_space_degree(p=1)
-
-model.run['uniform_refine']()
 print("-----------------------------")

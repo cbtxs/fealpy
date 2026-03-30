@@ -17,7 +17,7 @@ from ..model.linear_elasticity import LinearElasticityPDEDataT
 from ..model.model_manager import CSMModelManager
 
 
-class HydraulicValveFsiElasticModel(ComputationalModel):
+class HydraulicPipeLFEMModel(ComputationalModel):
     def __init__(self, options):
         self.options = options
         super().__init__(
