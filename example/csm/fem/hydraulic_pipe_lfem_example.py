@@ -24,7 +24,7 @@ parser.add_argument('--space_degree',
         help="Degree of Lagrange finite element space, default is 1")
 
 parser.add_argument('--E', 
-                    default=2.1e5, type=float, 
+                    default=2.1e11, type=float, 
                     help="Young's modulus (E) in GPa for the elastic material")
 
 parser.add_argument('--nu',
@@ -32,8 +32,8 @@ parser.add_argument('--nu',
                     help="Poisson's ratio (nu) for the elastic material, default is 0.3")
 
 parser.add_argument('--rho',
-                    default=7850, type=float,
-                    help="density for the elastic material, default is 7850")
+                    default=7800, type=float,
+                    help="density for the elastic material, default is 7800")
 
 parser.add_argument('--pbar_log',
                     default=True, type=bool,
@@ -52,4 +52,8 @@ bm.set_backend(options['backend'])
 from fealpy.csm.fem.hydraulic_pipe_lfem_model import  HydraulicPipeLFEMModel
 model = HydraulicPipeLFEMModel(options)
 
+# A, F = model.linear_system()
+# A1, F1 = model.apply_bc(A, F)
+# uh = model.solve(A1, F1)
+# model.show(uh)
 print("-----------------------------")

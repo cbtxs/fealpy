@@ -1,6 +1,5 @@
 from typing import Any, Optional, Union
 
-from fealpy.typing import TensorLike
 from fealpy.backend import bm
 from fealpy.model import ComputationalModel
 
@@ -25,9 +24,9 @@ class HydraulicPipeLFEMModel(ComputationalModel):
                 log_level=options['log_level'])
         
         self.set_pde(options['pde'])
-        # mesh = self.pde.init_mesh()
-        # self.set_mesh(mesh)
-        # self.set_space_degree(options['space_degree'])
+        mesh = self.pde.set_mesh()
+        self.set_mesh(mesh)
+        self.set_space_degree(options['space_degree'])
         
         self.GD = self.pde.geo_dimension()
 
@@ -35,7 +34,7 @@ class HydraulicPipeLFEMModel(ComputationalModel):
         self.nu = options['nu']
         self.rho = options['rho']
         
-        # self.set_space()
+        self.set_space()
         self.set_material()
             
     def set_pde(self, pde: Union[LinearElasticityPDEDataT, int] = 4) -> None:
@@ -51,26 +50,28 @@ class HydraulicPipeLFEMModel(ComputationalModel):
         else:
             self.pde = pde
     
-        self.logger.info(self.pde.__str__())
-        
-    # def set_mesh(self, mesh: Mesh) -> None:
-    #     """Set the mesh.
+        # self.logger.info(self.pde.__str__())
+        self.logger.info(self.pde.get_dirichlet_nodes())
+       
+    def set_mesh(self, mesh: Mesh) -> None:
+        """Set the mesh.
 
-    #     Parameters:
-    #         mesh (Mesh): The mesh object.
-    #     """
-    #     self.mesh = mesh
+        Parameters:
+            mesh (Mesh): The mesh object.
+        """
+        self.mesh = mesh
+        # self.logger.info(self.mesh)
         
-    # def set_space_degree(self, p: int) -> None:
-    #     self.p = p
+    def set_space_degree(self, p: int) -> None:
+        self.p = p
         
-    # def set_space(self):
-    #     """Initialize the finite element space."""
-    #     mesh = self.mesh
-    #     p = self.p
+    def set_space(self):
+        """Initialize the finite element space."""
+        mesh = self.mesh
+        p = self.p
         
-    #     scalar_space = LagrangeFESpace(mesh, p=p, ctype='C')
-    #     self.space = TensorFunctionSpace(scalar_space, shape=(-1, self.GD))
+        scalar_space = LagrangeFESpace(mesh, p=p, ctype='C')
+        self.space = TensorFunctionSpace(scalar_space, shape=(-1, self.GD))
 
     def set_material(self) -> None:
         """Set material properties.
@@ -84,12 +85,12 @@ class HydraulicPipeLFEMModel(ComputationalModel):
                                     elastic_modulus=self.E,
                                     poisson_ratio=self.nu,
                                     density = self.rho)
-        # self.logger.info(self.material)
+        self.logger.info(self.material)
     
     def linear_system(self):
         self.uh = self.space.function()
 
-        bform = BilinearForm(self.tspace)
+        bform = BilinearForm(self.space)
         LEI = LinearElasticityIntegrator(
                                 material=self.material, q=self.p+3, method=None
                             )
@@ -122,5 +123,17 @@ class HydraulicPipeLFEMModel(ComputationalModel):
             uh: Solution vector.
         """
         uh = spsolve(A, F, solver='scipy')
-        # self.logger.info(f"Solution : {uh}")
+        self.logger.info(f"Solution : {uh}")
         return uh
+    
+    def show(self, uh):
+        mesh = self.space.mesh
+        save_path = "../elboe_pipe_result"
+        
+        disp = uh.reshape(-1, self.GD)
+
+        import os
+        os.makedirs(save_path, exist_ok=True)
+        
+        mesh.nodedata['displacement'] = disp
+        mesh.to_vtk(f"{save_path}/disp.vtu")
