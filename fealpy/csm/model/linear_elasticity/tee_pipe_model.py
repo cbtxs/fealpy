@@ -13,6 +13,9 @@ class TeePipeModel:
         
         self.mesh = self.init_mesh()
         
+    def __str__(self) -> str:
+        pass
+        
     def geo_dimension(self) -> int:
         """Returns the geometric dimension of the domain."""
         return 3

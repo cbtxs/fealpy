@@ -25,18 +25,19 @@ class HydraulicPipeLFEMModel(ComputationalModel):
                 log_level=options['log_level'])
         
         self.set_pde(options['pde'])
-        mesh = self.pde.init_mesh()
-        self.set_mesh(mesh)
-        self.set_space_degree(options['space_degree'])
+        # mesh = self.pde.init_mesh()
+        # self.set_mesh(mesh)
+        # self.set_space_degree(options['space_degree'])
         
         self.GD = self.pde.geo_dimension()
 
         self.E = options['E']
         self.nu = options['nu']
+        self.rho = options['rho']
         
-        self.set_space()
+        # self.set_space()
         self.set_material()
-        
+            
     def set_pde(self, pde: Union[LinearElasticityPDEDataT, int] = 4) -> None:
         """Set PDE parameters and update model.
 
@@ -44,30 +45,32 @@ class HydraulicPipeLFEMModel(ComputationalModel):
             pde: PDE data manager or int.
         """
         if isinstance(pde, int):
-            self.pde = CSMModelManager("linear_elasticity").get_example(pde)
+            if pde not in [4, 5]:
+                raise ValueError(f"Invalid PDE ID: {pde}. Must be 4, 5.")
+            self.pde = CSMModelManager('linear_elasticity').get_example(pde)
         else:
             self.pde = pde
     
-        # self.logger.info(self.pde)
+        self.logger.info(self.pde.__str__())
         
-    def set_mesh(self, mesh: Mesh) -> None:
-        """Set the mesh.
+    # def set_mesh(self, mesh: Mesh) -> None:
+    #     """Set the mesh.
 
-        Parameters:
-            mesh (Mesh): The mesh object.
-        """
-        self.mesh = mesh
+    #     Parameters:
+    #         mesh (Mesh): The mesh object.
+    #     """
+    #     self.mesh = mesh
         
-    def set_space_degree(self, p: int) -> None:
-        self.p = p
+    # def set_space_degree(self, p: int) -> None:
+    #     self.p = p
         
-    def set_space(self):
-        """Initialize the finite element space."""
-        mesh = self.mesh
-        p = self.p
+    # def set_space(self):
+    #     """Initialize the finite element space."""
+    #     mesh = self.mesh
+    #     p = self.p
         
-        scalar_space = LagrangeFESpace(mesh, p=p, ctype='C')
-        self.space = TensorFunctionSpace(scalar_space, shape=(-1, self.GD))
+    #     scalar_space = LagrangeFESpace(mesh, p=p, ctype='C')
+    #     self.space = TensorFunctionSpace(scalar_space, shape=(-1, self.GD))
 
     def set_material(self) -> None:
         """Set material properties.
@@ -75,11 +78,13 @@ class HydraulicPipeLFEMModel(ComputationalModel):
         Parameters:
             E (float): Young's modulus.
             nu (float): Poisson's ratio.
+            rho(float): density.
         """
-        self.material = LinearElasticMaterial(name='Material',
-                                    model=None,
+        self.material = LinearElasticMaterial(name='hydraulic_pipe_Material',
                                     elastic_modulus=self.E,
-                                    poisson_ratio=self.nu)
+                                    poisson_ratio=self.nu,
+                                    density = self.rho)
+        # self.logger.info(self.material)
     
     def linear_system(self):
         self.uh = self.space.function()
