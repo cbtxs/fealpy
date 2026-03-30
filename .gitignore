@@ -77,4 +77,6 @@ tags
 tmp
 *.msh
 /agents/
-/.codex/
+AGENTS.md
+.codex
+.codex/
