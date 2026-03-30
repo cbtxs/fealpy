@@ -1,8 +1,8 @@
-# FEALPy 弯管 FSI Remesher 用户手册
+# FEALPy 弯管 FSI Mesher 用户手册
 
 ## 1. 功能概述
 
-`ElbowPipeRemesher` 用于生成弯管流固耦合（FSI）三维共形网格，提供两类输出：
+`ElbowPipeMesher` 用于生成弯管流固耦合（FSI）三维共形网格，提供两类输出：
 
 - 主输出：`init_mesh()` 返回 `TetrahedronMesh`
 - 附加输出：`mesh_data()` 返回完整 `mesh dict`（含边界/界面信息）
@@ -54,9 +54,9 @@ pip install gmsh
 ## 4. 主接口：`init_mesh()`
 
 ```python
-from fealpy.mesher import ElbowPipeRemesher
+from fealpy.mesher import ElbowPipeMesher
 
-remesher = ElbowPipeRemesher(
+mesher = ElbowPipeMesher(
     {
         "D": 25.0,
         "bend_angle": 90.0,
@@ -67,7 +67,7 @@ remesher = ElbowPipeRemesher(
     }
 )
 
-mesh = remesher.init_mesh()
+mesh = mesher.init_mesh()
 ```
 
 返回类型：
@@ -83,7 +83,7 @@ mesh = remesher.init_mesh()
 ## 5. 附加接口：`mesh_data()`
 
 ```python
-mesh_dict = remesher.mesh_data()
+mesh_dict = mesher.mesh_data()
 ```
 
 `mesh_dict` 主要字段：
@@ -115,7 +115,7 @@ mesh_dict = remesher.mesh_data()
 ## 6. 最小可运行示例
 
 ```python
-from fealpy.mesher import ElbowPipeRemesher
+from fealpy.mesher import ElbowPipeMesher
 
 params = {
     "D": 25.0,
@@ -126,9 +126,9 @@ params = {
     "wall_thickness": 5.0,
 }
 
-remesher = ElbowPipeRemesher(params)
-mesh = remesher.init_mesh()
-mesh_dict = remesher.mesh_data()
+mesher = ElbowPipeMesher(params)
+mesh = mesher.init_mesh()
+mesh_dict = mesher.mesh_data()
 
 print(mesh.node.shape, mesh.cell.shape)
 print(mesh.celldata["region"].shape)
@@ -157,12 +157,12 @@ print(sorted(mesh_dict["physical_name_to_dimtag"].keys()))
 
 脚本位置：
 
-- `example/mesher/elbow_pipe_remesher_example.py`
+- `example/mesher/elbow_pipe_mesher_example.py`
 
 运行示例：
 
 ```bash
-python example/mesher/elbow_pipe_remesher_example.py \
+python example/mesher/elbow_pipe_mesher_example.py \
   --D 25 --bend_angle 90 --R_bend_inner 1.5 \
   --L_in_ratio 5 --L_out_ratio 10 --wall_thickness 5 \
   --output_dir ./output_elbow
