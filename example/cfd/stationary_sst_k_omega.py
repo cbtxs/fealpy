@@ -13,7 +13,7 @@ from fealpy.sparse import COOTensor
 
 geom = PipeGeometry()
 geom.build()
-mesher = PipeMesh(geom, mesh_size=0.2)
+mesher = PipeMesh(geom, mesh_size=0.3)
 mesh = mesher.generate_mesh()
 
 # 网格可视化
@@ -53,7 +53,7 @@ alpha_u = 0.5  # 速度松弛因子 (通常 0.3 - 0.7)
 alpha_p = 0.3  # 压力松弛因子 (通常 0.2 - 0.5)
 alpha_k_omega = 0.5 # 湍流变量松弛因子
 
-for i in range(1):
+for i in range(1000):
     print(f"第{i}步")
     # rans 方程求解
     BForm = fem.BForm()

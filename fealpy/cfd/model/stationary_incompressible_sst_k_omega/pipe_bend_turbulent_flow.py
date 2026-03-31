@@ -6,7 +6,7 @@ from fealpy.typing import Index, _S
 class PipeBendTurbulentFlow():
     def __init__(self):
         self.rho = 1.0
-        self.mu = 2.3256e-5
+        self.mu = 1.0e-3
         self.beta_s = 0.09
         self.beta = 0.079
         self.a1 = 0.31
