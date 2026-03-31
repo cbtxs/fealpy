@@ -108,6 +108,8 @@ class ElbowPipeModel:
         
         # Identify Dirichlet boundary nodes (fixed supports)
         self.dirichlet_nodes = self._identify_dirichlet_nodes()
+        all_nodes = self.mesh.entity('node')                 # (NN, GD)
+        self.dirichlet_node_coords = all_nodes[self.dirichlet_nodes]  # (Nd, GD)
         
     def _create_boundary_mappings(self):
         """
@@ -166,16 +168,18 @@ class ElbowPipeModel:
     
     @cartesian
     def body_force(self, p: TensorLike) -> TensorLike:
+        """Calculate the body force, such as gravity.
+        Parameters:
+            p: Coordinates of points inside the element, shape (N, 3), where N is the number of points,
+           and 3 represents the x, y, and z coordinates.
+    
+        Returns:
+            The body force density, shape (N, 3), representing the force [Fx, Fy, Fz] at each point.
+            For example, under gravity, Fz = -rho * g, 
+            where rho is the material density, and g is the gravitational acceleration.
         """
-        体积力，例如重力。
-        参数:
-            p: 体单元内点的坐标
-        返回:
-            该点处的体积力密度 [Fx, Fy, Fz]
-        """
-        # 例如，设置重力方向为负Z轴，重力加速度g=9.8 m/s^2，材料密度rho
-        rho = 7800  # 钢密度, kg/m^3
-        g = 9.8     # 重力加速度, m/s^2
+        rho = 7800  
+        g = 9.8     
         force = bm.zeros_like(p)
         force[..., 2] = -rho * g  # Fz = -rho * g
         # force[..., 2] = 1
@@ -196,24 +200,20 @@ class ElbowPipeModel:
         return bm.zeros_like(p)
     
     @cartesian
-    def is_displacement_boundary(self, p: TensorLike) -> TensorLike:
-        """ Determine if point p lies on Dirichlet boundary (fixed constraint).
-        Default implementation: needs to be customized based on mesh topology.
-
-        Parameters:
-            p: Coordinate points.
-
-        Returns:
-            Boolean array indicating Dirichlet boundary points.
-        """
-        all_nodes = self.mesh.entity('node')
-        result = bm.zeros(p.shape[0], dtype=bool)
+    def is_displacement_boundary(self, p):
+        """Determine if the given points lie on a Dirichlet boundary.
         
-        # For each point in p, check if it's close to any Dirichlet boundary node
-        tol = 1e-6
-        for i, point in enumerate(p):
-            for node_idx in self.dirichlet_nodes:
-                if bm.linalg.norm(point - all_nodes[node_idx]) < tol:
-                    result[i] = True
-                    break
-        return result
+        Parameters:
+            p: Coordinates of points, shape (N, GD), where N is the number of points,
+                and GD represents the coordinate dimension (usually 3).
+    
+        Returns:
+            A boolean array indicating whether each point lies on the Dirichlet boundary.
+        """
+        # p: (N, GD)
+        # dirichlet_node_coords: (Nd, GD)
+        diff = p[:, None, :] - self.dirichlet_node_coords[None, :, :]
+        dist = bm.linalg.norm(diff, axis=-1)         # (N, Nd)
+        min_dist = bm.min(dist, axis=1)              # (N,)
+        tol = 1e-6  
+        return min_dist < tol

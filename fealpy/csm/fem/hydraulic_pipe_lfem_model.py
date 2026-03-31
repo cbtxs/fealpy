@@ -106,12 +106,14 @@ class HydraulicPipeLFEMModel(ComputationalModel):
     
     def apply_bc(self, A, F):
         if hasattr(self.pde, 'displacement_bc'):
-            A, F = DirichletBC(
-                    self.space,
-                    gd=self.pde.displacement_bc,
-                    threshold=self.pde.is_displacement_boundary).apply(A, F)
-        else:
-            pass
+            bc = DirichletBC(
+                self.space,
+                gd=self.pde.displacement_bc,
+                threshold=self.pde.is_displacement_boundary,
+                method='interp'
+            )
+            # print("num Dirichlet DOFs:", len(bc.boundary_dof_index))
+            A, F = bc.apply(A, F)
         return A, F
 
     def solve(self, A, F):
