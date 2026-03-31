@@ -52,8 +52,8 @@ bm.set_backend(options['backend'])
 from fealpy.csm.fem.hydraulic_pipe_lfem_model import  HydraulicPipeLFEMModel
 model = HydraulicPipeLFEMModel(options)
 
-# A, F = model.linear_system()
-# A1, F1 = model.apply_bc(A, F)
-# uh = model.solve(A1, F1)
-# model.show(uh)
+A, F = model.linear_system()
+A1, F1 = model.apply_bc(A, F)
+uh = model.solve(A1, F1)
+model.show(uh)
 print("-----------------------------")

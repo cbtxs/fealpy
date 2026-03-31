@@ -51,8 +51,7 @@ class HydraulicPipeLFEMModel(ComputationalModel):
             self.pde = pde
     
         # self.logger.info(self.pde.__str__())
-        self.logger.info(self.pde.get_dirichlet_nodes())
-       
+    
     def set_mesh(self, mesh: Mesh) -> None:
         """Set the mesh.
 
@@ -85,7 +84,7 @@ class HydraulicPipeLFEMModel(ComputationalModel):
                                     elastic_modulus=self.E,
                                     poisson_ratio=self.nu,
                                     density = self.rho)
-        self.logger.info(self.material)
+        #self.logger.info(self.material)
     
     def linear_system(self):
         self.uh = self.space.function()

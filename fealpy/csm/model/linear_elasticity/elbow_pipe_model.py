@@ -4,6 +4,7 @@ from fealpy.decorator import cartesian
 from fealpy.backend import backend_manager as bm
 from fealpy.mesher import ElbowPipeMesher
 
+import numpy as np
 
 class ElbowPipeModel:
     def __init__(self, params: Optional[Dict[str, Any]] = None):
