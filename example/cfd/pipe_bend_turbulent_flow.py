@@ -29,25 +29,25 @@ options = {
     'tol': 1e-10
 }
 
-# params = {
-#     "D": 1.0,                     # 管道内径 1.0 m (对应半径 0.5 m)
-#     "bend_angle": 90.0,           # 90度弯曲
-#     "R_bend_inner": 2.8,          # 使得中心曲率半径 Rc = (2.3 + 0.5) * D = 2.8D
-#     "L_in_ratio": 10.0,           # 上游直管段 10m / 1m = 10.0
-#     "L_out_ratio": 15.0,          # 下游直管段 15m / 1m = 15.0
-#     "wall_thickness": 0.05,       # 报告未给定，基于1m管径假定一个合理值 (如 50mm)
-#     "mesh_size_global": 0.3,     # 使用默认网格大小策略
-#     "mesh_size_bend": 0.3,
-#     "mesh_size_interface": 0.3,
-# }
-# mesher = ElbowPipeMesher(params)
-# mesh = mesher.init_mesh()
-# mesh.to_vtk("pipe_bend_mesh.vtk")
+params = {
+    "D": 1.0,                     # 管道内径 1.0 m (对应半径 0.5 m)
+    "bend_angle": 90.0,           # 90度弯曲
+    "R_bend_inner": 2.3,          # 使得中心曲率半径 Rc = (2.3 + 0.5) * D = 2.8D
+    "L_in_ratio": 10.0,           # 上游直管段 10m / 1m = 10.0
+    "L_out_ratio": 15.0,          # 下游直管段 15m / 1m = 15.0
+    "wall_thickness": 0.05,       # 报告未给定，基于1m管径假定一个合理值 (如 50mm)
+    "mesh_size_global": 0.3,     # 使用默认网格大小策略
+    "mesh_size_bend": 0.3,
+    "mesh_size_interface": 0.3,
+}
+mesher = ElbowPipeMesher(params)
+mesh = mesher.init_mesh()
+mesh.to_vtk("pipe_bend_mesh.vtu")
 
-geom = PipeGeometry()
-geom.build()
-mesher = PipeMesh(geom, mesh_size=0.3)
-mesh = mesher.generate_mesh()
+# geom = PipeGeometry()
+# geom.build()
+# mesher = PipeMesh(geom, mesh_size=0.3)
+# mesh = mesher.generate_mesh()
 
 # 网格可视化
 # fig = plt.figure()
@@ -66,7 +66,7 @@ u1 = fem.uspace.function()
 p0 = fem.pspace.function()
 p1 = fem.pspace.function()
 
-for i in range(1000):
+for i in range(100):
     BForm = fem.BForm()
     LForm = fem.LForm()
     fem.update(u0=u0)
@@ -75,11 +75,11 @@ for i in range(1000):
     A, b = fem.apply_bc(A, b, pde)
     if equation.pressure_neumann == True:
         A, b = fem.lagrange_multiplier(A, b)
-    x = gmres(A, b)
+    x = spsolve(A, b)
 
     ugdof = fem.uspace.number_of_global_dofs()
     
-    u1[:], info = x[:ugdof]
+    u1[:] = x[:ugdof]
     if equation.pressure_neumann == True:
         p1[:] = x[ugdof:-1]
     else:

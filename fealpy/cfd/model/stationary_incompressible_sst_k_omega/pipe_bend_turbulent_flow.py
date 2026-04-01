@@ -24,21 +24,21 @@ class PipeBendTurbulentFlow():
         z = p[..., 2]
         
         # 情况1: 上游直管
-        d_up = 0.5 - bm.minimum(bm.sqrt(x**2 + y**2), 0.5)
+        d_up = 0.5 - bm.minimum(bm.sqrt(y**2 + z**2), 0.5)
         
         # 情况2: 下游直管
-        d_down = 0.5 - bm.minimum(bm.sqrt(y**2 + (z - R)**2), 0.5)
+        d_down = 0.5 - bm.minimum(bm.sqrt(z**2 + (x - R)**2), 0.5)
         
         # 情况3: 弯管段
-        dist_to_wall_xz = bm.sqrt((x - R)**2 + z**2)
-        dist_to_arc_xz = bm.abs(dist_to_wall_xz - R)
-        d_bend = 0.5 - bm.minimum(bm.sqrt(dist_to_arc_xz**2 + y**2), 0.5)
+        dist_to_wall_yx = bm.sqrt((y - R)**2 + x**2)
+        dist_to_arc_yx = bm.abs(dist_to_wall_yx - R)
+        d_bend = 0.5 - bm.minimum(bm.sqrt(dist_to_arc_yx**2 + z**2), 0.5)
         
-        # 根据x坐标选择合适的距离
-        d_tail = bm.where(x >= R, d_down, d_bend)
+        # 根据y坐标选择合适的距离
+        d_tail = bm.where(y >= R, d_down, d_bend)
 
-        # 根据z坐标选择合适的距离
-        d = bm.where(z <= 0, d_up, d_tail)
+        # 根据x坐标选择合适的距离
+        d = bm.where(x <= 0, d_up, d_tail)
 
         return d
     
@@ -78,7 +78,7 @@ class PipeBendTurbulentFlow():
         y = p[..., 1]
         z = p[..., 2]
         atol = 1e-12
-        on_boundary = (bm.abs(z + 10) < atol)
+        on_boundary = (bm.abs(x + 10) < atol)
         return on_boundary
     
     @cartesian
@@ -87,7 +87,7 @@ class PipeBendTurbulentFlow():
         y = p[..., 1]
         z = p[..., 2]
         atol = 1e-12
-        on_boundary = (bm.abs(x - 17.8) < atol)
+        on_boundary = (bm.abs(y - 17.8) < atol)
         return on_boundary
     
     @cartesian
@@ -111,9 +111,9 @@ class PipeBendTurbulentFlow():
         R = 0.5
         d = self.distance_t0_wallline(p)
         u = bm.zeros(p.shape)
-        u[..., 0] = 0.0
+        u[..., 0] = 1.224*(1.0 - (0.5 - d)/R)**(1/7)
         u[..., 1] = 0.0
-        u[..., 2] = 1.224*(1.0 - (0.5 - d)/R)**(1/7)
+        u[..., 2] = 0.0
         return u
     
     @cartesian
@@ -124,8 +124,8 @@ class PipeBendTurbulentFlow():
         R = 0.5
         d = self.distance_t0_wallline(p)
         u = bm.zeros(p.shape)
-        u[..., 0] = 1.224*(1.0 - (0.5-d)/R)**(1/7)
-        u[..., 1] = 0.0
+        u[..., 0] = 0.0
+        u[..., 1] = 1.224*(1.0 - (0.5-d)/R)**(1/7)
         u[..., 2] = 0.0
         return u
     
@@ -147,15 +147,15 @@ class PipeBendTurbulentFlow():
     
     @cartesian
     def is_velocity_boundary(self, p: TensorLike) -> TensorLike:
-        # return self.is_inlet_boundary(p) | self.is_wall_boundary(p)
-        return None
+        return self.is_inlet_boundary(p) | self.is_wall_boundary(p)
+        # return None
     
     @cartesian
     def is_pressure_boundary(self, p: TensorLike = None) -> TensorLike:
-        # if p is None:
-        #     return 1
-        # return self.is_outlet_boundary(p)
-        return 0
+        if p is None:
+            return 1
+        return self.is_outlet_boundary(p)
+        # return 0
     
     @cartesian
     def velocity_dirichlet(self, p: TensorLike) -> TensorLike:
@@ -169,7 +169,7 @@ class PipeBendTurbulentFlow():
 
         result[is_inlet] = inlet[is_inlet]
         result[is_wall] = wall[is_wall]
-        result[is_outlet] = outlet[is_outlet]
+        # result[is_outlet] = outlet[is_outlet]
         return result
     
     @cartesian
