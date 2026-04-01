@@ -36,19 +36,62 @@ params = {
     "L_in_ratio": 10.0,           # 上游直管段 10m / 1m = 10.0
     "L_out_ratio": 15.0,          # 下游直管段 15m / 1m = 15.0
     "wall_thickness": 0.05,       # 报告未给定，基于1m管径假定一个合理值 (如 50mm)
-    "mesh_size_global": 0.3,     # 使用默认网格大小策略
-    "mesh_size_bend": 0.3,
-    "mesh_size_interface": 0.3,
+    "mesh_size_global": 0.25,     # 使用默认网格大小策略
+    "mesh_size_bend": 0.25,
+    "mesh_size_interface": 0.25,
 }
 mesher = ElbowPipeMesher(params)
-mesh = mesher.init_mesh()
-mesh.to_vtk("pipe_bend_mesh.vtu")
+tetra_mesh = mesher.init_mesh()
+tetra_mesh.to_vtk("pipe_bend_mesh.vtu")
+region_tags = tetra_mesh.celldata["region"]
+fluid_cell_indices = bm.where(region_tags == 1)[0]
+
+def extract_fluid_mesh(full_mesh):
+    """
+    从完整的 FSI 网格中安全地提取纯流体网格，并清理冗余节点。
+    """
+    # 1. 获取全局节点和单元
+    old_nodes = full_mesh.entity('node')
+    old_cells = full_mesh.entity('cell')
+    
+    # 2. 获取单元的物理组标签 (假设存在 celldata 中，FEALPy 通常将其存为 'physical' 或类似键名)
+    cell_tags = full_mesh.celldata['region'] 
+    
+    # 3. 找到所有属于流体的单元的布尔索引
+    is_fluid_cell = (cell_tags == 1)
+    
+    # 4. 提取流体单元（此时单元内部的节点编号仍然是基于旧的全局 old_nodes 的索引）
+    fluid_cells_old_idx = old_cells[is_fluid_cell]
+    
+    # 5. 剔除悬空节点，并重新映射节点编号
+    unique_nodes, new_cell_nodes = bm.unique(fluid_cells_old_idx, return_inverse=True)
+    
+    # 6. 生成崭新且干净的流体节点坐标矩阵
+    fluid_nodes = old_nodes[unique_nodes]
+    
+    # 7. 将扁平化的新节点索引重新 reshape 为 (N_cells, 4) 的四面体连接矩阵
+    fluid_cells = new_cell_nodes.reshape(fluid_cells_old_idx.shape)
+    
+    # 8. 构建并返回全新的干净流体网格
+    fluid_mesh = TetrahedronMesh(fluid_nodes, fluid_cells)
+    
+    return fluid_mesh
+
+mesh = extract_fluid_mesh(tetra_mesh)
+
 
 # geom = PipeGeometry()
 # geom.build()
-# mesher = PipeMesh(geom, mesh_size=0.3)
-# mesh = mesher.generate_mesh()
 
+# mesher = PipeMesh(
+#         geom, 
+#         mesh_size=0.3,
+#         bl_enable=True,        
+#         bl_size=0.02,         # 贴壁处网格细分到 0.02
+#         bl_thickness=0.15     # 离壁面 0.15 距离后，网格大小恢复到 0.3
+#     )
+# mesh = mesher.generate_mesh()
+# mesh.to_vtk("bend_pipe_90.vtu")
 # 网格可视化
 # fig = plt.figure()
 # axes = fig.add_subplot(111, projection='3d')
@@ -99,15 +142,8 @@ for i in range(100):
 
     u0[:] = u1[:]
     p0[:] = p1[:]
-
-
-
-
-
-
-
-
-
+    # u0[:] = 0.5 * u1[:] + 0.5 * u0[:]
+    # p0[:] = 0.5 * p1[:] + 0.5 * p0[:]
 
 
 

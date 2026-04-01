@@ -12,52 +12,36 @@ class PipeGeometry:
         self.L_down = 15.0  # 下游直管段长度 15m
         
         self.volume_tag = None
+        self.wall_tags = [] # 保存壁面的 tags 供边界层使用
 
     def build(self):
-        """原生构建 Z 轴入口的 90 度弯管几何模型 (中心线扫掠法)"""
+        """构建 90 度弯管几何模型 (中心线扫掠法)"""
         gmsh.initialize()
-        gmsh.model.add("Benchmark_90_Degree_Bend_Native_Z")
+        gmsh.model.add("Benchmark_90_Degree_Bend_Native_X")
 
         # ==========================================
         # 1. 构建中心线轨迹 (Wire)
         # ==========================================
-        # 入口起点：位于 Z 轴负方向，向原点流动
-        p1 = gmsh.model.occ.addPoint(0, 0, -self.L_up)
-        # 弯管起点：原点
+        p1 = gmsh.model.occ.addPoint(-self.L_up, 0, 0)
         p2 = gmsh.model.occ.addPoint(0, 0, 0)
-        # 弯管圆心：向 X 轴正向偏移 Rc
-        p_center = gmsh.model.occ.addPoint(self.Rc, 0, 0)
-        # 弯管终点：转 90 度后切向变为 X 轴
-        p3 = gmsh.model.occ.addPoint(self.Rc, 0, self.Rc)
-        # 出口终点：沿 X 轴正向延伸 L_down
-        p4 = gmsh.model.occ.addPoint(self.Rc + self.L_down, 0, self.Rc)
+        p_center = gmsh.model.occ.addPoint(0, self.Rc, 0)
+        p3 = gmsh.model.occ.addPoint(self.Rc, self.Rc, 0)
+        p4 = gmsh.model.occ.addPoint(self.Rc, self.Rc + self.L_down, 0)
 
-        # 连成线段与圆弧
-        l1 = gmsh.model.occ.addLine(p1, p2)                     # 入口直段 (沿 Z 轴)
-        arc = gmsh.model.occ.addCircleArc(p2, p_center, p3)     # 90 度弯管弧
-        l2 = gmsh.model.occ.addLine(p3, p4)                     # 出口直段 (沿 X 轴)
+        l1 = gmsh.model.occ.addLine(p1, p2)                     
+        arc = gmsh.model.occ.addCircleArc(p2, p_center, p3)     
+        l2 = gmsh.model.occ.addLine(p3, p4)                     
 
-        # 将线段和圆弧组合成一条平滑的迹线 (Wire)
         wire = gmsh.model.occ.addWire([l1, arc, l2])
 
         # ==========================================
         # 2. 构建截面并扫掠成体 (Pipe)
         # ==========================================
-        # 在入口端 (0, 0, -L_up) 创建一个圆面。
-        # 默认情况下 addDisk 在 XY 平面上，法线方向刚好是 Z 轴。
-        disk = gmsh.model.occ.addDisk(0, 0, -self.L_up, self.R, self.R)
-
-        # 沿中心迹线扫掠生成 3D 管道实体
-        # addPipe 返回的是生成的实体列表，格式为 [(dim, tag)]
+        disk = gmsh.model.occ.addDisk(-self.L_up, 0, 0, self.R, self.R, zAxis=[1, 0, 0])
         pipe = gmsh.model.occ.addPipe([(2, disk)], wire)
         
         gmsh.model.occ.synchronize()
-        # gmsh.fltk.run()
-        
-        # 提取生成的 3D 体标签
         self.volume_tag = pipe[0][1]
-        
-        # 进行边界判断和命名
         self.classify_boundaries()
 
     def classify_boundaries(self):
@@ -69,78 +53,115 @@ class PipeGeometry:
         wall_tags = []
 
         for dim, tag in surfaces:
-            # 获取每个面的质心坐标
             com = gmsh.model.occ.getCenterOfMass(dim, tag)
             
-            # 判断逻辑：
-            # 入口面质心的 Z 坐标位于 -L_up 处
-            if abs(com[2] - (-self.L_up)) < 1e-3:
+            if abs(com[0] - (-self.L_up)) < 1e-3:
                 inlet_tags.append(tag)
-            # 出口面质心的 X 坐标位于 Rc + L_down 处
-            elif abs(com[0] - (self.Rc + self.L_down)) < 1e-3:
+            elif abs(com[1] - (self.Rc + self.L_down)) < 1e-3:
                 outlet_tags.append(tag)
-            # 剩余的柱面/环面均判定为管壁
             else:
                 wall_tags.append(tag)
 
-        # 添加 Physical Groups 供 CFD 读取
         gmsh.model.addPhysicalGroup(2, inlet_tags, name="Inlet")
         gmsh.model.addPhysicalGroup(2, outlet_tags, name="Outlet")
         gmsh.model.addPhysicalGroup(2, wall_tags, name="Wall")
-        
-        # 添加流体域
         gmsh.model.addPhysicalGroup(3, [self.volume_tag], name="FluidDomain")
-        print("几何构建（原生Z轴扫掠）与边界划分完成！")
+        
+        # 将 wall_tags 存入实例变量
+        self.wall_tags = wall_tags
+        print("几何构建与边界划分完成！")
 
 
 class PipeMesh:
-    def __init__(self, geometry: PipeGeometry, mesh_size=0.4):
+    def __init__(self, geometry: PipeGeometry, mesh_size=0.4, 
+                 bl_enable=True, bl_size=0.02, bl_thickness=0.15):
         self.geom = geometry
         self.mesh_size = mesh_size
+        
+        # 边界层参数接口
+        self.bl_enable = bl_enable
+        self.bl_size = bl_size           # 边界层首层/最小网格高度
+        self.bl_thickness = bl_thickness # 过渡到内部最大网格的边界距离
 
     def generate_mesh(self):
-        """基于传入的几何对象生成四面体网格"""
         if self.geom.volume_tag is None:
             raise ValueError("几何未构建！请先调用 geometry.build()")
 
-        print(f"开始生成 3D 四面体网格，全局最大尺寸设定为: {self.mesh_size} ...")
-        # 设置全局网格尺寸
-        gmsh.option.setNumber("Mesh.MeshSizeMax", self.mesh_size)
-        gmsh.option.setNumber("Mesh.MeshSizeMin", self.mesh_size / 5.0)
+        print(f"开始生成 3D 网格，全局最大尺寸设定为: {self.mesh_size} ...")
         
-        # 优化网格质量（针对 3D 流体网格）
-        gmsh.option.setNumber("Mesh.Algorithm3D", 10) # 采用 HXT 算法
-        
-        # 生成 3D 网格
+        # ==========================================
+        # 使用 Distance + Threshold 配置纯四面体边界层
+        # ==========================================
+        if self.bl_enable and hasattr(self.geom, 'wall_tags') and len(self.geom.wall_tags) > 0:
+            print(f"应用四面体贴体边界层: 最细尺寸 {self.bl_size}, 过渡距离 {self.bl_thickness} ...")
+            
+            # 1. 距离场：计算每个点到壁面 (wall_tags) 的最短距离
+            dist_id = 1
+            gmsh.model.mesh.field.add("Distance", dist_id)
+            gmsh.model.mesh.field.setNumbers(dist_id, "SurfacesList", self.geom.wall_tags)
+            
+            # 2. 阈值场：根据距离场的值映射网格尺寸
+            thresh_id = 2
+            gmsh.model.mesh.field.add("Threshold", thresh_id)
+            gmsh.model.mesh.field.setNumber(thresh_id, "IField", dist_id)
+            
+            # 距壁面近处的最小网格尺寸 (bl_size)
+            gmsh.model.mesh.field.setNumber(thresh_id, "LcMin", self.bl_size)
+            # 距壁面远处的全局最大网格尺寸 (mesh_size)
+            gmsh.model.mesh.field.setNumber(thresh_id, "LcMax", self.mesh_size)
+            
+            # 距离壁面多远时开始逐步增大尺寸
+            gmsh.model.mesh.field.setNumber(thresh_id, "DistMin", self.bl_size)
+            # 距离壁面多远时网格尺寸达到 LcMax 并停止增长
+            gmsh.model.mesh.field.setNumber(thresh_id, "DistMax", self.bl_thickness)
+            
+            # 3. 将其设置为全局背景网格尺寸场
+            gmsh.model.mesh.field.setAsBackgroundMesh(thresh_id)
+            
+            # 禁用默认的曲率和延伸散布逻辑，强制采用我们的阈值场
+            gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
+            gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
+            gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
+            gmsh.option.setNumber("Mesh.Algorithm3D", 10) # 采用 HXT 优化算法
+        else:
+            gmsh.option.setNumber("Mesh.MeshSizeMax", self.mesh_size)
+            gmsh.option.setNumber("Mesh.MeshSizeMin", self.mesh_size / 5.0)
+
+        # 生成 3D 四面体网格
         gmsh.model.mesh.generate(3)
         print("网格生成完毕！")
+        
+        # ==========================================
+        # 提取网格供 fealpy 使用
+        # ==========================================
         nodeTags, nodeCoords, _ = gmsh.model.mesh.getNodes()
-        
-        # 将一维坐标数组 reshape 成 (N, 3) 的矩阵
         nodes = np.array(nodeCoords).reshape(-1, 3)
-        
-        # ★ 关键步骤：建立 nodeTag 到 numpy 数组索引 (0, 1, 2...) 的映射
-        # 因为 Python 数组是从 0 开始的，而 Gmsh 的 Tag 是从 1 开始且可能跳号的
         tag_to_index = {tag: i for i, tag in enumerate(nodeTags)}
         
-        # 2. 获取所有的 3D 单元 (对于本模型，就是四面体单元)
-        # elemTypes: 单元类型的列表 (4 代表四面体 Tetrahedron)
-        # elemTags: 每个类型的单元的 Tag 列表
-        # elemNodeTags: 每个类型的单元包含的 节点Tag 展平列表
         elemTypes, elemTags, elemNodeTags = gmsh.model.mesh.getElements(dim=3)
         
-        # 我们提取 3D 单元的节点组成信息 (由于只有四面体，取索引 [0])
-        # 四面体由 4 个节点组成，所以 reshape(-1, 4)
-        cells_tags = np.array(elemNodeTags[0]).reshape(-1, 4)
-        
-        # 使用向量化操作，将包含 Gmsh Tag 的 cells 转换为包含 Numpy 0-based 索引的 cells
-        mapper = np.vectorize(lambda tag: tag_to_index[tag])
-        cells = mapper(cells_tags)
-        from fealpy.mesh import TetrahedronMesh
-        mesh = TetrahedronMesh(nodes, cells)
-        return mesh
+        tet_cells_tags = None
+        for i, eType in enumerate(elemTypes):
+            if eType == 4: # 4 代表四面体 (Tetrahedron)
+                tet_cells_tags = np.array(elemNodeTags[i]).reshape(-1, 4)
+                break
+                
+        if tet_cells_tags is not None:
+            mapper = np.vectorize(lambda tag: tag_to_index[tag])
+            cells = mapper(tet_cells_tags)
+            try:
+                from fealpy.mesh import TetrahedronMesh
+                mesh = TetrahedronMesh(nodes, cells)
+                print(f"成功为 Fealpy 提取了 {len(cells)} 个加密四面体单元。")
+                return mesh
+            except ImportError:
+                print("未检测到 fealpy 库，跳过 TetrahedronMesh 构建。")
+                return None
+        else:
+            print("警告: 无法提取网格！")
+            return None
 
-    def export_mesh(self, filename="bend_pipe_90_native_z.msh"):
+    def export_mesh(self, filename="bend_pipe_90_native_rotated.msh"):
         """导出网格文件"""
         gmsh.write(filename)
         print(f"网格已成功导出至: {filename}")
@@ -155,21 +176,19 @@ class PipeMesh:
 
 
 if __name__ == "__main__":
-    # 1. 实例化几何类并构建
     geom = PipeGeometry()
     geom.build()
 
-    # 2. 实例化网格类（传入几何对象），设定网格尺寸
-    mesher = PipeMesh(geom, mesh_size=0.3)
+    # 此处接口已修正，采用 bl_size (首层/最小尺寸) 和 bl_thickness (过渡带厚度)
+    mesher = PipeMesh(
+        geom, 
+        mesh_size=0.3,
+        bl_enable=True,        
+        bl_size=0.02,         # 贴壁处网格细分到 0.02
+        bl_thickness=0.15     # 离壁面 0.15 距离后，网格大小恢复到 0.3
+    )
     
-    # 3. 生成网格
     mesher.generate_mesh()
-    
-    # 4. 导出网格
-    mesher.export_mesh("bend_pipe_benchmark_native_z.msh")
-    
-    # 5. 可视化检查边界与网格
+    mesher.export_mesh("bend_pipe_benchmark_with_bl.msh")
     mesher.show_gui()
-    
-    # 6. 清理内存
     mesher.finalize()

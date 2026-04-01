@@ -6,7 +6,7 @@ from fealpy.typing import Index, _S
 class PipeBendTurbulentFlow():
     def __init__(self):
         self.rho = 1.0
-        self.mu = 1.0e-3
+        self.mu = 0.003
         self.beta_s = 0.09
         self.beta = 0.079
         self.a1 = 0.31
@@ -17,30 +17,39 @@ class PipeBendTurbulentFlow():
 
     @cartesian
     def distance_t0_wallline(self, p: TensorLike) -> TensorLike:
-        """计算点到中心轴的距离"""
-        R = 2.8
+        R_pipe = 0.5  # 管道半径
+        R_bend = 2.8  # 弯管曲率半径
+
         x = p[..., 0]
         y = p[..., 1]
         z = p[..., 2]
-        
-        # 情况1: 上游直管
-        d_up = 0.5 - bm.minimum(bm.sqrt(y**2 + z**2), 0.5)
-        
-        # 情况2: 下游直管
-        d_down = 0.5 - bm.minimum(bm.sqrt(z**2 + (x - R)**2), 0.5)
-        
-        # 情况3: 弯管段
-        dist_to_wall_yx = bm.sqrt((y - R)**2 + x**2)
-        dist_to_arc_yx = bm.abs(dist_to_wall_yx - R)
-        d_bend = 0.5 - bm.minimum(bm.sqrt(dist_to_arc_yx**2 + z**2), 0.5)
-        
-        # 根据y坐标选择合适的距离
-        d_tail = bm.where(y >= R, d_down, d_bend)
 
-        # 根据x坐标选择合适的距离
-        d = bm.where(x <= 0, d_up, d_tail)
+        # 1. 上游直管 (x <= 0)
+        # 轴线在 (y=0, z=0)，点到轴线距离为 sqrt(y^2 + z^2)
+        dist_to_axis_up = bm.sqrt(y**2 + z**2)
+        d_up = R_pipe - dist_to_axis_up
 
-        return d
+        # 2. 弯管段 (x > 0 且 y < R_bend)
+        # 轴线是以 (0, R_bend) 为圆心，R_bend 为半径的圆弧
+        # 在 xy 平面上，点到圆心的距离：
+        dist_to_center_xy = bm.sqrt(x**2 + (y - R_bend)**2)
+        # 点到圆弧轴线的距离（考虑 z 轴）：
+        dist_to_axis_bend = bm.sqrt((dist_to_center_xy - R_bend)**2 + z**2)
+        d_bend = R_pipe - dist_to_axis_bend
+
+        # 3. 下游直管 (y >= R_bend)
+        # 假设下游沿 y 轴延伸，轴线在 (x=R_bend, z=0)
+        # 注意：需根据你 ElbowPipeMesher 的实际生成坐标调整
+        dist_to_axis_down = bm.sqrt((x - R_bend)**2 + z**2)
+        d_down = R_pipe - dist_to_axis_down
+
+        # 4. 平滑组合 (使用逻辑判断)
+        # 修正：d 必须限制最小值为 0，防止数值越界进入壁面内部
+        d = bm.where(x <= 0, d_up, 
+                        bm.where(y >= R_bend, d_down, d_bend))
+
+        # 限制范围，确保距离在 [0, R_pipe] 之间，防止 SST 模型崩溃
+        return bm.maximum(d, 1e-15)
     
     @cartesian
     def strain_rate(self, u0, bcs, index):
@@ -147,8 +156,8 @@ class PipeBendTurbulentFlow():
     
     @cartesian
     def is_velocity_boundary(self, p: TensorLike) -> TensorLike:
-        return self.is_inlet_boundary(p) | self.is_wall_boundary(p)
-        # return None
+        # return self.is_inlet_boundary(p) | self.is_wall_boundary(p)
+        return None
     
     @cartesian
     def is_pressure_boundary(self, p: TensorLike = None) -> TensorLike:
@@ -169,7 +178,7 @@ class PipeBendTurbulentFlow():
 
         result[is_inlet] = inlet[is_inlet]
         result[is_wall] = wall[is_wall]
-        # result[is_outlet] = outlet[is_outlet]
+        result[is_outlet] = outlet[is_outlet]
         return result
     
     @cartesian
