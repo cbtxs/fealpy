@@ -24,7 +24,7 @@ class HydraulicPipeLFEMModel(ComputationalModel):
                 log_level=options['log_level'])
         
         self.set_pde(options['pde'])
-        mesh = self.pde.set_mesh()
+        mesh = self.pde.init_mesh()
         self.set_mesh(mesh)
         self.set_space_degree(options['space_degree'])
         
@@ -112,7 +112,7 @@ class HydraulicPipeLFEMModel(ComputationalModel):
                 threshold=self.pde.is_displacement_boundary,
                 method='interp'
             )
-            # print("num Dirichlet DOFs:", len(bc.boundary_dof_index))
+            print("num Dirichlet DOFs:", len(bc.boundary_dof_index))
             A, F = bc.apply(A, F)
         return A, F
 
