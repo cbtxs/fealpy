@@ -2,7 +2,7 @@
 
 ## 1. 基本信息
 
-- PR ID：[待分配]
+- PR ID：19
 - 上游 Issue ID：8
 - Issue 类型（Issue Type）：`Implementation`
   - 说明：当前字段表示上游 Issue 所承载的真实工作流节点名，不是 PR 自己的装饰性分类标签
@@ -11,8 +11,8 @@
 - 负责人：李本桢
 - 评审人：魏华祎、王鹏祥
 - 源分支：`implementation/issue-8-sst-k-omega-fem-solver`
-- 目标分支：`main`（或对应基线分支，请确认）
-- 远程 PR 链接：[待生成]
+- 目标分支：`develop`（或对应基线分支，请确认）
+- 远程 PR 链接：https://github.com/suanhaitech/fealpy/pull/19
 - 相关治理资产引用：
   - `suanhai/models/suanhai_workflow_node_classification_model.md`
   - `suanhai/models/issue/suanhai_issue_model.md`
