@@ -3,6 +3,7 @@ import fealpy.cgraph as cgraph
 WORLD_GRAPH = cgraph.WORLD_GRAPH
 
 mesher = cgraph.create("ElbowPipeMesh")
+show = cgraph.create("TO_VTK")
 
 mesher(
     D=25.0,
@@ -15,9 +16,10 @@ mesher(
     mesh_size_bend=5,
     mesh_size_interface=3.75
     )
-       
 
-WORLD_GRAPH.output(mesh=mesher().mesh)
+show(mesh=mesher().mesh, uh=None, path='C:/Users/Administrator/Desktop/新建文件夹 (2)')   
+
+WORLD_GRAPH.output(mesh=mesher().mesh, show=show().path)
 
 WORLD_GRAPH.register_error_hook(print)
 WORLD_GRAPH.execute()

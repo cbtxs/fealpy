@@ -20,7 +20,7 @@ class ElbowPipeMesh(CNodeType):
         mesh (MeshType): The mesh object created.
     """
     TITLE: str = "单弯管网格建模"
-    PATH: str = "网格.构造"
+    PATH: str = "preprocess.mesher"
     INPUT_SLOTS = [
         PortConf("D", DataType.FLOAT, 0, title="弯管内径", default= 25.0),
         PortConf("bend_angle", DataType.FLOAT, 1, title="弯角（度）", default=90.0),
