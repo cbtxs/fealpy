@@ -36,12 +36,13 @@ params = {
     "L_in_ratio": 10.0,           # 上游直管段 10m / 1m = 10.0
     "L_out_ratio": 15.0,          # 下游直管段 15m / 1m = 15.0
     "wall_thickness": 0.05,       # 报告未给定，基于1m管径假定一个合理值 (如 50mm)
-    "mesh_size_global": 0.25,     # 使用默认网格大小策略
-    "mesh_size_bend": 0.25,
-    "mesh_size_interface": 0.25,
+    "mesh_size_global": 0.3,     # 使用默认网格大小策略
+    "mesh_size_bend": 0.3,
+    "mesh_size_interface": 0.3,
 }
 mesher = ElbowPipeMesher(params)
 tetra_mesh = mesher.init_mesh()
+print("tetra_node", tetra_mesh.number_of_nodes())
 tetra_mesh.to_vtk("pipe_bend_mesh.vtu")
 region_tags = tetra_mesh.celldata["region"]
 fluid_cell_indices = bm.where(region_tags == 1)[0]
@@ -78,6 +79,7 @@ def extract_fluid_mesh(full_mesh):
     return fluid_mesh
 
 mesh = extract_fluid_mesh(tetra_mesh)
+print("fluid_node", mesh.number_of_nodes())
 
 pde = PipeBendTurbulentFlow()
 
@@ -90,7 +92,7 @@ u1 = fem.uspace.function()
 p0 = fem.pspace.function()
 p1 = fem.pspace.function()
 
-for i in range(100):
+for i in range(1):
     BForm = fem.BForm()
     LForm = fem.LForm()
     fem.update(u0=u0)
@@ -125,4 +127,25 @@ for i in range(100):
     p0[:] = p1[:]
     # u0[:] = 0.5 * u1[:] + 0.5 * u0[:]
     # p0[:] = 0.5 * p1[:] + 0.5 * p0[:]
+
+
+from fealpy.mesh import TriangleMesh
+from fealpy.functionspace import LagrangeFESpace
+mesh_dict = mesher.mesh_data()
+node_id, cell_flat = bm.unique(mesh_dict["interface_tri"], return_inverse=True)
+node = mesh_dict["node"][node_id]
+cell = cell_flat.reshape(-1, 3)
+tri_interface = TriangleMesh(node, cell)
+index_wall = bm.unique(mesh_dict["interface_tri"])
+# tri_interface.node = mesh_dict['node'][index_wall]
+
+is_wall = pde.is_wall_boundary(mesh.entity('node'))
+p = p1[is_wall]
+pressurespace = LagrangeFESpace(mesh=tri_interface, p=1)
+pressure = pressurespace.function()
+pressure[:] = p
+tri_interface.nodedata["pressure"] = pressure
+tri_interface.to_vtk("pressure.vtu")
+
+
 
