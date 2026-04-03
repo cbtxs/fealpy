@@ -96,13 +96,10 @@ class HydraulicPipeLFEMModel(ComputationalModel):
         bform.add_integrator(LEI)
 
         lform = LinearForm(self.space)
-        SI = VectorSourceIntegrator(self.pde.body_force)
-        lform.add_integrator(SI)
+        self.SI = VectorSourceIntegrator(q=self.p+3)
+        lform.add_integrator(self.SI)
 
-        A = bform.assembly()
-        F = lform.assembly()
-
-        return A, F
+        return bform, lform
     
     def apply_bc(self, A, F):
         if hasattr(self.pde, 'displacement_bc'):
