@@ -92,7 +92,7 @@ u1 = fem.uspace.function()
 p0 = fem.pspace.function()
 p1 = fem.pspace.function()
 
-for i in range(1):
+for i in range(100):
     BForm = fem.BForm()
     LForm = fem.LForm()
     fem.update(u0=u0)
@@ -166,8 +166,6 @@ press[:] = (pressure[:, None] * nv).T.reshape(-1)
 
 bcs = bm.array([[1/3, 1/3, 1/3]])
 tri_interface.nodedata["press"] = press.reshape(3, -1).T
-
-tri_interface.nodedata["pressure"] = pressure
 tri_interface.to_vtk("pressure.vtu")
 
 from fealpy.csm.model.linear_elasticity.elbow_pipe_model import ElbowPipeModel
@@ -175,7 +173,6 @@ from fealpy.decorator import cartesian, barycentric
 
 solid_pde = ElbowPipeModel(params=params)
 solid_mesh = solid_pde.init_mesh()
-
 
 @cartesian
 def distance_t0_wallline(p):
@@ -225,17 +222,12 @@ space = LagrangeFESpace(mesh=solid_mesh, p=1)
 gdof = space.number_of_global_dofs()
 solid_pspace = TensorFunctionSpace(space, (3, -1))
 solid_p = solid_pspace.function()
-solid_p[-gdof:][is_inwall] = pressure[:]
-
-
-# s_p = solid_p[:].reshape(3, -1)
-# s_p[..., is_inwall] = press.reshape(3, -1)
-# solid_p[:] = s_p.reshape(-1)
+solid_p[:gdof][is_inwall] = press.reshape(3, -1)[0]
+solid_p[gdof : 2*gdof][is_inwall] = press.reshape(3, -1)[1]
+solid_p[-gdof : ][is_inwall] = press.reshape(3, -1)[2]
 solid_mesh.nodedata["ph"] = solid_p.reshape(3, -1).T
 solid_mesh.to_vtk("solidpressure.vtu")
 
-
-exit()
 @barycentric
 def SI_source(bcs, index):
     result = solid_p(bcs, index)

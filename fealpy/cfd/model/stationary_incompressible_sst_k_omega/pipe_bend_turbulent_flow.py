@@ -156,15 +156,15 @@ class PipeBendTurbulentFlow():
     
     @cartesian
     def is_velocity_boundary(self, p: TensorLike) -> TensorLike:
-        # return self.is_inlet_boundary(p) | self.is_wall_boundary(p)
-        return None
+        return self.is_inlet_boundary(p) | self.is_wall_boundary(p)
+        # return None
     
     @cartesian
     def is_pressure_boundary(self, p: TensorLike = None) -> TensorLike:
-        if p is None:
-            return 1
-        return self.is_outlet_boundary(p)
-        # return 0
+        # if p is None:
+        #     return 1
+        # return self.is_outlet_boundary(p)
+        return 0
     
     @cartesian
     def velocity_dirichlet(self, p: TensorLike) -> TensorLike:
