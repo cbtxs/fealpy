@@ -130,7 +130,7 @@ for i in range(1):
 
 
 from fealpy.mesh import TriangleMesh
-from fealpy.functionspace import LagrangeFESpace
+from fealpy.functionspace import LagrangeFESpace, TensorFunctionSpace
 mesh_dict = mesher.mesh_data()
 node_id, cell_flat = bm.unique(mesh_dict["interface_tri"], return_inverse=True)
 node = mesh_dict["node"][node_id]
@@ -149,3 +149,136 @@ tri_interface.to_vtk("pressure.vtu")
 
 
 
+from fealpy.csm.model.linear_elasticity.elbow_pipe_model import ElbowPipeModel
+from fealpy.decorator import cartesian, barycentric
+
+solid_pde = ElbowPipeModel(params=params)
+solid_mesh = solid_pde.init_mesh()
+
+# exit()
+
+@cartesian
+def distance_t0_wallline(p):
+    R_pipe = 0.5  # 管道半径
+    R_bend = 2.8  # 弯管曲率半径
+
+    x = p[..., 0]
+    y = p[..., 1]
+    z = p[..., 2]
+
+    # 1. 上游直管 (x <= 0)
+    # 轴线在 (y=0, z=0)，点到轴线距离为 sqrt(y^2 + z^2)
+    dist_to_axis_up = bm.sqrt(y**2 + z**2)
+    d_up = dist_to_axis_up - R_pipe
+
+    # 2. 弯管段 (x > 0 且 y < R_bend)
+    # 轴线是以 (0, R_bend) 为圆心，R_bend 为半径的圆弧
+    # 在 xy 平面上，点到圆心的距离：
+    dist_to_center_xy = bm.sqrt(x**2 + (y - R_bend)**2)
+    # 点到圆弧轴线的距离（考虑 z 轴）：
+    dist_to_axis_bend = bm.sqrt((dist_to_center_xy - R_bend)**2 + z**2)
+    d_bend = dist_to_axis_bend - R_pipe
+
+    # 3. 下游直管 (y >= R_bend)
+    # 假设下游沿 y 轴延伸，轴线在 (x=R_bend, z=0)
+    # 注意：需根据你 ElbowPipeMesher 的实际生成坐标调整
+    dist_to_axis_down = bm.sqrt((x - R_bend)**2 + z**2)
+    d_down = dist_to_axis_down - R_pipe
+
+    # 4. 平滑组合 (使用逻辑判断)
+    # 修正：d 必须限制最小值为 0，防止数值越界进入壁面内部
+    d = bm.where(x <= 0, d_up, 
+                    bm.where(y >= R_bend, d_down, d_bend))
+
+    # 限制范围，确保距离在 [0, R_pipe] 之间，防止 SST 模型崩溃
+    return bm.maximum(d, 1e-15)
+
+@cartesian
+def is_inwall_boundary(p):
+    d = distance_t0_wallline(p)
+    atol = 1e-12
+    on_boundary = (bm.abs(d)<atol)
+    return on_boundary
+
+is_inwall = is_inwall_boundary(solid_mesh.node)
+space = LagrangeFESpace(mesh=solid_mesh, p=1)
+gdof = space.number_of_global_dofs()
+solid_pspace = TensorFunctionSpace(space, (3, -1))
+solid_p = solid_pspace.function()
+solid_p[:gdof][is_inwall] = pressure[:]
+solid_mesh.nodedata["ph"] = solid_p
+solid_mesh.to_vtk("solidpressure.vtu")
+
+@barycentric
+def SI_source(bcs, index):
+    result = solid_p(bcs, index)
+    return result
+
+
+
+import argparse
+
+# Argument parsing
+parser = argparse.ArgumentParser(description=
+        """
+        Finite element analysis for fluid-structure interaction (FSI) in hydraulic valve systems,
+        with linear elasticity for structural deformation in steady-state conditions.
+        """)
+
+parser.add_argument('--backend',
+        default='numpy', type=str,
+        help="Default backend is numpy")
+
+parser.add_argument('--pde',
+                    default=solid_pde, type=int,
+                    help="index of the linear elasticity  model, default is 4")
+
+parser.add_argument('--mesh_type',
+                    default='uniform_tet', type=str,
+                    help="Type of mesh, default is uniform_tet")
+
+parser.add_argument('--space_degree',
+        default=1, type=int,
+        help="Degree of Lagrange finite element space, default is 1")
+
+parser.add_argument('--E', 
+                    default=2.1e11, type=float, 
+                    help="Young's modulus (E) in GPa for the elastic material")
+
+parser.add_argument('--nu',
+                    default=0.3, type=float,
+                    help="Poisson's ratio (nu) for the elastic material, default is 0.3")
+
+parser.add_argument('--rho',
+                    default=7800, type=float,
+                    help="density for the elastic material, default is 7800")
+
+parser.add_argument('--pbar_log',
+                    default=True, type=bool,
+                    help='Whether to show progress bar, default is True')
+
+parser.add_argument('--log_level',
+                    default='INFO', type=str,
+                    help='Log level, default is INFO, options are DEBUG, INFO, WARNING, ERROR, CRITICAL')
+
+options = vars(parser.parse_args())
+
+
+from fealpy.backend import bm
+bm.set_backend(options['backend'])
+
+from fealpy.csm.fem.hydraulic_pipe_lfem_model import  HydraulicPipeLFEMModel
+model = HydraulicPipeLFEMModel(options)
+
+
+
+A, F = model.linear_system()
+model.SI.source = SI_source
+A = A.assembly()
+F = F.assembly()
+A1, F1 = model.apply_bc(A, F)
+uh = model.solve(A1, F1)
+print("max displacement:", float(bm.max(bm.abs(uh))))
+print(float(bm.linalg.norm(uh)))
+model.show(uh)
+print("-----------------------------")
