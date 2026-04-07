@@ -1,3 +1,3 @@
 from .coupling_interface import CouplingInterface
-from .coupling_fsi_algorithm import CouplingFSIAlgorithm
+from .coupling_fsi_fem_model import HydraulicPipeFSIFEMModel
 from .hydraulic_pipe_fsi_model import HydraulicPipeFSIModel

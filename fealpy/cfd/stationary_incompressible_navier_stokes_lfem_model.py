@@ -81,6 +81,7 @@ class StationaryIncompressibleNSLFEMModel(ComputationalModel):
             self.maxit = options.get('maxit', 5)
             self.maxstep = options.get('maxstep', 10)
             self.tol = options.get('tol', 1e-10)
+            self.error_com = options.get('error_com', True)
             
     def __str__(self) -> str:
         """Return a nicely formatted, multi-line summary of the computational model configuration."""
@@ -147,10 +148,11 @@ class StationaryIncompressibleNSLFEMModel(ComputationalModel):
     
     
     @variantmethod('main')
-    def run(self, maxstep=1000, tol=1e-10):
+    def run(self, maxstep=1000, tol=1e-10, error_com = True):
         self.run_str = 'main'
         maxstep = self.maxstep if self.options is not None else maxstep
         tol = self.tol if self.options is not None else tol
+        error_com = self.error_com if self.options is not None else error_com
         uh0 = self.fem.uspace.function()
         ph0 = self.fem.pspace.function()
         
@@ -164,8 +166,9 @@ class StationaryIncompressibleNSLFEMModel(ComputationalModel):
                 break 
             uh0[:] = uh1
             ph0[:] = ph1
-        uerror, perror = self.error(uh1, ph1) 
-        self.logger.info(f"Final error: uerror = {uerror}, perror = {perror}")
+        if error_com == True:
+            uerror, perror = self.error(uh1, ph1) 
+            self.logger.info(f"Final error: uerror = {uerror}, perror = {perror}")
         return uh1, ph1
     
     @run.register('one_step')

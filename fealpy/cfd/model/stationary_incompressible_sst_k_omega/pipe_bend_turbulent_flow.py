@@ -279,6 +279,9 @@ class PipeBendTurbulentFlow():
 
         F1 = bm.tanh(arg1**4)
         return F1
+    
+    def pressure_integral_target(self):
+        return 0.0
 
     
 

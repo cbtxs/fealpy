@@ -24,7 +24,10 @@ class HydraulicPipeLFEMModel(ComputationalModel):
                 log_level=options['log_level'])
         
         self.set_pde(options['pde'])
-        mesh = self.pde.init_mesh()
+        if hasattr(self.pde, 'solid_mesh'):
+            mesh = self.pde.solid_mesh
+        else:
+            mesh = self.pde.mesh
         self.set_mesh(mesh)
         self.set_space_degree(options['space_degree'])
         

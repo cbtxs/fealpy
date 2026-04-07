@@ -8,27 +8,6 @@ from fealpy.backend import backend_manager as bm
 from fealpy.mesher import ElbowPipeMesher
 from fealpy.mesh import TetrahedronMesh
 
-options = {
-    'backend': 'numpy',
-    'pde': 1,
-    'init_mesh': 'tri',
-    'box': [0.0, 2.2, 0.0, 0.41],
-    'center': (0.2, 0.2),
-    'radius': 0.05,
-    'n_circle': 1000,
-    'lc': 0.004,
-    'rho': 1.0,
-    'mu': 1e-3,
-    'method': 'Newton',
-    'solve': 'direct',
-    'apply_bc': 'cylinder',
-    'postprocess': 'res',
-    'run': 'main_cylinder',
-    'maxit': 1,
-    'maxstep': 1000,
-    'tol': 1e-10
-}
-
 params = {
     "D": 1.0,                     # 管道内径 1.0 m (对应半径 0.5 m)
     "bend_angle": 90.0,           # 90度弯曲
@@ -42,57 +21,38 @@ params = {
 }
 mesher = ElbowPipeMesher(params)
 tetra_mesh = mesher.init_mesh()
-print("tetra_node", tetra_mesh.number_of_nodes())
 tetra_mesh.to_vtk("pipe_bend_mesh.vtu")
 region_tags = tetra_mesh.celldata["region"]
 fluid_cell_indices = bm.where(region_tags == 1)[0]
 
-def extract_fluid_mesh(full_mesh):
+def fluid_mesh(full_mesh):
     """
     从完整的 FSI 网格中安全地提取纯流体网格，并清理冗余节点。
     """
-    # 1. 获取全局节点和单元
     old_nodes = full_mesh.entity('node')
     old_cells = full_mesh.entity('cell')
-    
-    # 2. 获取单元的物理组标签 (假设存在 celldata 中，FEALPy 通常将其存为 'physical' 或类似键名)
     cell_tags = full_mesh.celldata['region'] 
     
-    # 3. 找到所有属于流体的单元的布尔索引
     is_fluid_cell = (cell_tags == 1)
-    
-    # 4. 提取流体单元（此时单元内部的节点编号仍然是基于旧的全局 old_nodes 的索引）
     fluid_cells_old_idx = old_cells[is_fluid_cell]
-    
-    # 5. 剔除悬空节点，并重新映射节点编号
     unique_nodes, new_cell_nodes = bm.unique(fluid_cells_old_idx, return_inverse=True)
-    
-    # 6. 生成崭新且干净的流体节点坐标矩阵
     fluid_nodes = old_nodes[unique_nodes]
-    
-    # 7. 将扁平化的新节点索引重新 reshape 为 (N_cells, 4) 的四面体连接矩阵
     fluid_cells = new_cell_nodes.reshape(fluid_cells_old_idx.shape)
-    
-    # 8. 构建并返回全新的干净流体网格
     fluid_mesh = TetrahedronMesh(fluid_nodes, fluid_cells)
     
     return fluid_mesh
 
-mesh = extract_fluid_mesh(tetra_mesh)
-print("fluid_node", mesh.number_of_nodes())
-
+mesh = fluid_mesh(tetra_mesh)
 pde = PipeBendTurbulentFlow()
-
 equation = StationaryIncompressibleNS(pde=pde)
 fem = Ossen(equation=equation, mesh=mesh)
-# fem = Newton(equation=equation, mesh=mesh)
 
 u0 = fem.uspace.function()
 u1 = fem.uspace.function()
 p0 = fem.pspace.function()
 p1 = fem.pspace.function()
 
-for i in range(100):
+for i in range(1):
     BForm = fem.BForm()
     LForm = fem.LForm()
     fem.update(u0=u0)
@@ -136,8 +96,6 @@ node_id, cell_flat = bm.unique(mesh_dict["interface_tri"], return_inverse=True)
 node = mesh_dict["node"][node_id]
 cell = cell_flat.reshape(-1, 3)
 tri_interface = TriangleMesh(node, cell)
-index_wall = bm.unique(mesh_dict["interface_tri"])
-# tri_interface.node = mesh_dict['node'][index_wall]
 
 is_wall = pde.is_wall_boundary(mesh.entity('node'))
 p = p1[is_wall]
@@ -164,7 +122,6 @@ ws = ws / ws_sum[:, None]
 nv = ws @ nv
 press[:] = (pressure[:, None] * nv).T.reshape(-1)
 
-bcs = bm.array([[1/3, 1/3, 1/3]])
 tri_interface.nodedata["press"] = press.reshape(3, -1).T
 tri_interface.to_vtk("pressure.vtu")
 
@@ -176,38 +133,24 @@ solid_mesh = solid_pde.init_mesh()
 
 @cartesian
 def distance_t0_wallline(p):
-    R_pipe = 0.5  # 管道半径
-    R_bend = 2.8  # 弯管曲率半径
+    R_pipe = 0.5  
+    R_bend = 2.8
 
     x = p[..., 0]
     y = p[..., 1]
     z = p[..., 2]
 
-    # 1. 上游直管 (x <= 0)
-    # 轴线在 (y=0, z=0)，点到轴线距离为 sqrt(y^2 + z^2)
     dist_to_axis_up = bm.sqrt(y**2 + z**2)
     d_up = dist_to_axis_up - R_pipe
 
-    # 2. 弯管段 (x > 0 且 y < R_bend)
-    # 轴线是以 (0, R_bend) 为圆心，R_bend 为半径的圆弧
-    # 在 xy 平面上，点到圆心的距离：
     dist_to_center_xy = bm.sqrt(x**2 + (y - R_bend)**2)
-    # 点到圆弧轴线的距离（考虑 z 轴）：
     dist_to_axis_bend = bm.sqrt((dist_to_center_xy - R_bend)**2 + z**2)
     d_bend = dist_to_axis_bend - R_pipe
-
-    # 3. 下游直管 (y >= R_bend)
-    # 假设下游沿 y 轴延伸，轴线在 (x=R_bend, z=0)
-    # 注意：需根据你 ElbowPipeMesher 的实际生成坐标调整
     dist_to_axis_down = bm.sqrt((x - R_bend)**2 + z**2)
     d_down = dist_to_axis_down - R_pipe
-
-    # 4. 平滑组合 (使用逻辑判断)
-    # 修正：d 必须限制最小值为 0，防止数值越界进入壁面内部
     d = bm.where(x <= 0, d_up, 
                     bm.where(y >= R_bend, d_down, d_bend))
 
-    # 限制范围，确保距离在 [0, R_pipe] 之间，防止 SST 模型崩溃
     return bm.maximum(d, 1e-15)
 
 @cartesian
@@ -219,13 +162,9 @@ def is_inwall_boundary(p):
 
 is_inwall = is_inwall_boundary(solid_mesh.node)
 space = LagrangeFESpace(mesh=solid_mesh, p=1)
-gdof = space.number_of_global_dofs()
 solid_pspace = TensorFunctionSpace(space, (3, -1))
 solid_p = solid_pspace.function()
-solid_p[:gdof][is_inwall] = press.reshape(3, -1)[0]
-solid_p[gdof : 2*gdof][is_inwall] = press.reshape(3, -1)[1]
-solid_p[-gdof : ][is_inwall] = press.reshape(3, -1)[2]
-solid_mesh.nodedata["ph"] = solid_p.reshape(3, -1).T
+solid_p.reshape(3, -1)[:, is_inwall] = press.reshape(3, -1)
 solid_mesh.to_vtk("solidpressure.vtu")
 
 @barycentric
@@ -286,7 +225,6 @@ bm.set_backend(options['backend'])
 
 from fealpy.csm.fem.hydraulic_pipe_lfem_model import  HydraulicPipeLFEMModel
 model = HydraulicPipeLFEMModel(options)
-
 
 
 A, F = model.linear_system()
