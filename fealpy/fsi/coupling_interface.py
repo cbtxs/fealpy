@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
@@ -5,16 +7,54 @@ from fealpy.typing import TensorLike
 from fealpy.backend import backend_manager as bm
 from fealpy.mesh import TriangleMesh
 
+
 @dataclass
 class InterfaceMesh:
-    """Interface triangle geometry derived from TriangleMesh(node, interface_tri)."""
+    """Interface triangle geometry for FSI coupling.
+
+    Primary data from Gmsh-style output is ``node`` + ``face`` (``interface_tri``).
+    ``normals`` and ``areas`` are computed in :func:`build_interface_mesh`.
+    Use :attr:`iface_node_ids` for unique interface vertex indices — it is **not** a
+    separate mesher field; it is always derived from ``face``.
+    """
 
     tri: TriangleMesh
-    node: TensorLike  # (NN, GD)
-    face: TensorLike  # (NF, 3) triangle connectivity (global or local node ids)
-    iface_node_ids: TensorLike  # (NI,) unique node ids on interface
-    normals: TensorLike  # (NF, GD) unit normals
+    node: TensorLike  # (NN, GD) same coordinate array as the parent volume mesh when from Gmsh
+    face: TensorLike  # (NF, 3) triangle connectivity (global node ids into ``node``)
+    normals: TensorLike  # (NF, GD) unit face normals (from cross product of edges)
     areas: TensorLike  # (NF,) triangle areas
+
+    @property
+    def iface_node_ids(self) -> TensorLike:
+        """Sorted unique global node indices appearing in ``face`` (derived, not from Gmsh)."""
+        return bm.unique(self.face.reshape(-1))
+
+
+def _triangle_normals_areas(node: TensorLike, face: TensorLike) -> Tuple[TensorLike, TensorLike]:
+    x0 = node[face[:, 0]]
+    x1 = node[face[:, 1]]
+    x2 = node[face[:, 2]]
+    e1 = x1 - x0
+    e2 = x2 - x0
+    cr = bm.cross(e1, e2)
+    norm_cr = bm.sqrt(bm.sum(cr * cr, axis=1))
+    areas = 0.5 * norm_cr
+    normals = cr / (norm_cr[:, None] + 1e-30)
+    return normals, areas
+
+
+def build_interface_mesh(tri: TriangleMesh) -> InterfaceMesh:
+    """Compute normals and areas from a surface ``TriangleMesh`` (Gmsh: node + interface_tri)."""
+    node = tri.entity("node")
+    face = tri.entity("cell")
+    normals, areas = _triangle_normals_areas(node, face)
+    return InterfaceMesh(
+        tri=tri,
+        node=node,
+        face=face,
+        normals=normals,
+        areas=areas,
+    )
 
 
 def _numpy_nearest_indices(src_np: TensorLike, dst_np: TensorLike) -> TensorLike:
@@ -25,12 +65,14 @@ def _numpy_nearest_indices(src_np: TensorLike, dst_np: TensorLike) -> TensorLike
 
 
 class CouplingInterface:
-    """FSI coupling operator driven by interface triangles (e.g. elbow pipe interface_tri).
+    """FSI coupling operator driven by interface triangles.
 
     - Pressure on fluid interface -> nodal force on solid (traction -p n, lumped to vertices).
     - Solid displacement (NN_solid, GD) -> fluid interface displacement / velocity.
 
-    Pass TriangleMesh for each side; no fluid_model / solid_model required.
+    Use :meth:`from_volume_mesh` with ``node`` and ``interface_tri`` from
+    :meth:`fealpy.mesher.gmsh_fsi_pipe_mesher.BaseGmshFSIPipeMesher.extract_mesh_data`,
+    or pass two :class:`TriangleMesh` instances (``__init__``).
     """
 
     def __init__(
@@ -44,8 +86,8 @@ class CouplingInterface:
         if mapping not in ("nearest", "direct_by_coord"):
             raise ValueError('mapping must be "nearest" or "direct_by_coord"')
 
-        self.fluid = self._build_interface_mesh(fluid_interface)
-        self.solid = self._build_interface_mesh(solid_interface)
+        self.fluid = build_interface_mesh(fluid_interface)
+        self.solid = build_interface_mesh(solid_interface)
         self._s2f = self._build_node_mapping(
             src_coords=self.solid.node[self.solid.iface_node_ids],
             dst_coords=self.fluid.node[self.fluid.iface_node_ids],
@@ -54,31 +96,30 @@ class CouplingInterface:
         )
         self._solid_disp_prev: Optional[TensorLike] = None
 
-    def _build_interface_mesh(self, tri: TriangleMesh) -> InterfaceMesh:
-        node = tri.entity("node")
-        face = tri.entity("cell")
-        normals, areas = self._triangle_normals_areas(node, face)
-        iface_node_ids = bm.unique(face.reshape(-1))
-        return InterfaceMesh(
-            tri=tri,
-            node=node,
-            face=face,
-            iface_node_ids=iface_node_ids,
-            normals=normals,
-            areas=areas,
-        )
+    @classmethod
+    def from_volume_mesh(
+        cls,
+        node: TensorLike,
+        interface_tri: TensorLike,
+        *,
+        solid_interface_tri: Optional[TensorLike] = None,
+        mapping: str = "nearest",
+        coord_tol: float = 1e-10,
+    ) -> CouplingInterface:
+        """Build from volume-node array and interface triangles (Gmsh FSI convention).
 
-    def _triangle_normals_areas(self, node: TensorLike, face: TensorLike):
-        x0 = node[face[:, 0]]
-        x1 = node[face[:, 1]]
-        x2 = node[face[:, 2]]
-        e1 = x1 - x0
-        e2 = x2 - x0
-        cr = bm.cross(e1, e2)
-        norm_cr = bm.sqrt(bm.sum(cr * cr, axis=1))
-        areas = 0.5 * norm_cr
-        normals = cr / (norm_cr[:, None] + 1e-30)
-        return normals, areas
+        ``node`` and ``interface_tri`` are the ``"node"`` and ``"interface_tri"`` entries
+        returned by ``ElbowPipeMesher(...).run()`` / ``mesh_data()``.
+
+        For one conformal tet mesh, fluid and solid share the same FSI surface
+        connectivity; omit ``solid_interface_tri``. If the solid side uses a different
+        cell array (same global ``node`` ordering), pass it explicitly.
+        """
+        fluid_iface = TriangleMesh(node, interface_tri)
+        if solid_interface_tri is None:
+            return cls(fluid_iface, fluid_iface, mapping=mapping, coord_tol=coord_tol)
+        solid_iface = TriangleMesh(node, solid_interface_tri)
+        return cls(fluid_iface, solid_iface, mapping=mapping, coord_tol=coord_tol)
 
     def _build_node_mapping(
         self,
