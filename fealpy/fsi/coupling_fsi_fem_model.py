@@ -30,6 +30,9 @@ class HydraulicPipeFSIFEMModel:
             pde = self.pde
             fluid_model = StationaryIncompressibleNSLFEMModel(pde=pde, mesh=pde.fluid_mesh, options=self.options)
             u1, p1 = fluid_model.run()
+            pde.fluid_mesh.nodedata["u"] = u1.reshape(3, -1).T
+            pde.fluid_mesh.nodedata["p"] = p1
+            pde.fluid_mesh.to_vtk("fluid.vtu")
 
             # 2. 压力传递
             from .coupling_interface import CouplingInterface

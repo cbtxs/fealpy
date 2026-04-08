@@ -139,12 +139,12 @@ class HydraulicPipeFSIModel(ComputationalModel):
         z = p[..., 2]
 
         r = 0.5
-        d = self.distance_to_wallline(p)
         atol = 1e-12
-        on_boundary = (bm.abs(d) < atol)
-        # node_bc = self.interface_mesh.node
-        # d = bm.linalg.norm(p[:, None, :] - node_bc[None, :, :], axis=-1)
-        # on_boundary = bm.any(d < atol, axis=1)
+        # d = self.distance_to_wallline(p)
+        # on_boundary = (bm.abs(d) < atol)
+        node_bc = self.interface_mesh.node
+        d = bm.linalg.norm(p[:, None, :] - node_bc[None, :, :], axis=-1)
+        on_boundary = bm.any(d < atol, axis=1)
         
         return on_boundary
     
