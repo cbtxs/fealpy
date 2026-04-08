@@ -142,6 +142,10 @@ class HydraulicPipeFSIModel(ComputationalModel):
         d = self.distance_to_wallline(p)
         atol = 1e-12
         on_boundary = (bm.abs(d) < atol)
+        # node_bc = self.interface_mesh.node
+        # d = bm.linalg.norm(p[:, None, :] - node_bc[None, :, :], axis=-1)
+        # on_boundary = bm.any(d < atol, axis=1)
+        
         return on_boundary
     
     # 动量方程
@@ -189,8 +193,8 @@ class HydraulicPipeFSIModel(ComputationalModel):
     
     @cartesian
     def is_velocity_boundary(self, p: TensorLike) -> TensorLike:
-        return self.is_inlet_boundary(p) | self.is_wall_boundary(p)
-        # return None
+        # return self.is_inlet_boundary(p) | self.is_wall_boundary(p)
+        return None
     
     @cartesian
     def is_pressure_boundary(self, p: TensorLike = None) -> TensorLike:

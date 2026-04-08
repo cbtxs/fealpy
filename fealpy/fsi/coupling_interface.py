@@ -5,7 +5,6 @@ from typing import Optional, Tuple
 
 from fealpy.typing import TensorLike
 from fealpy.backend import backend_manager as bm
-from fealpy.mesh import TriangleMesh
 
 
 # @dataclass
@@ -157,7 +156,7 @@ class CouplingInterface:
             计算外法向量
         '''
         pde = self.pde
-        tri_interface = pde.tri_interface
+        tri_interface = pde.interface_mesh
         node = tri_interface.node
         cell = tri_interface.cell
         v0 = node[cell[:, 1], :] - node[cell[:, 0], :]
@@ -184,30 +183,14 @@ class CouplingInterface:
         pde = self.pde
         is_wall = pde.is_wall_boundary(pde.fluid_mesh.entity('node'))
         p = p1[is_wall]
-        pressurespace = LagrangeFESpace(mesh=pde.tri_interface, p=1)
+        pressurespace = LagrangeFESpace(mesh=pde.interface_mesh, p=1)
         pressure = pressurespace.function()
         pressure[:] = p
 
         pressspace = TensorFunctionSpace(pressurespace, (3, -1))
         press = pressspace.function()
 
-        node = pde.tri_interface.node
-        cell = pde.tri_interface.cell
-
-        v0 = node[cell[:, 1], :] - node[cell[:, 0], :]
-        v1 = node[cell[:, 2], :] - node[cell[:, 0], :]
-        nv = bm.cross(v0, v1)
-        S = bm.sqrt(bm.sum(nv**2, axis=1))/2
-        nv = nv / bm.sqrt(bm.sum(nv**2, axis=1))[:, None]
-
-        n2c = pde.tri_interface.node_to_cell()
-        ws = bm.ones(n2c.shape)
-        ws *= S
-        ws = n2c.mul(ws)
-        ws = ws.toarray()
-        ws_sum = bm.sum(ws, axis=1)
-        ws = ws / ws_sum[:, None]
-        nv = ws @ nv
+        nv = self.interface_normal()
         press[:] = (pressure[:, None] * nv).T.reshape(-1)
 
         return press
@@ -217,7 +200,7 @@ class CouplingInterface:
         from fealpy.functionspace import LagrangeFESpace, TensorFunctionSpace
 
         @cartesian
-        def distance_t0_wallline(p):
+        def distance_to_wallline(p):
             R_pipe = 0.5  
             R_bend = 2.8
 
@@ -240,7 +223,7 @@ class CouplingInterface:
 
         @cartesian
         def is_inwall_boundary(p):
-            d = distance_t0_wallline(p)
+            d = distance_to_wallline(p)
             atol = 1e-12
             on_boundary = (bm.abs(d)<atol)
             return on_boundary

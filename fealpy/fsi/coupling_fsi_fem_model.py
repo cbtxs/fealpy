@@ -32,83 +32,88 @@ class HydraulicPipeFSIFEMModel:
             u1, p1 = fluid_model.run()
 
             # 2. 压力传递
-            mesh_dict = pde.mesher.mesh_data()
-            node_id, cell_flat = bm.unique(mesh_dict["interface_tri"], return_inverse=True)
-            node = mesh_dict["node"][node_id]
-            cell = cell_flat.reshape(-1, 3)
-            tri_interface = TriangleMesh(node, cell)
+            from .coupling_interface import CouplingInterface
+            interface = CouplingInterface(pde=pde)
+            p_interface = interface.pressure_to_interface(p1 = p1)
+            p_solid = interface.pressure_to_solid(p_interface)
+            # mesh_dict = pde.mesher.mesh_data()
+            # node_id, cell_flat = bm.unique(mesh_dict["interface_tri"], return_inverse=True)
+            # node = mesh_dict["node"][node_id]
+            # cell = cell_flat.reshape(-1, 3)
+            # tri_interface = TriangleMesh(node, cell)
 
-            is_wall = pde.is_wall_boundary(pde.fluid_mesh.entity('node'))
-            p = p1[is_wall]
-            pressurespace = LagrangeFESpace(mesh=tri_interface, p=1)
-            pressure = pressurespace.function()
-            pressure[:] = p
+            # is_wall = pde.is_wall_boundary(pde.fluid_mesh.entity('node'))
+            # p = p1[is_wall]
+            # pressurespace = LagrangeFESpace(mesh=tri_interface, p=1)
+            # pressure = pressurespace.function()
+            # pressure[:] = p
 
-            pressspace = TensorFunctionSpace(pressurespace, (3, -1))
-            press = pressspace.function()
+            # pressspace = TensorFunctionSpace(pressurespace, (3, -1))
+            # press = pressspace.function()
 
-            v0 = node[cell[:, 1], :] - node[cell[:, 0], :]
-            v1 = node[cell[:, 2], :] - node[cell[:, 0], :]
-            nv = bm.cross(v0, v1)
-            S = bm.sqrt(bm.sum(nv**2, axis=1))/2
-            nv = nv / bm.sqrt(bm.sum(nv**2, axis=1))[:, None]
+            # v0 = node[cell[:, 1], :] - node[cell[:, 0], :]
+            # v1 = node[cell[:, 2], :] - node[cell[:, 0], :]
+            # nv = bm.cross(v0, v1)
+            # S = bm.sqrt(bm.sum(nv**2, axis=1))/2
+            # nv = nv / bm.sqrt(bm.sum(nv**2, axis=1))[:, None]
 
-            n2c = tri_interface.node_to_cell()
-            ws = bm.ones(n2c.shape)
-            ws *= S
-            ws = n2c.mul(ws)
-            ws = ws.toarray()
-            ws_sum = bm.sum(ws, axis=1)
-            ws = ws / ws_sum[:, None]
-            nv = ws @ nv
-            press[:] = (pressure[:, None] * nv).T.reshape(-1)
+            # n2c = tri_interface.node_to_cell()
+            # ws = bm.ones(n2c.shape)
+            # ws *= S
+            # ws = n2c.mul(ws)
+            # ws = ws.toarray()
+            # ws_sum = bm.sum(ws, axis=1)
+            # ws = ws / ws_sum[:, None]
+            # nv = ws @ nv
+            # press[:] = (pressure[:, None] * nv).T.reshape(-1)
 
-            from fealpy.csm.fem.hydraulic_pipe_lfem_model import  HydraulicPipeLFEMModel
-            from fealpy.decorator import cartesian, barycentric
+            # from fealpy.csm.fem.hydraulic_pipe_lfem_model import  HydraulicPipeLFEMModel
+            # from fealpy.decorator import cartesian, barycentric
 
-            @cartesian
-            def distance_t0_wallline(p):
-                R_pipe = 0.5  
-                R_bend = 2.8
+            # @cartesian
+            # def distance_t0_wallline(p):
+            #     R_pipe = 0.5  
+            #     R_bend = 2.8
 
-                x = p[..., 0]
-                y = p[..., 1]
-                z = p[..., 2]
+            #     x = p[..., 0]
+            #     y = p[..., 1]
+            #     z = p[..., 2]
 
-                dist_to_axis_up = bm.sqrt(y**2 + z**2)
-                d_up = dist_to_axis_up - R_pipe
+            #     dist_to_axis_up = bm.sqrt(y**2 + z**2)
+            #     d_up = dist_to_axis_up - R_pipe
 
-                dist_to_center_xy = bm.sqrt(x**2 + (y - R_bend)**2)
-                dist_to_axis_bend = bm.sqrt((dist_to_center_xy - R_bend)**2 + z**2)
-                d_bend = dist_to_axis_bend - R_pipe
-                dist_to_axis_down = bm.sqrt((x - R_bend)**2 + z**2)
-                d_down = dist_to_axis_down - R_pipe
-                d = bm.where(x <= 0, d_up, 
-                                bm.where(y >= R_bend, d_down, d_bend))
+            #     dist_to_center_xy = bm.sqrt(x**2 + (y - R_bend)**2)
+            #     dist_to_axis_bend = bm.sqrt((dist_to_center_xy - R_bend)**2 + z**2)
+            #     d_bend = dist_to_axis_bend - R_pipe
+            #     dist_to_axis_down = bm.sqrt((x - R_bend)**2 + z**2)
+            #     d_down = dist_to_axis_down - R_pipe
+            #     d = bm.where(x <= 0, d_up, 
+            #                     bm.where(y >= R_bend, d_down, d_bend))
 
-                return bm.maximum(d, 1e-15)
+            #     return bm.maximum(d, 1e-15)
 
-            @cartesian
-            def is_inwall_boundary(p):
-                d = distance_t0_wallline(p)
-                atol = 1e-12
-                on_boundary = (bm.abs(d)<atol)
-                return on_boundary
+            # @cartesian
+            # def is_inwall_boundary(p):
+            #     d = distance_t0_wallline(p)
+            #     atol = 1e-12
+            #     on_boundary = (bm.abs(d)<atol)
+            #     return on_boundary
 
-            is_inwall = is_inwall_boundary(pde.solid_mesh.node)
-            space = LagrangeFESpace(mesh=pde.solid_mesh, p=1)
-            solid_pspace = TensorFunctionSpace(space, (3, -1))
-            solid_p = solid_pspace.function()
-            solid_p.reshape(3, -1)[:, is_inwall] = press.reshape(3, -1)
+            # is_inwall = is_inwall_boundary(pde.solid_mesh.node)
+            # space = LagrangeFESpace(mesh=pde.solid_mesh, p=1)
+            # solid_pspace = TensorFunctionSpace(space, (3, -1))
+            # solid_p = solid_pspace.function()
+            # solid_p.reshape(3, -1)[:, is_inwall] = press.reshape(3, -1)
 
             # 3. 求解固体方程，计算位移
-            
+            from fealpy.csm.fem.hydraulic_pipe_lfem_model import  HydraulicPipeLFEMModel
+            from fealpy.decorator import cartesian, barycentric
             model = HydraulicPipeLFEMModel(self.options)
             model.set_pde(pde)
             A, F = model.linear_system()
             @barycentric
             def SI_source(bcs, index):
-                result = solid_p(bcs, index)
+                result = p_solid(bcs, index)
                 return result
             model.SI.source = SI_source
             A = A.assembly()
@@ -120,6 +125,8 @@ class HydraulicPipeFSIFEMModel:
             model.show(uh)
             print("-----------------------------")
 
+
+            exit()
             # 4. 检查收敛性（可以使用位移变化、压力变化等作为标准）
             if self.check_convergence(pressure, uh):
                 print(f"Converged at iteration {iteration + 1}")
