@@ -47,7 +47,7 @@ class CouplingInterface:
         nv = ws @ nv
         return nv
 
-    def pressure_to_interface(self, p1: TensorLike) -> TensorLike:
+    def pressure_on_interface(self, p1: TensorLike) -> TensorLike:
         from fealpy.functionspace import LagrangeFESpace, TensorFunctionSpace
         pde = self.pde
         is_wall = pde.is_wall_boundary(pde.fluid_mesh.entity('node'))
@@ -64,8 +64,7 @@ class CouplingInterface:
 
         return press
     
-    def pressure_to_solid(self, press: TensorLike) -> TensorLike:
-        from fealpy.decorator import cartesian
+    def pressure_on_solid(self, press: TensorLike) -> TensorLike:
         from fealpy.functionspace import LagrangeFESpace, TensorFunctionSpace
 
         pde = self.pde
@@ -76,6 +75,23 @@ class CouplingInterface:
         solid_p.reshape(3, -1)[:, is_inwall] = press.reshape(3, -1)
 
         return solid_p
+    
+    def shear_stress_on_interface(self, u1: TensorLike) -> TensorLike:
+        from fealpy.functionspace import LagrangeFESpace, TensorFunctionSpace
+        pde = self.pde
+        is_wall = pde.is_wall_boundary(pde.fluid_mesh.interpolation_points(p=2))
+        space = LagrangeFESpace(mesh=pde.interface_mesh, p=2)
+        print("space", space.number_of_global_dofs())
+        uspace = TensorFunctionSpace(space, (3, -1))
+        print("uspace", uspace.number_of_global_dofs())
+        velocity = uspace.function()
+        velocity.reshape(3, -1)[:] = u1.reshape(3, -1)[:, is_wall]
+
+        return velocity
+        
+
+    def shear_stress_on_solid():
+        pass
 
     def solid_disp_to_fluid_interface(
         self,

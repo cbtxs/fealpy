@@ -2,12 +2,12 @@ import argparse
 
 options = {
     'backend': 'numpy',
-    'max_iter': 1,
+    'max_iter': 5,
     'tolerance': 1e-5,
     'solve': 'direct',
     'method': 'Ossen',
     'run': 'main',
-    'maxstep': 1,
+    'maxstep': 100,
     'tol':1e-8,
     'error_com': False,
     'space_degree': 1,

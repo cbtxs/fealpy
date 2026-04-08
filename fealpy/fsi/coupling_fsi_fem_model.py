@@ -25,88 +25,26 @@ class HydraulicPipeFSIFEMModel:
         from fealpy.mesh import TriangleMesh
         from fealpy.functionspace import LagrangeFESpace, TensorFunctionSpace
 
-        for iteration in range(self.max_iter):
+        for i in range(self.max_iter):
+            print(i+1)
             # 1. 求解流体方程，计算压力
             pde = self.pde
             fluid_model = StationaryIncompressibleNSLFEMModel(pde=pde, mesh=pde.fluid_mesh, options=self.options)
             u1, p1 = fluid_model.run()
             pde.fluid_mesh.nodedata["u"] = u1.reshape(3, -1).T
             pde.fluid_mesh.nodedata["p"] = p1
-            pde.fluid_mesh.to_vtk("fluid.vtu")
 
             # 2. 压力传递
             from .coupling_interface import CouplingInterface
             interface = CouplingInterface(pde=pde)
-            p_interface = interface.pressure_to_interface(p1 = p1)
-            p_solid = interface.pressure_to_solid(p_interface)
-            # mesh_dict = pde.mesher.mesh_data()
-            # node_id, cell_flat = bm.unique(mesh_dict["interface_tri"], return_inverse=True)
-            # node = mesh_dict["node"][node_id]
-            # cell = cell_flat.reshape(-1, 3)
-            # tri_interface = TriangleMesh(node, cell)
-
-            # is_wall = pde.is_wall_boundary(pde.fluid_mesh.entity('node'))
-            # p = p1[is_wall]
-            # pressurespace = LagrangeFESpace(mesh=tri_interface, p=1)
-            # pressure = pressurespace.function()
-            # pressure[:] = p
-
-            # pressspace = TensorFunctionSpace(pressurespace, (3, -1))
-            # press = pressspace.function()
-
-            # v0 = node[cell[:, 1], :] - node[cell[:, 0], :]
-            # v1 = node[cell[:, 2], :] - node[cell[:, 0], :]
-            # nv = bm.cross(v0, v1)
-            # S = bm.sqrt(bm.sum(nv**2, axis=1))/2
-            # nv = nv / bm.sqrt(bm.sum(nv**2, axis=1))[:, None]
-
-            # n2c = tri_interface.node_to_cell()
-            # ws = bm.ones(n2c.shape)
-            # ws *= S
-            # ws = n2c.mul(ws)
-            # ws = ws.toarray()
-            # ws_sum = bm.sum(ws, axis=1)
-            # ws = ws / ws_sum[:, None]
-            # nv = ws @ nv
-            # press[:] = (pressure[:, None] * nv).T.reshape(-1)
-
-            # from fealpy.csm.fem.hydraulic_pipe_lfem_model import  HydraulicPipeLFEMModel
-            # from fealpy.decorator import cartesian, barycentric
-
-            # @cartesian
-            # def distance_t0_wallline(p):
-            #     R_pipe = 0.5  
-            #     R_bend = 2.8
-
-            #     x = p[..., 0]
-            #     y = p[..., 1]
-            #     z = p[..., 2]
-
-            #     dist_to_axis_up = bm.sqrt(y**2 + z**2)
-            #     d_up = dist_to_axis_up - R_pipe
-
-            #     dist_to_center_xy = bm.sqrt(x**2 + (y - R_bend)**2)
-            #     dist_to_axis_bend = bm.sqrt((dist_to_center_xy - R_bend)**2 + z**2)
-            #     d_bend = dist_to_axis_bend - R_pipe
-            #     dist_to_axis_down = bm.sqrt((x - R_bend)**2 + z**2)
-            #     d_down = dist_to_axis_down - R_pipe
-            #     d = bm.where(x <= 0, d_up, 
-            #                     bm.where(y >= R_bend, d_down, d_bend))
-
-            #     return bm.maximum(d, 1e-15)
-
-            # @cartesian
-            # def is_inwall_boundary(p):
-            #     d = distance_t0_wallline(p)
-            #     atol = 1e-12
-            #     on_boundary = (bm.abs(d)<atol)
-            #     return on_boundary
-
-            # is_inwall = is_inwall_boundary(pde.solid_mesh.node)
-            # space = LagrangeFESpace(mesh=pde.solid_mesh, p=1)
-            # solid_pspace = TensorFunctionSpace(space, (3, -1))
-            # solid_p = solid_pspace.function()
-            # solid_p.reshape(3, -1)[:, is_inwall] = press.reshape(3, -1)
+            p_interface = interface.pressure_on_interface(p1 = p1)
+            p_solid = interface.pressure_on_solid(p_interface)
+            u_interface = interface.shear_stress_on_interface(u1)
+            interface_mesh = pde.interface_mesh
+            interface_mesh.nodedata["u"] = u_interface.reshape(3, -1).T
+            interface_mesh.nodedata["p"] = p_interface
+            
+            
 
             # 3. 求解固体方程，计算位移
             from fealpy.csm.fem.hydraulic_pipe_lfem_model import  HydraulicPipeLFEMModel
@@ -125,22 +63,38 @@ class HydraulicPipeFSIFEMModel:
             uh = model.solve(A1, F1)
             print("max displacement:", float(bm.max(bm.abs(uh))))
             print(float(bm.linalg.norm(uh)))
-            model.show(uh)
+            pde.solid_mesh.nodedata["u"] = uh.reshape(-1, 3)
             print("-----------------------------")
 
-
-            exit()
-            # 4. 检查收敛性（可以使用位移变化、压力变化等作为标准）
-            if self.check_convergence(pressure, uh):
-                print(f"Converged at iteration {iteration + 1}")
-                break
-            else:
-                print(f"Iteration {iteration + 1} not converged.")
+            # # 4. 检查收敛性（可以使用位移变化、压力变化等作为标准）
+            # if self.check_convergence(pressure, uh):
+            #     print(f"Converged at iteration {iteration + 1}")
+            #     break
+            # else:
+            #     print(f"Iteration {iteration + 1} not converged.")
 
             # 5. 网格更新
-            self.fsi_interface.transfer_solid_to_fluid(uh)
+            from fealpy.mesh import TetrahedronMesh, TriangleMesh
+            pde = self.pde
+            is_wall = pde.is_wall_boundary(pde.solid_mesh.entity('node'))
+            space = LagrangeFESpace(mesh=pde.interface_mesh, p=1)
+            solid_dispspace = TensorFunctionSpace(space, (3, -1))
+            disp = solid_dispspace.function()
+            disp.reshape(-1, 3)[:] = uh.reshape(-1, 3)[is_wall]
+            interface_mesh.nodedata["disp"] = disp.reshape(-1, 3)
 
+            pde.fluid_mesh.to_vtk(f"fluid{i}.vtu")
+            interface_mesh.to_vtk(f"interface{i}.vtu")
+            pde.solid_mesh.to_vtk(f"solid{i}.vtu")
             
+            is_fluid_wall = pde.is_wall_boundary(pde.fluid_mesh.entity('node'))
+            pde.fluid_mesh.node[is_fluid_wall] += disp.reshape(-1, 3)
+            pde.fluid_mesh = TetrahedronMesh(pde.fluid_mesh.node, pde.fluid_mesh.cell)
+            pde.interface_mesh.node += disp.reshape(-1, 3)
+            pde.interface_mesh = TriangleMesh(pde.interface_mesh.node, pde.interface_mesh.cell)
+            pde.solid_mesh.node += uh.reshape(-1, 3)
+            pde.solid_mesh = TetrahedronMesh(pde.solid_mesh.node, pde.solid_mesh.cell)
+
 
     def check_convergence(self, last_pressure, last_displacement):
         """
