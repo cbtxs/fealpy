@@ -157,17 +157,6 @@ class CouplingInterface:
         stress = 2 * G * epsilon
         stress += lam * (epsilon_kk[:, None, None] * I)
 
-        tri_interface = pde.interface_mesh
-        node = tri_interface.node
-        cell = tri_interface.cell
-        v0 = node[cell[:, 1], :] - node[cell[:, 0], :]
-        v1 = node[cell[:, 2], :] - node[cell[:, 0], :]
-        nv = bm.cross(v0, v1)
-        S = bm.sqrt(bm.sum(nv**2, axis=1))/2
-        # 单元中心处法向量
-        nv = nv / bm.sqrt(bm.sum(nv**2, axis=1))[:, None]
-
-        stress = bm.einsum("kij, kj -> ki", stress, nv)
         nv = self.interface_normal()
         stress = bm.einsum("kij, kj -> ki", stress, nv)
 
