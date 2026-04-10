@@ -134,20 +134,20 @@ class CouplingInterface:
         grad_u = uh.space.grad_value(uh = uh, bc = bcs)
         grad_u = bm.einsum("n, knij -> kij", ws, grad_u)
         grad_u_T = grad_u.transpose(0, 2, 1)
-        # cellmeasure = solid_mesh.entity_measure("cell")
-        # n2c = solid_mesh.node_to_cell()
-        # w = bm.ones(n2c.shape)
-        # w *= cellmeasure
-        # w = n2c.mul(w)
-        # w = w.toarray()
-        # w_sum = bm.sum(w, axis=1)
-        # w = w / w_sum[:, None]
-        # grad_u = bm.einsum("lk, kij -> lij", w, grad_u)
-        # grad_u_T = bm.einsum("lk, kij -> lij", w, grad_u_T)
+        cellmeasure = solid_mesh.entity_measure("cell")
+        n2c = solid_mesh.node_to_cell()
+        w = bm.ones(n2c.shape)
+        w *= cellmeasure
+        w = n2c.mul(w)
+        w = w.toarray()
+        w_sum = bm.sum(w, axis=1)
+        w = w / w_sum[:, None]
+        grad_u = bm.einsum("lk, kij -> lij", w, grad_u)
+        grad_u_T = bm.einsum("lk, kij -> lij", w, grad_u_T)
 
-        # is_wall = pde.is_wall_boundary(pde.solid_mesh.node)
-        # grad_u = grad_u[is_wall, :, :]
-        # grad_u_T = grad_u_T[is_wall, :, :]
+        is_wall = pde.is_wall_boundary(pde.solid_mesh.node)
+        grad_u = grad_u[is_wall, :, :]
+        grad_u_T = grad_u_T[is_wall, :, :]
 
         epsilon = 0.5 * (grad_u + grad_u_T)
         epsilon_kk = bm.einsum("lii -> l", epsilon)
@@ -168,15 +168,15 @@ class CouplingInterface:
         nv = nv / bm.sqrt(bm.sum(nv**2, axis=1))[:, None]
 
         stress = bm.einsum("kij, kj -> ki", stress, nv)
-        # nv = self.interface_normal()
-        # stress = bm.einsum("kij, kj -> ki", stress, nv)
+        nv = self.interface_normal()
+        stress = bm.einsum("kij, kj -> ki", stress, nv)
 
-        # space = LagrangeFESpace(mesh=pde.interface_mesh, p=1)
-        # stressspace = TensorFunctionSpace(space, (3, -1))
-        # structural_stress = stressspace.function()
-        # structural_stress.reshape(3, -1).T[:] = stress
-        # return structural_stress
-        return stress
+        space = LagrangeFESpace(mesh=pde.interface_mesh, p=1)
+        stressspace = TensorFunctionSpace(space, (3, -1))
+        structural_stress = stressspace.function()
+        structural_stress.reshape(3, -1).T[:] = stress
+        return structural_stress
+        # return stress
 
 
     

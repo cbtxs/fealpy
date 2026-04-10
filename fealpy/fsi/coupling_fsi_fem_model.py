@@ -67,8 +67,8 @@ class HydraulicPipeFSIFEMModel:
             print("-----------------------------")
 
             # 4. 检查收敛性（可以使用位移变化、压力变化等作为标准）
-            stress = interface.structural_stress_on_interface(uh)
-            pde.solid_mesh.celldata["structural_stress"] = stress
+            # stress = interface.structural_stress_on_interface(uh)
+            # pde.solid_mesh.celldata["structural_stress"] = stress
 
             # 5. 网格更新
             from fealpy.mesh import TetrahedronMesh, TriangleMesh
