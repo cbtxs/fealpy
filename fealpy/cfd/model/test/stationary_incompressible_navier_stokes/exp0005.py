@@ -106,7 +106,7 @@ class Exp0005(CylinderMesher):
 
         result[is_inlet] = inlet[is_inlet]
         result[is_wall] = wall[is_wall]
-        result[is_outlet] = outlet[is_outlet]
+        # result[is_outlet] = outlet[is_outlet]
         return result
     
     @cartesian

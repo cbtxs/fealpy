@@ -30,6 +30,8 @@ class HydraulicPipeFSIFEMModel:
             # 1. 求解流体方程，计算压力
             pde = self.pde
             fluid_model = StationaryIncompressibleNSLFEMModel(pde=pde, mesh=pde.fluid_mesh, options=self.options)
+            fluid_model.equation.set_coefficient('convection', pde.fluid_rho)
+            fluid_model.equation.set_coefficient('viscosity', pde.mu)
             u1, p1 = fluid_model.run()
             pde.fluid_mesh.nodedata["u"] = u1.reshape(3, -1).T
             pde.fluid_mesh.nodedata["p"] = p1
@@ -39,39 +41,34 @@ class HydraulicPipeFSIFEMModel:
             interface = CouplingInterface(pde=pde)
             p_interface = interface.pressure_on_interface(p1 = p1)
             p_solid = interface.pressure_on_solid(p_interface)
-            u_interface = interface.shear_stress_on_interface(u1)
             interface_mesh = pde.interface_mesh
-            interface_mesh.nodedata["u"] = u_interface.reshape(3, -1).T
             interface_mesh.nodedata["p"] = p_interface
-            
-            
 
             # 3. 求解固体方程，计算位移
             from fealpy.csm.fem.hydraulic_pipe_lfem_model import  HydraulicPipeLFEMModel
-            from fealpy.decorator import cartesian, barycentric
+            from fealpy.decorator import barycentric
             model = HydraulicPipeLFEMModel(self.options)
             model.set_pde(pde)
             A, F = model.linear_system()
             @barycentric
             def SI_source(bcs, index):
-                result = p_solid(bcs, index)
+                result = -p_solid(bcs, index)
                 return result
             model.SI.source = SI_source
             A = A.assembly()
             F = F.assembly()
             A1, F1 = model.apply_bc(A, F)
-            uh = model.solve(A1, F1)
+            x = model.solve(A1, F1)
+            uh = model.space.function()
+            uh[:] = x
             print("max displacement:", float(bm.max(bm.abs(uh))))
             print(float(bm.linalg.norm(uh)))
             pde.solid_mesh.nodedata["u"] = uh.reshape(-1, 3)
             print("-----------------------------")
 
-            # # 4. 检查收敛性（可以使用位移变化、压力变化等作为标准）
-            # if self.check_convergence(pressure, uh):
-            #     print(f"Converged at iteration {iteration + 1}")
-            #     break
-            # else:
-            #     print(f"Iteration {iteration + 1} not converged.")
+            # 4. 检查收敛性（可以使用位移变化、压力变化等作为标准）
+            stress = interface.structural_stress_on_interface(uh)
+            pde.solid_mesh.celldata["structural_stress"] = stress
 
             # 5. 网格更新
             from fealpy.mesh import TetrahedronMesh, TriangleMesh

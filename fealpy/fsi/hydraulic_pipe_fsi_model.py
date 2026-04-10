@@ -21,8 +21,11 @@ class HydraulicPipeFSIModel(ComputationalModel):
         self.interface_mesh = self.extract_interface_mesh()
         self.solid_mesh = self.extract_solid_mesh()
         self._extract_boundary_info()
-        self.rho = 1.0
-        self.mu = 0.003
+        self.fluid_rho = options.get('fluid_rho', 1.0)
+        self.mu = options.get('mu', 0.003)
+        self.solid_rho = options.get('rho', 7800)
+        self.E = options.get('E', 2.1e11)
+        self.nu = options.get('nu', 0.3)
 
     def extract_interface_mesh(self):
         from fealpy.mesh import TriangleMesh
@@ -83,36 +86,6 @@ class HydraulicPipeFSIModel(ComputationalModel):
 
         # 限制范围，确保距离在 [0, R_pipe] 之间，防止 SST 模型崩溃
         return bm.maximum(d, 1e-15)
-    
-    @cartesian
-    def strain_rate(self, u0, bcs, index):
-            grad_u = u0.grad_value(bcs, index)
-            grad_u_T = bm.swapaxes(grad_u, -1, -2)
-
-            S_ij = 1/2 * (grad_u + grad_u_T)
-            return S_ij
-    
-    @cartesian
-    def tur_mu(self, u0, k0, omega0, points, bcs, index: Index = _S):
-        beta_s = self.beta_s
-        mu = self.mu
-        rho = self.rho
-        a1 = self.a1
-        d = self.distance_to_wallline(points)
-
-        def shear_stress_limit_function():
-            k0_value = bm.maximum(k0(bcs, index), 1e-10)
-            arg2 = bm.maximum(2 * bm.sqrt(k0_value)/(beta_s * omega0(bcs, index) * d),
-                            500 * mu/(d**2 * rho * omega0(bcs, index)))
-            F2 = bm.tanh(arg2**2)
-            return F2
-        F2 = shear_stress_limit_function()
-
-        S_ij = self.strain_rate(u0, bcs, index)
-        S = bm.sqrt(2 * bm.sum(S_ij * S_ij, axis=(2, 3)))
-        mu_t = a1 * k0(bcs, index)
-        mu_t /= bm.maximum(a1 * omega0(bcs, index), S * F2)
-        return mu_t
     
     @cartesian
     def is_inlet_boundary(self, p: TensorLike) -> TensorLike:
@@ -198,10 +171,10 @@ class HydraulicPipeFSIModel(ComputationalModel):
     
     @cartesian
     def is_pressure_boundary(self, p: TensorLike = None) -> TensorLike:
-        # if p is None:
-        #     return 1
-        # return self.is_outlet_boundary(p)
-        return 0
+        if p is None:
+            return 1
+        return self.is_outlet_boundary(p)
+        # return 0
     
     @cartesian
     def velocity_dirichlet(self, p: TensorLike) -> TensorLike:
@@ -214,8 +187,8 @@ class HydraulicPipeFSIModel(ComputationalModel):
         is_outlet = self.is_outlet_boundary(p)
 
         result[is_inlet] = inlet[is_inlet]
-        result[is_wall] = wall[is_wall]
         result[is_outlet] = outlet[is_outlet]
+        result[is_wall] = wall[is_wall]
         return result
     
     @cartesian

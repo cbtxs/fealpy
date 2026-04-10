@@ -2,18 +2,20 @@ import argparse
 
 options = {
     'backend': 'numpy',
-    'max_iter': 5,
+    'max_iter': 1,
     'tolerance': 1e-5,
     'solve': 'direct',
     'method': 'Ossen',
     'run': 'main',
-    'maxstep': 100,
+    'maxstep': 1,
     'tol':1e-8,
     'error_com': False,
     'space_degree': 1,
     'E': 2.1e11,  
     'nu': 0.3,
     'rho': 7800,
+    'fluid_rho' : 1.0,
+    'mu': 0.003,
     'pbar_log': True,
     'log_level': 'INFO',
     'mesh_type': 'uniform_tet'
