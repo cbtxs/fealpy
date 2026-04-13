@@ -28,9 +28,9 @@ params = {
     "L_in_ratio": 10.0,           # 上游直管段 10m / 1m = 10.0
     "L_out_ratio": 15.0,          # 下游直管段 15m / 1m = 15.0
     "wall_thickness": 0.05,       # 报告未给定，基于1m管径假定一个合理值 (如 50mm)
-    "mesh_size_global": 0.3,     # 使用默认网格大小策略
-    "mesh_size_bend": 0.3,
-    "mesh_size_interface": 0.3,
+    "mesh_size_global": 0.15,     # 使用默认网格大小策略
+    "mesh_size_bend": 0.15,
+    "mesh_size_interface": 0.15,
 }
 
 from fealpy.backend import bm

@@ -24,6 +24,7 @@ class HydraulicPipeFSIFEMModel:
         from fealpy.solver import spsolve
         from fealpy.mesh import TriangleMesh
         from fealpy.functionspace import LagrangeFESpace, TensorFunctionSpace
+        import time
 
         for i in range(self.max_iter):
             print(i+1)
@@ -42,7 +43,7 @@ class HydraulicPipeFSIFEMModel:
             p_interface = interface.pressure_on_interface(p1 = p1)
             p_solid = interface.pressure_on_solid(p_interface)
             interface_mesh = pde.interface_mesh
-            interface_mesh.nodedata["p"] = p_interface
+            interface_mesh.nodedata["p"] = p_interface.reshape(3, -1).T
 
             # 3. 求解固体方程，计算位移
             from fealpy.csm.fem.hydraulic_pipe_lfem_model import  HydraulicPipeLFEMModel

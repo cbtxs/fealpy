@@ -2,6 +2,8 @@ from fealpy.backend import backend_manager as bm
 from fealpy.decorator import variantmethod
 from fealpy.model import ComputationalModel
 from fealpy.cfd.equation import StationaryIncompressibleNS
+from fealpy.utils import timer
+import time
 
 class StationaryIncompressibleNSLFEMModel(ComputationalModel):
     """
@@ -178,11 +180,18 @@ class StationaryIncompressibleNSLFEMModel(ComputationalModel):
         self.fem.update(uh)
         A = BForm.assembly() 
         b = LForm.assembly()
+        tmr = timer()
+        next(tmr)
+        start = time.time()
         A, b = self.fem.apply_bc(A, b, self.pde)
         if self.equation.pressure_neumann == True:
             A, b = self.fem.lagrange_multiplier(A, b, c = self.pde.pressure_integral_target())
+        
+        print("A", A.shape)
+        tmr.send("矩阵组装")
         x = self.solve(A, b)
-
+        tmr.send("矩阵方程求解")
+        next(tmr)
         ugdof = self.fem.uspace.number_of_global_dofs()
         u = self.fem.uspace.function()
         p = self.fem.pspace.function()
