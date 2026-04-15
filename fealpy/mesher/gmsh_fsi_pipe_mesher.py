@@ -5,7 +5,7 @@ from typing import Dict, Iterable, List, Tuple
 
 from ..backend import backend_manager as bm
 from ..decorator import variantmethod
-from ..mesh import TetrahedronMesh
+from ..mesh import TetrahedronMesh, TriangleMesh
 
 try:
     import gmsh
@@ -43,6 +43,10 @@ def _reshape_tetra(values: List[int]):
 
 def _reshape_tri(values: List[int]):
     return [[int(values[i]), int(values[i + 1]), int(values[i + 2])] for i in range(0, len(values), 3)]
+
+
+def _reshape_pairs(values: List[int]):
+    return [[int(values[i]), int(values[i + 1])] for i in range(0, len(values), 2)]
 
 
 def extract_tetra_data(gmsh_module):
@@ -180,6 +184,139 @@ def extract_interface_triangles(gmsh_module, node_index_map, fluid_tag, solid_ta
     }
 
 
+def extract_triangle_data(gmsh_module):
+    node_tags, node_coords, _ = gmsh_module.model.mesh.getNodes()
+    tri_elem_tags, tri_connectivity = gmsh_module.model.mesh.getElementsByType(2)
+
+    node_tags_list = [int(v) for v in node_tags]
+    node_coords_list = _reshape_triples([float(v) for v in node_coords])
+    tri_elem_tags_list = [int(v) for v in tri_elem_tags]
+    tri_connectivity_list = _reshape_tri([int(v) for v in tri_connectivity])
+
+    used_node_tags = {tag for tri in tri_connectivity_list for tag in tri}
+    filtered_tags = []
+    filtered_coords = []
+    for tag, coord in zip(node_tags_list, node_coords_list):
+        if tag in used_node_tags:
+            filtered_tags.append(tag)
+            filtered_coords.append(coord[:2])
+
+    node_index_map = {tag: idx for idx, tag in enumerate(filtered_tags)}
+    triangle = [[node_index_map[tag] for tag in tri] for tri in tri_connectivity_list]
+
+    triangle_region = [-1] * len(tri_elem_tags_list)
+    tri_tag_to_index = {tag: idx for idx, tag in enumerate(tri_elem_tags_list)}
+    for dim, phys_tag in gmsh_module.model.getPhysicalGroups(2):
+        for entity_tag in gmsh_module.model.getEntitiesForPhysicalGroup(dim, phys_tag):
+            entity_types, entity_elem_tags, _ = gmsh_module.model.mesh.getElements(2, entity_tag)
+            for etype, elem_tags in zip(entity_types, entity_elem_tags):
+                if int(etype) != 2:
+                    continue
+                for elem_tag in elem_tags:
+                    triangle_region[tri_tag_to_index[int(elem_tag)]] = int(phys_tag)
+
+    if any(tag < 0 for tag in triangle_region):
+        raise ValueError("triangles are missing physical region assignments")
+
+    return {
+        "node": bm.array(filtered_coords, dtype=bm.float64),
+        "triangle": bm.array(triangle, dtype=bm.int64),
+        "triangle_region": bm.array(triangle_region, dtype=bm.int64),
+        "node_index_map": node_index_map,
+    }
+
+
+def extract_boundary_edges(gmsh_module, node_index_map: Dict[int, int]):
+    edges: List[List[int]] = []
+    markers: List[int] = []
+
+    for dim, phys_tag in gmsh_module.model.getPhysicalGroups(1):
+        for entity_tag in gmsh_module.model.getEntitiesForPhysicalGroup(dim, phys_tag):
+            entity_types, _, entity_node_tags = gmsh_module.model.mesh.getElements(1, entity_tag)
+            for etype, node_tags in zip(entity_types, entity_node_tags):
+                if int(etype) != 1:
+                    continue
+                edge_nodes = [int(v) for v in node_tags]
+                for edge in _reshape_pairs(edge_nodes):
+                    edges.append([node_index_map[int(tag)] for tag in edge])
+                    markers.append(int(phys_tag))
+
+    if edges:
+        edge_array = bm.array(edges, dtype=bm.int64)
+        marker_array = bm.array(markers, dtype=bm.int64)
+    else:
+        edge_array = bm.zeros((0, 2), dtype=bm.int64)
+        marker_array = bm.zeros((0,), dtype=bm.int64)
+
+    return {
+        "boundary_edge": edge_array,
+        "boundary_edge_marker": marker_array,
+    }
+
+
+def extract_interface_edges(gmsh_module, node_index_map, fluid_tag, solid_tag, triangle, triangle_region):
+    interface_tag = None
+    for dim, phys_tag in gmsh_module.model.getPhysicalGroups(1):
+        if gmsh_module.model.getPhysicalName(dim, phys_tag) == "fsi_interface":
+            interface_tag = int(phys_tag)
+            break
+    if interface_tag is None:
+        raise ValueError("missing fsi_interface physical group")
+
+    edge_to_triangles: Dict[Tuple[int, int], List[int]] = {}
+    triangle_np = bm.to_numpy(triangle)
+    for tri_index, tri_nodes in enumerate(triangle_np):
+        for edge in ((0, 1), (1, 2), (2, 0)):
+            key = tuple(sorted(int(tri_nodes[i]) for i in edge))
+            edge_to_triangles.setdefault(key, []).append(tri_index)
+
+    triangle_region_np = bm.to_numpy(triangle_region)
+    interface_edge = []
+    interface_adjacent_triangle = []
+    interface_adjacent_region = []
+
+    for entity_tag in gmsh_module.model.getEntitiesForPhysicalGroup(1, interface_tag):
+        entity_types, _, entity_node_tags = gmsh_module.model.mesh.getElements(1, entity_tag)
+        for etype, node_tags in zip(entity_types, entity_node_tags):
+            if int(etype) != 1:
+                continue
+            edge_nodes_raw = [int(v) for v in node_tags]
+            for edge in _reshape_pairs(edge_nodes_raw):
+                edge_nodes = [node_index_map[int(tag)] for tag in edge]
+                neighbours = edge_to_triangles.get(tuple(sorted(edge_nodes)), [])
+                if len(neighbours) != 2:
+                    raise ValueError("fsi_interface edge must have exactly two adjacent triangles")
+
+                region_a = int(triangle_region_np[neighbours[0]])
+                region_b = int(triangle_region_np[neighbours[1]])
+                if {region_a, region_b} != {int(fluid_tag), int(solid_tag)}:
+                    raise ValueError("fsi_interface edge must touch one fluid triangle and one solid triangle")
+
+                if region_a == int(fluid_tag):
+                    ordered_triangles = [neighbours[0], neighbours[1]]
+                else:
+                    ordered_triangles = [neighbours[1], neighbours[0]]
+
+                interface_edge.append(edge_nodes)
+                interface_adjacent_triangle.append(ordered_triangles)
+                interface_adjacent_region.append([int(fluid_tag), int(solid_tag)])
+
+    if interface_edge:
+        edge_array = bm.array(interface_edge, dtype=bm.int64)
+        adj_triangle_array = bm.array(interface_adjacent_triangle, dtype=bm.int64)
+        adj_region_array = bm.array(interface_adjacent_region, dtype=bm.int64)
+    else:
+        edge_array = bm.zeros((0, 2), dtype=bm.int64)
+        adj_triangle_array = bm.zeros((0, 2), dtype=bm.int64)
+        adj_region_array = bm.zeros((0, 2), dtype=bm.int64)
+
+    return {
+        "interface_edge": edge_array,
+        "interface_adjacent_triangle": adj_triangle_array,
+        "interface_adjacent_region": adj_region_array,
+    }
+
+
 class BaseGmshFSIPipeMesher:
     interface_region_names = ("fluid", "solid")
 
@@ -190,6 +327,47 @@ class BaseGmshFSIPipeMesher:
 
     def model_name(self) -> str:
         raise NotImplementedError
+
+    @classmethod
+    def from_remesher_parameters(cls, params=None, gmsh_module=None):
+        return cls(params=params, gmsh_module=gmsh_module)
+
+    def geo_dimension(self) -> int:
+        return self.mesh_topology_dimension()
+
+    def mesh_topology_dimension(self) -> int:
+        return 3
+
+    def cell_mesh_class(self):
+        return TriangleMesh if self.mesh_topology_dimension() == 2 else TetrahedronMesh
+
+    def cell_data_key(self) -> str:
+        return "triangle" if self.mesh_topology_dimension() == 2 else "tetra"
+
+    def cell_region_key(self) -> str:
+        return "triangle_region" if self.mesh_topology_dimension() == 2 else "tetra_region"
+
+    def extract_cell_data(self, gmsh_module):
+        if self.mesh_topology_dimension() == 2:
+            return extract_triangle_data(gmsh_module)
+        return extract_tetra_data(gmsh_module)
+
+    def extract_boundary_data(self, gmsh_module, node_index_map):
+        if self.mesh_topology_dimension() == 2:
+            return extract_boundary_edges(gmsh_module, node_index_map)
+        return extract_boundary_triangles(gmsh_module, node_index_map)
+
+    def extract_interface_data(self, gmsh_module, node_index_map, fluid_tag, solid_tag, cell_data):
+        if self.mesh_topology_dimension() == 2:
+            return extract_interface_edges(
+                gmsh_module,
+                node_index_map,
+                fluid_tag,
+                solid_tag,
+                cell_data["triangle"],
+                cell_data["triangle_region"],
+            )
+        return extract_interface_triangles(gmsh_module, node_index_map, fluid_tag, solid_tag)
 
     def build_fsi_volumes(self, gmsh_module, params):
         raise NotImplementedError
@@ -204,15 +382,18 @@ class BaseGmshFSIPipeMesher:
         gmsh_module.option.setNumber("Mesh.MeshSizeMax", float(params["mesh_size_global"]))
         gmsh_module.option.setNumber("Mesh.MeshSizeMin", float(params["mesh_size_global"]) * 0.5)
 
+    def generate_mesh(self, gmsh_module):
+        gmsh_module.model.mesh.generate(self.mesh_topology_dimension())
+
     def generate_tetra_mesh(self, gmsh_module):
-        gmsh_module.model.mesh.generate(3)
+        self.generate_mesh(gmsh_module)
 
     def get_interface_region_names(self):
         return self.interface_region_names
 
     def extract_mesh_data(self, gmsh_module):
-        tetra_data = extract_tetra_data(gmsh_module)
-        boundary_data = extract_boundary_triangles(gmsh_module, tetra_data["node_index_map"])
+        cell_data = self.extract_cell_data(gmsh_module)
+        boundary_data = self.extract_boundary_data(gmsh_module, cell_data["node_index_map"])
 
         physical_groups: Dict[str, DimTag] = {}
         for dim, tag in gmsh_module.model.getPhysicalGroups():
@@ -221,20 +402,14 @@ class BaseGmshFSIPipeMesher:
         fluid_name, solid_name = self.get_interface_region_names()
         fluid_tag = physical_groups[fluid_name][1]
         solid_tag = physical_groups[solid_name][1]
-        interface_data = extract_interface_triangles(
-            gmsh_module, tetra_data["node_index_map"], fluid_tag, solid_tag
+        interface_data = self.extract_interface_data(
+            gmsh_module, cell_data["node_index_map"], fluid_tag, solid_tag, cell_data
         )
 
-        return {
-            "node": tetra_data["node"],
-            "tetra": tetra_data["tetra"],
-            "tetra_region": tetra_data["tetra_region"],
-            "boundary_tri": boundary_data["boundary_tri"],
-            "boundary_tri_marker": boundary_data["boundary_tri_marker"],
-            "interface_tri": interface_data["interface_tri"],
-            "interface_adjacent_tet": interface_data["interface_adjacent_tet"],
-            "interface_adjacent_region": interface_data["interface_adjacent_region"],
-        }
+        mesh_data = {key: value for key, value in cell_data.items() if key != "node_index_map"}
+        mesh_data.update(boundary_data)
+        mesh_data.update(interface_data)
+        return mesh_data
 
     def run(self, visualize=False, write_path=None):
         gmsh_module = self.gmsh
@@ -248,7 +423,7 @@ class BaseGmshFSIPipeMesher:
             gmsh_module.model.occ.synchronize()
             boundary_info = self.classify_boundaries(gmsh_module, volumes, self.params)
             self.set_mesh_fields(gmsh_module, self.params, boundary_info)
-            self.generate_tetra_mesh(gmsh_module)
+            self.generate_mesh(gmsh_module)
 
             mesh = self.extract_mesh_data(gmsh_module)
             mesh["physical_name_to_dimtag"] = boundary_info["physical_name_to_dimtag"]
@@ -267,11 +442,19 @@ class BaseGmshFSIPipeMesher:
     @variantmethod("tet")
     def init_mesh(self, visualize=False, write_path=None):
         mesh_data = self.run(visualize=visualize, write_path=write_path)
-        mesh = TetrahedronMesh(mesh_data["node"], mesh_data["tetra"])
-        mesh.celldata["region"] = mesh_data["tetra_region"]
+        mesh_cls = self.cell_mesh_class()
+        mesh = mesh_cls(mesh_data["node"], mesh_data[self.cell_data_key()])
+        region_key = self.cell_region_key()
+        if region_key in mesh_data:
+            mesh.celldata["region"] = mesh_data[region_key]
+        mesh_data = self.postprocess_mesh_data(mesh, mesh_data)
+        self._mesh_data_cache = mesh_data
         return mesh
 
     def mesh_data(self, visualize=False, write_path=None):
         if self._mesh_data_cache is None:
             return self.run(visualize=visualize, write_path=write_path)
         return self._mesh_data_cache
+
+    def postprocess_mesh_data(self, mesh, mesh_data):
+        return mesh_data
