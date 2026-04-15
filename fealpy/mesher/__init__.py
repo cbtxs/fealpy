@@ -20,5 +20,5 @@ from .annulus_mesher import AnnulusMesher
 from .patch_antenna_mesher import PatchAntennaMesher
 from .wpr_mesher import WPRMesher
 from .block_with_hole_mesher import BlockWithHoleMesher
-from .elbow_pipe_mesher import ElbowPipeMesher
+from .elbow_pipe_mesher import ElbowPipeMesher, ElbowPipeMesher2D, ElbowPipeMesher3D
 from .tee_pipe_mesher import TeePipeMesher
