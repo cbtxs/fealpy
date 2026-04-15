@@ -12,44 +12,36 @@ from fealpy.decorator import cartesian
 from fealpy.typing import Index, _S
 
 
-class HydraulicPipeFSIModel(ComputationalModel):
-    def __init__(self, options, mesher):
+class HydraulicPipeFSIModel2D(ComputationalModel):
+    def __init__(self, options, mesh):
         self.options = options
-        self.mesher = mesher
-        self.tetra_mesh = mesher.init_mesh()
-        self.fluid_mesh = self.extract_fluid_mesh()
-        self.interface_mesh = self.extract_interface_mesh()
-        self.solid_mesh = self.extract_solid_mesh()
-        self._extract_boundary_info()
-        self.fluid_rho = options.get('fluid_rho', 1.0)
+        self.mesh = mesh
+        self.rho = options.get('rho', 1.0)
         self.mu = options.get('mu', 0.003)
-        self.solid_rho = options.get('rho', 7800)
-        self.E = options.get('E', 2.1e11)
-        self.nu = options.get('nu', 0.3)
-
-    def extract_interface_mesh(self):
-        from fealpy.mesh import TriangleMesh
-        mesh_dict = self.mesher.mesh_data()
-        node_id, cell_flat = bm.unique(mesh_dict["interface_tri"], return_inverse=True)
-        node = mesh_dict["node"][node_id]
-        cell = cell_flat.reshape(-1, 3)
-        tri_interface = TriangleMesh(node, cell)
-        return tri_interface
-
-    def extract_fluid_mesh(self):
-        from fealpy.mesh import TetrahedronMesh
-        mesh = self.tetra_mesh
-        nodes = mesh.entity('node')
-        cells = mesh.entity('cell')
-        cell_tags = mesh.celldata['region'] 
-        is_fluid_cell = (cell_tags == 1)
-        fluid_cells_old_idx = cells[is_fluid_cell]
-        unique_nodes, new_cell_nodes = bm.unique(fluid_cells_old_idx, return_inverse=True)
-        fluid_nodes = nodes[unique_nodes]
-        fluid_cells = new_cell_nodes.reshape(fluid_cells_old_idx.shape)
-        fluid_mesh = TetrahedronMesh(fluid_nodes, fluid_cells)
         
-        return fluid_mesh
+    # def extract_interface_mesh(self):
+    #     from fealpy.mesh import TriangleMesh
+    #     mesh_dict = self.mesher.mesh_data()
+    #     node_id, cell_flat = bm.unique(mesh_dict["interface_tri"], return_inverse=True)
+    #     node = mesh_dict["node"][node_id]
+    #     cell = cell_flat.reshape(-1, 3)
+    #     tri_interface = TriangleMesh(node, cell)
+    #     return tri_interface
+
+    # def extract_fluid_mesh(self):
+    #     from fealpy.mesh import TetrahedronMesh
+    #     mesh = self.tetra_mesh
+    #     old_nodes = mesh.entity('node')
+    #     old_cells = mesh.entity('cell')
+    #     cell_tags = mesh.celldata['region'] 
+    #     is_fluid_cell = (cell_tags == 1)
+    #     fluid_cells_old_idx = old_cells[is_fluid_cell]
+    #     unique_nodes, new_cell_nodes = bm.unique(fluid_cells_old_idx, return_inverse=True)
+    #     fluid_nodes = old_nodes[unique_nodes]
+    #     fluid_cells = new_cell_nodes.reshape(fluid_cells_old_idx.shape)
+    #     fluid_mesh = TetrahedronMesh(fluid_nodes, fluid_cells)
+        
+    #     return fluid_mesh
 
     @cartesian
     def distance_to_wallline(self, p: TensorLike) -> TensorLike:
@@ -166,8 +158,8 @@ class HydraulicPipeFSIModel(ComputationalModel):
     
     @cartesian
     def is_velocity_boundary(self, p: TensorLike) -> TensorLike:
-        return self.is_inlet_boundary(p) | self.is_wall_boundary(p)
-        # return None
+        # return self.is_inlet_boundary(p) | self.is_wall_boundary(p)
+        return None
     
     @cartesian
     def is_pressure_boundary(self, p: TensorLike = None) -> TensorLike:

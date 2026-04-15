@@ -7,7 +7,7 @@ from fealpy.mesh import Mesh
 from fealpy.functionspace import LagrangeFESpace, TensorFunctionSpace
 from fealpy.material import LinearElasticMaterial
 from fealpy.fem import BilinearForm, LinearForm
-from fealpy.fem import LinearElasticityIntegrator, VectorSourceIntegrator
+from fealpy.fem import LinearElasticityIntegrator, VectorSourceIntegrator, ScalarNeumannBCIntegrator
 from fealpy.fem import ScalarMassIntegrator as MassIntegrator
 from fealpy.fem import DirichletBC
 from fealpy.solver import spsolve
@@ -99,8 +99,9 @@ class HydraulicPipeLFEMModel(ComputationalModel):
         bform.add_integrator(LEI)
 
         lform = LinearForm(self.space)
-        self.SI = VectorSourceIntegrator(q=self.p+3)
-        lform.add_integrator(self.SI)
+        # self.SI = VectorSourceIntegrator(q=self.p+3)
+        self.NeumannSI = ScalarNeumannBCIntegrator(q=self.p + 3)
+        lform.add_integrator(self.NeumannSI)
 
         return bform, lform
     
