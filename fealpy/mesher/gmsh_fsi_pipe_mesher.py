@@ -203,6 +203,20 @@ def extract_triangle_data(gmsh_module):
 
     node_index_map = {tag: idx for idx, tag in enumerate(filtered_tags)}
     triangle = [[node_index_map[tag] for tag in tri] for tri in tri_connectivity_list]
+    triangle = bm.array(triangle, dtype=bm.int64)
+    filtered_coords_np = bm.array(filtered_coords, dtype=bm.float64)
+
+    p0 = filtered_coords_np[triangle[:, 0]]
+    p1 = filtered_coords_np[triangle[:, 1]]
+    p2 = filtered_coords_np[triangle[:, 2]]
+
+    area2 = (p1[:, 0] - p0[:, 0]) * (p2[:, 1] - p0[:, 1]) - \
+            (p2[:, 0] - p0[:, 0]) * (p1[:, 1] - p0[:, 1])
+
+    mask = area2 < 0
+    tmp = triangle[mask, 1].copy()
+    triangle[mask, 1] = triangle[mask, 2]
+    triangle[mask, 2] = tmp
 
     triangle_region = [-1] * len(tri_elem_tags_list)
     tri_tag_to_index = {tag: idx for idx, tag in enumerate(tri_elem_tags_list)}
@@ -219,7 +233,7 @@ def extract_triangle_data(gmsh_module):
         raise ValueError("triangles are missing physical region assignments")
 
     return {
-        "node": bm.array(filtered_coords, dtype=bm.float64),
+        "node": bm.array(filtered_coords_np, dtype=bm.float64),
         "triangle": bm.array(triangle, dtype=bm.int64),
         "triangle_region": bm.array(triangle_region, dtype=bm.int64),
         "node_index_map": node_index_map,

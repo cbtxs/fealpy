@@ -164,11 +164,8 @@ class StationaryIncompressibleNSLFEMModel(ComputationalModel):
         for i in range(maxstep):
             self.logger.info(f"第{i+1}步")
             uh1, ph1 = self.run['one_step'](uh0)
-            print("uh_max", bm.max(uh1))
-            print(1)
             res_u = self.mesh.error(uh0, uh1)
             res_p = self.mesh.error(ph0, ph1)
-            print(2)
             self.logger.info(f"res_u: {res_u}, res_p: {res_p}")
             if res_u + res_p < tol:
                 self.logger.info(f"Converged at iteration {i+1}")

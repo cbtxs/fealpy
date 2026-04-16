@@ -13,7 +13,7 @@ from fealpy.typing import Index, _S
 from fealpy.cfd.simulation.fem.fem_base import FEM
 
 
-class HydraulicPipeFSIModel2D(ComputationalModel):
+class HydraulicPipeFlowModel2D(ComputationalModel):
     def __init__(self, options, mesh):
         self.options = options
         self.mesh = mesh
@@ -103,7 +103,7 @@ class HydraulicPipeFSIModel2D(ComputationalModel):
         R = 0.5
         d = self.distance_to_wallline(p)
         u = bm.zeros(p.shape)
-        u[..., 0] = 1.224*(1.0 - (0.5 - d)/R)**(1/7)
+        u[..., 0] = 8*(0.5+y)*(0.5-y)
         u[..., 1] = 0.0
         # u = u.reshape(-1, order='F')
         return u
