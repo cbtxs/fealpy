@@ -6,28 +6,7 @@ from fealpy.cfd.stationary_incompressible_navier_stokes_lfem_model import Statio
 from fealpy.solver import spsolve, cg, gmres
 from fealpy.backend import backend_manager as bm
 from fealpy.mesher import ElbowPipeMesher
-from fealpy.mesh import TetrahedronMesh
-
-options = {
-    'backend': 'numpy',
-    'pde': 1,
-    'init_mesh': 'tri',
-    'box': [0.0, 2.2, 0.0, 0.41],
-    'center': (0.2, 0.2),
-    'radius': 0.05,
-    'n_circle': 1000,
-    'lc': 0.004,
-    'rho': 1.0,
-    'mu': 1e-3,
-    'method': 'Newton',
-    'solve': 'direct',
-    'apply_bc': 'cylinder',
-    'postprocess': 'res',
-    'run': 'main_cylinder',
-    'maxit': 1,
-    'maxstep': 1000,
-    'tol': 1e-10
-}
+# from fealpy.mesh import TetrahedronMesh
 
 params = {
     "D": 1.0,                     # 管道内径 1.0 m (对应半径 0.5 m)
@@ -36,93 +15,113 @@ params = {
     "L_in_ratio": 10.0,           # 上游直管段 10m / 1m = 10.0
     "L_out_ratio": 15.0,          # 下游直管段 15m / 1m = 15.0
     "wall_thickness": 0.05,       # 报告未给定，基于1m管径假定一个合理值 (如 50mm)
-    "mesh_size_global": 0.25,     # 使用默认网格大小策略
-    "mesh_size_bend": 0.25,
-    "mesh_size_interface": 0.25,
+    "mesh_size_global": 0.1,     # 使用默认网格大小策略
+    "mesh_size_bend": 0.1,
+    "mesh_size_interface": 0.1,
 }
-mesher = ElbowPipeMesher(params)
-tetra_mesh = mesher.init_mesh()
-tetra_mesh.to_vtk("pipe_bend_mesh.vtu")
-region_tags = tetra_mesh.celldata["region"]
-fluid_cell_indices = bm.where(region_tags == 1)[0]
+mesher = ElbowPipeMesher(dim=2, params=params)
 
-def extract_fluid_mesh(full_mesh):
+
+# 1. 流体单元
+from fealpy.mesh import TriangleMesh
+
+def extract_fluid_mesh(mesher):
     """
-    从完整的 FSI 网格中安全地提取纯流体网格，并清理冗余节点。
+    从整体三角形网格中提取指定区域的纯净子网格
     """
-    # 1. 获取全局节点和单元
-    old_nodes = full_mesh.entity('node')
-    old_cells = full_mesh.entity('cell')
-    
-    # 2. 获取单元的物理组标签 (假设存在 celldata 中，FEALPy 通常将其存为 'physical' 或类似键名)
-    cell_tags = full_mesh.celldata['region'] 
-    
-    # 3. 找到所有属于流体的单元的布尔索引
-    is_fluid_cell = (cell_tags == 1)
-    
-    # 4. 提取流体单元（此时单元内部的节点编号仍然是基于旧的全局 old_nodes 的索引）
-    fluid_cells_old_idx = old_cells[is_fluid_cell]
-    
-    # 5. 剔除悬空节点，并重新映射节点编号
-    unique_nodes, new_cell_nodes = bm.unique(fluid_cells_old_idx, return_inverse=True)
-    
-    # 6. 生成崭新且干净的流体节点坐标矩阵
-    fluid_nodes = old_nodes[unique_nodes]
-    
-    # 7. 将扁平化的新节点索引重新 reshape 为 (N_cells, 4) 的四面体连接矩阵
-    fluid_cells = new_cell_nodes.reshape(fluid_cells_old_idx.shape)
-    
-    # 8. 构建并返回全新的干净流体网格
-    fluid_mesh = TetrahedronMesh(fluid_nodes, fluid_cells)
-    
-    return fluid_mesh
+    mesh = mesher.init_mesh()
+    mesh_data = mesher.mesh_data()
 
-mesh = extract_fluid_mesh(tetra_mesh)
+    node = mesh_data["node"]
+    tri = mesh_data["triangle"]
+    tri_region = mesh_data["triangle_region"]
+    name2tag = mesh_data["physical_name_to_dimtag"]
 
-pde = PipeBendTurbulentFlow()
+    fluid_id = name2tag["fluid"][1]
+    inlet_id = name2tag["inlet"][1]
+    outlet_id = name2tag["outlet"][1]
+    wall_id = name2tag["outer_wall"][1]
 
-equation = StationaryIncompressibleNS(pde=pde)
-fem = Ossen(equation=equation, mesh=mesh)
-# fem = Newton(equation=equation, mesh=mesh)
+    sub_tri_old = tri[tri_region == fluid_id]
+    sub_node_id, sub_tri_new = bm.unique(sub_tri_old.reshape(-1), return_inverse=True)
+    sub_node = node[sub_node_id]
+    sub_tri_new = sub_tri_new.reshape(sub_tri_old.shape)
+    # sub_tri_new[:, [1, 2]] = sub_tri_new[:, [2, 1]]
+    sub_mesh = TriangleMesh(sub_node, sub_tri_new)
+    sub_mesh.fluid_node_id = sub_node_id
 
-u0 = fem.uspace.function()
-u1 = fem.uspace.function()
-p0 = fem.pspace.function()
-p1 = fem.pspace.function()
+    be = mesh_data["boundary_edge"]
+    b_mark = mesh_data["boundary_edge_marker"]
 
-for i in range(100):
-    BForm = fem.BForm()
-    LForm = fem.LForm()
-    fem.update(u0=u0)
+    inlet = be[b_mark == inlet_id]
+    outlet = be[b_mark == outlet_id]
+    wall = be[b_mark == wall_id]
+    fsi = be[b_mark == name2tag["fsi_interface"][1]]
+
+    # 旧节点 → 新节点
+    global_to_sub = -bm.ones(mesh.number_of_nodes(), dtype=bm.int64)
+    global_to_sub[sub_node_id] = bm.arange(sub_node_id.shape[0], dtype=bm.int64)
+
+    # 映射边
+    be_new = global_to_sub[be]
+    inlet_new = global_to_sub[inlet]
+    outlet_new = global_to_sub[outlet]
+    wall_new = global_to_sub[wall]
+    fsi_new = global_to_sub[fsi]
+
+    # 过滤非法边（有 -1 的）
+    mask_be = bm.all(be_new >= 0, axis=1)
+    mask_inlet = bm.all(inlet_new >= 0, axis=1)
+    mask_outlet = bm.all(outlet_new >= 0, axis=1)
+    mask_wall = bm.all(wall_new >= 0, axis=1)
+    mask_fsi = bm.all(fsi_new >= 0, axis=1)
+    sub_mesh.be = be_new[mask_be]
+    sub_mesh.inlet = inlet_new[mask_inlet]
+    sub_mesh.outlet = outlet_new[mask_outlet]
+    sub_mesh.wall = wall_new[mask_wall]
+    sub_mesh.fsi = fsi_new[mask_fsi]
+
+    return sub_mesh
+
+fluid_mesh = extract_fluid_mesh(mesher)
+
+
+options = {
+    'backend': 'numpy',
+    'solve': 'direct',
+    'method': 'Newton',
+    'run': 'main',
+    'maxstep': 100,
+    'tol':1e-10,
+    'error_com': False,
+    'rho' : 1.0,
+    'mu': 0.001,
+    'pbar_log': True,
+    'log_level': 'INFO',
+    'apply_bc': 'dirichlet_dof'
+}
+
+from fealpy.backend import bm
+bm.set_backend(options['backend'])
+
+from fealpy.cfd.model.stationary_incompressible_navier_stokes.hydraulic_pipe_flow_model import HydraulicPipeFlowModel2D
+pde = HydraulicPipeFlowModel2D(options=options, mesh=fluid_mesh)
+fluid_model = StationaryIncompressibleNSLFEMModel(pde=pde, mesh=fluid_mesh, options=options)
+uspace = fluid_model.fem.uspace
+u1, p1 = fluid_model.run()
+fluid_mesh.nodedata["u"] = u1.reshape(2, -1).T
+fluid_mesh.nodedata["p"] = p1
+fluid_mesh.to_vtk("fluid.vtu")
+
+def assembly_BForm(model, uh):
+    BForm = model.fem.BForm()
+    LForm = model.fem.LForm()
+    model.fem.update(uh)
     A = BForm.assembly() 
     b = LForm.assembly()
-    A, b = fem.apply_bc(A, b, pde)
-    if equation.pressure_neumann == True:
-        A, b = fem.lagrange_multiplier(A, b)
-    x = spsolve(A, b)
+    A, b = model.fem.apply_bc[model.apply_bc_str](A, b, model.pde)
+    if model.equation.pressure_neumann == True:
+        A, b = model.fem.lagrange_multiplier(A, b, c = model.pde.pressure_integral_target())
+    return A, b
 
-    ugdof = fem.uspace.number_of_global_dofs()
-    
-    u1[:] = x[:ugdof]
-    if equation.pressure_neumann == True:
-        p1[:] = x[ugdof:-1]
-    else:
-        p1[:] = x[ugdof:]
-
-    mesh.nodedata["uh"] = u1.reshape(3, -1).T
-    mesh.nodedata["ph"] = p1
-    mesh.to_vtk(f"stationary_sst_k_omega_{i+1}.vtu")
-
-    res_u = mesh.error(u0, u1)
-    res_p = mesh.error(p0, p1)
-    print("res_u", res_u)
-    print("res_p", res_p)
-
-    if res_u + res_p < 1e-8:
-        break
-
-    u0[:] = u1[:]
-    p0[:] = p1[:]
-    # u0[:] = 0.5 * u1[:] + 0.5 * u0[:]
-    # p0[:] = 0.5 * p1[:] + 0.5 * p0[:]
-
+A, b = assembly_BForm(fluid_model, u1)
