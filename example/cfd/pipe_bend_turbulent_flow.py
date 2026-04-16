@@ -6,7 +6,7 @@ from fealpy.cfd.stationary_incompressible_navier_stokes_lfem_model import Statio
 from fealpy.solver import spsolve, cg, gmres
 from fealpy.backend import backend_manager as bm
 from fealpy.mesher import ElbowPipeMesher
-from fealpy.mesh import TetrahedronMesh
+# from fealpy.mesh import TetrahedronMesh
 
 params = {
     "D": 1.0,                     # 管道内径 1.0 m (对应半径 0.5 m)
@@ -15,12 +15,173 @@ params = {
     "L_in_ratio": 10.0,           # 上游直管段 10m / 1m = 10.0
     "L_out_ratio": 15.0,          # 下游直管段 15m / 1m = 15.0
     "wall_thickness": 0.05,       # 报告未给定，基于1m管径假定一个合理值 (如 50mm)
-    "mesh_size_global": 0.3,     # 使用默认网格大小策略
-    "mesh_size_bend": 0.3,
-    "mesh_size_interface": 0.3,
+    "mesh_size_global": 0.1,     # 使用默认网格大小策略
+    "mesh_size_bend": 0.1,
+    "mesh_size_interface": 0.1,
 }
-mesher = ElbowPipeMesher(params)
-tetra_mesh = mesher.init_mesh()
+mesher = ElbowPipeMesher(dim=2, params=params)
+
+
+# 1. 流体单元
+from fealpy.mesh import TriangleMesh
+# fluid_tri = tri[tri_region == fluid_id]
+
+def extract_fluid_mesh(mesher):
+    """
+    从整体三角形网格中提取指定区域的纯净子网格
+    """
+    mesh = mesher.init_mesh()
+    mesh_data = mesher.mesh_data()
+
+    node = mesh_data["node"]
+    tri = mesh_data["triangle"]
+    tri_region = mesh_data["triangle_region"]
+
+    name2tag = mesh_data["physical_name_to_dimtag"]
+
+    fluid_id = name2tag["fluid"][1]
+    inlet_id = name2tag["inlet"][1]
+    outlet_id = name2tag["outlet"][1]
+    wall_id = name2tag["outer_wall"][1]
+
+    sub_tri_old = tri[tri_region == fluid_id]
+    sub_node_id, sub_tri_new = bm.unique(sub_tri_old.reshape(-1), return_inverse=True)
+    sub_node = node[sub_node_id]
+    sub_tri_new = sub_tri_new.reshape(sub_tri_old.shape)
+    sub_mesh = TriangleMesh(sub_node, sub_tri_new)
+    sub_mesh.fluid_node_id = sub_node_id
+
+
+    be = mesh_data["boundary_edge"]
+    b_mark = mesh_data["boundary_edge_marker"]
+
+    inlet = be[b_mark == inlet_id]
+    outlet = be[b_mark == outlet_id]
+    wall = be[b_mark == wall_id]
+    fsi = be[b_mark == name2tag["fsi_interface"][1]]
+
+    # 旧节点 → 新节点
+    global_to_sub = -bm.ones(mesh.number_of_nodes(), dtype=bm.int64)
+    global_to_sub[sub_node_id] = bm.arange(sub_node_id.shape[0], dtype=bm.int64)
+
+    # 映射边
+    be_new = global_to_sub[be]
+    inlet_new = global_to_sub[inlet]
+    outlet_new = global_to_sub[outlet]
+    wall_new = global_to_sub[wall]
+    fsi_new = global_to_sub[fsi]
+
+    # 过滤非法边（有 -1 的）
+    mask_be = bm.all(be_new >= 0, axis=1)
+    mask_inlet = bm.all(inlet_new >= 0, axis=1)
+    mask_outlet = bm.all(outlet_new >= 0, axis=1)
+    mask_wall = bm.all(wall_new >= 0, axis=1)
+    mask_fsi = bm.all(fsi_new >= 0, axis=1)
+    sub_mesh.be = be_new[mask_be]
+    sub_mesh.inlet = inlet_new[mask_inlet]
+    sub_mesh.outlet = outlet_new[mask_outlet]
+    sub_mesh.wall = wall_new[mask_wall]
+    sub_mesh.fsi = fsi_new[mask_fsi]
+
+    return sub_mesh
+
+fluid_mesh = extract_fluid_mesh(mesher)
+
+# fluid_mesh = extract_fluid_mesh()
+
+options = {
+    'backend': 'numpy',
+    'solve': 'direct',
+    'method': 'Newton',
+    'run': 'main',
+    'maxstep': 30,
+    'tol':1e-8,
+    'error_com': False,
+    'rho' : 1.0,
+    'mu': 1,
+    'pbar_log': True,
+    'log_level': 'INFO',
+    'apply_bc': 'dirichlet_dof'
+}
+
+from fealpy.backend import bm
+bm.set_backend(options['backend'])
+
+from fealpy.cfd.model.stationary_incompressible_navier_stokes.hydraulic_pipe_fsi_model import HydraulicPipeFSIModel2D
+pde = HydraulicPipeFSIModel2D(options=options, mesh=fluid_mesh)
+fluid_model = StationaryIncompressibleNSLFEMModel(pde=pde, mesh=fluid_mesh, options=options)
+uspace = fluid_model.fem.uspace
+print("uspace", uspace.number_of_global_dofs())
+u1, p1 = fluid_model.run()
+print("u1_max", bm.max(u1))
+print("u1_min", bm.min(u1))
+print("p1_max", bm.max(p1))
+print("p1_min", bm.min(p1))
+fluid_mesh.nodedata["u"] = u1.reshape(2, -1).T
+fluid_mesh.nodedata["p"] = p1
+fluid_mesh.to_vtk("fluid.vtu")
+
+# 2. 边界
+
+# from fealpy.backend import backend_manager as bm
+
+# def is_bd_dof(edge, boundary_edge, edge2dof):
+
+#     edge_np = bm.to_numpy(edge)
+#     be_np = bm.to_numpy(boundary_edge)
+
+#     edge_map = {tuple(e): i for i, e in enumerate(edge_np)}
+
+#     bd_edge_index = [edge_map[tuple(e)] for e in be_np]
+#     bd_edge_index = bm.array(bd_edge_index, dtype=bm.int64)
+
+#     bd_edge2dof = edge2dof[bd_edge_index]
+
+#     # 所有边界 dof
+#     bd_dof = bm.unique(bd_edge2dof.reshape(-1))
+
+#     gdof = int(bm.max(edge2dof)) + 1
+
+#     is_bd_dof = bm.zeros(gdof, dtype=bm.bool)
+#     is_bd_dof[bd_dof] = True
+
+#     return is_bd_dof
+
+# edge2dof = uspace.edge_to_dof()
+# edge = fluid_mesh.entity('edge')
+
+# is_dof = is_bd_dof(
+#     edge=edge, boundary_edge=fluid_mesh.be, edge2dof=edge2dof
+# )
+# print("is_dof", is_dof.shape)
+# print("gdof", uspace.number_of_global_dofs())
+
+
+
+
+
+
+exit()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+exit()
+
+
+
 tetra_mesh.to_vtk("pipe_bend_mesh.vtu")
 region_tags = tetra_mesh.celldata["region"]
 fluid_cell_indices = bm.where(region_tags == 1)[0]

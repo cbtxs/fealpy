@@ -76,6 +76,8 @@ class StationaryIncompressibleNSLFEMModel(ComputationalModel):
             self.mesh = mesh
         
         self.fem = self.method()
+        self.pde.uspace = self.fem.uspace
+        self.pde.pspace = self.fem.pspace
         if options is not None:
             self.solve.set(options['solve'])
             self.fem = self.method[options['method']]()
@@ -84,6 +86,7 @@ class StationaryIncompressibleNSLFEMModel(ComputationalModel):
             self.maxstep = options.get('maxstep', 10)
             self.tol = options.get('tol', 1e-10)
             self.error_com = options.get('error_com', True)
+            self.apply_bc_str = options.get('apply_bc', 'dirichlet')
             
     def __str__(self) -> str:
         """Return a nicely formatted, multi-line summary of the computational model configuration."""
@@ -159,9 +162,13 @@ class StationaryIncompressibleNSLFEMModel(ComputationalModel):
         ph0 = self.fem.pspace.function()
         
         for i in range(maxstep):
+            self.logger.info(f"第{i+1}步")
             uh1, ph1 = self.run['one_step'](uh0)
+            print("uh_max", bm.max(uh1))
+            print(1)
             res_u = self.mesh.error(uh0, uh1)
             res_p = self.mesh.error(ph0, ph1)
+            print(2)
             self.logger.info(f"res_u: {res_u}, res_p: {res_p}")
             if res_u + res_p < tol:
                 self.logger.info(f"Converged at iteration {i+1}")
@@ -183,7 +190,7 @@ class StationaryIncompressibleNSLFEMModel(ComputationalModel):
         tmr = timer()
         next(tmr)
         start = time.time()
-        A, b = self.fem.apply_bc(A, b, self.pde)
+        A, b = self.fem.apply_bc[self.apply_bc_str](A, b, self.pde)
         if self.equation.pressure_neumann == True:
             A, b = self.fem.lagrange_multiplier(A, b, c = self.pde.pressure_integral_target())
         
@@ -226,7 +233,7 @@ class StationaryIncompressibleNSLFEMModel(ComputationalModel):
         return uh1, ph1
 
     @variantmethod('direct')
-    def solve(self, A, F, solver='scipy'):
+    def solve(self, A, F, solver='mumps'):
         from fealpy.solver import spsolve
         self.solve_str = 'direct'
         return spsolve(A, F, solver = solver)
