@@ -672,6 +672,22 @@ class TetrahedronMesh(SimplexMesh, Plotable):
             return IM
 
             #self.ds.reinit(NN+NE, newCell)
+    def dihedral_angle(self):
+        """
+        @brief 计算所有单元的四个二面角
+        """
+        node = self.entity('node')
+        cell = self.entity('cell')
+        localFace = self.localFace
+
+        n = [bm.cross(node[cell[:, j],:] - node[cell[:, i],:],
+            node[cell[:, k],:] - node[cell[:, i],:]) for i, j, k in localFace]
+        l =[bm.sqrt(bm.sum(ni**2, axis=1)) for ni in n]
+        n = [ni/li.reshape(-1, 1) for ni, li in zip(n, l)]
+        localEdge = self.localEdge
+        angle = [(bm.pi - bm.arccos((n[i]*n[j]).sum(axis=1)))/bm.pi*180 for i,j in localEdge[-1::-1]]
+        return bm.array(angle).T
+
     def circumcenter(self, index=_S, returnradius=False):
         """
         @brief 计算外接圆圆心和半径
@@ -689,7 +705,22 @@ class TetrahedronMesh(SimplexMesh, Plotable):
             return c, R
         else:
             return c
-        
+    def cell_quality(self):
+        """
+        @brief  Calculate cell quality, where quality is defined as the radius
+        of the unit's circumscribed sphere divided by 3 times the radius of its
+        inscribed sphere.
+        """
+        s = self.face_area()
+        cell2face = self.cell_to_face()
+        ss = bm.sum(s[cell2face], axis=1)
+        d = self.direction(0)
+        ld = bm.sqrt(bm.sum(d**2, axis=1))
+        vol = self.cell_volume()
+        R = ld/vol/12.0
+        r = 3.0*vol/ss
+        return R/r/3.0 
+
     def label(self, node=None, cell=None, cellidx=None):
         """
         @brief 单元顶点的重新排列，使得cell[:, :2] 存储了单元的最长边

@@ -243,7 +243,17 @@ class MeshDS(metaclass=MeshMeta):
         return cell2face[index]
 
     def edge_to_cell(self, index: Index=_S) -> TensorLike:
-        return self.face_to_cell(index)
+        if self.TD == 2:
+            return self.face_to_cell(index)
+        elif self.TD ==3:
+            NC = self.number_of_cells()
+            NE = self.number_of_edges()
+            cell2edge =self.cell_to_edge()
+            NEC = self.number_of_edges_of_cells()
+            indice = bm.stack([cell2edge.flatten(),bm.repeat(range(NC),NEC)],axis=0)
+            data = bm.ones((NEC*NC), dtype=bm.bool,device=self.device)
+            edge2cell = COOTensor(indice,data,spshape=(NE,NC)).tocsr()
+            return edge2cell
 
     def face_to_cell(self, index: Index=_S) -> TensorLike:
         if not hasattr(self, 'face2cell'):
