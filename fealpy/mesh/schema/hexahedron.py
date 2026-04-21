@@ -1,0 +1,11 @@
+from .entity_schema import EntityContext, ShapedEntitySchema
+
+__all__ = ["HexahedronSchema"]
+
+
+class HexahedronSchema(ShapedEntitySchema):
+    name = "hex"
+    top_dim = 3
+    local_faces = {
+        'quad': [[0, 1, 2, 3], [4, 5, 6, 7], [0, 1, 4, 5], [2, 3, 6, 7], [0, 2, 4, 6], [1, 3, 5, 7]]
+    }

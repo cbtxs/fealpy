@@ -1,21 +1,28 @@
+from __future__ import annotations
+
+__all__ = ["dtype", "device", "Number", "Size", "Index", "TensorLike"]
 
 from abc import ABCMeta
 from typing import(
-    Union, Optional, Dict, Tuple, Any, Type, Generic, TypeVar, overload
+    Union, Optional, Dict, Tuple, Any, Type, NewType, TypeVar, overload
 )
 
 from .. import logger
 
 _Self = TypeVar("_Self")
 _DT = TypeVar("_DT")
-Number = Union[int, float, complex]
-Size = Tuple[int, ...]
+dtype = NewType("dtype", object)
+device = NewType("device", object)
+type Number = Union[int, float, complex]
+type Size = Tuple[int, ...]
+type Index = Union[int, slice, TensorLike]
+
 
 class TensorLike(metaclass=ABCMeta):
     @property
-    def dtype(self) -> Any: ...
+    def dtype(self) -> dtype: ...
     @property
-    def device(self) -> Any: ...
+    def device(self) -> device: ...
     @property
     def mT(self: _Self) -> _Self: ...
     @property
@@ -43,9 +50,9 @@ class TensorLike(metaclass=ABCMeta):
     def __itruediv__(self: _Self, other: Union[Number, _Self]) -> _Self: ...
     def __matmul__(self: _Self, other: _Self) -> _Self: ...
     def __pow__(self: _Self, other: Union[Number, _Self]) -> _Self: ...
-    def __neg__(self: _Self) -> _Self: ... 
-    def __pos__(self: _Self) -> _Self: ... 
-    def __abs__(self: _Self) -> _Self: ...  
+    def __neg__(self: _Self) -> _Self: ...
+    def __pos__(self: _Self) -> _Self: ...
+    def __abs__(self: _Self) -> _Self: ...
     @overload
     def reshape(self: _Self, newshape: Size, /) -> _Self: ...
     @overload
@@ -141,7 +148,7 @@ FUNCTION_MAPPING = _make_default_mapping(
     'equal', 'exp', 'expm1',
     'floor', 'floor_divide',
     'greater', 'greater_equal',
-    'hypot', 
+    'hypot',
     'imag', 'isfinite', 'isinf', 'isnan',
     'less', 'less_equal', 'log', 'log1p', 'log2', 'log10', 'logaddexp', 'logical_and',
     'logical_not', 'logical_or', 'logical_xor',
