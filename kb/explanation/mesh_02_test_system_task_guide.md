@@ -13,7 +13,10 @@
 
 这个任务的重点是“测试系统”本身，而不是把新网格模块一次性测完整。
 
-建议分支：`feature/mesh/mesh_02_test_system`，任务完成后PR合并回 `feature/mesh`。
+建议分支：`feature/mesh/mesh_02_test_system`，任务完成后PR合并回 `feature/mesh`；
+建议 task：在 `kb\developments\new_mesh_module\mesh_02_test_system` 目录下完成，若有必要可以通过子目录的方式添加子任务。
+
+注：测试进入 tests 目录，而非 test。
 
 ## 二、任务边界
 
