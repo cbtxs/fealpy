@@ -17,8 +17,8 @@ __all__ = ["EntityView"]
 class EntityView:
     """Provide a view of an entity sector, with user-friendly APIs to access its
     properties and relations."""
-    def __init__(self, storage: MeshBlock, sec: EntitySector):
-        self.storage = storage
+    def __init__(self, block: MeshBlock, sec: EntitySector):
+        self.block = block
         self.sector = sec
         self.schema = sec.schema
 
@@ -26,7 +26,7 @@ class EntityView:
         return self.schema.size(self.context())
 
     def context(self) -> EntityContext:
-        return EntityContext(self.storage, self.sector)
+        return EntityContext(self.block, self.sector)
 
     # User APIs
 
