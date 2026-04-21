@@ -12,8 +12,8 @@
 
 这个任务的目标是稳定根基，不是追求一次性做完所有网格能力。
 
-建议分支：`feature/mesh/mesh_01_validation`，任务完成后PR合并回 `feature/mesh`；
-建议 task：每人在 `kb\developments\new_mesh_module\mesh_01_validation` 目录下**新建子任务**。
+建议分支：`feature/mesh-01-validation-<子任务slug>`，任务完成后PR合并回 `feature/mesh`；
+建议 task：每人在 `kb/developments/new_mesh_module/mesh_01_validation` 目录下**新建子任务**。
 
 ## 二、阅读顺序
 

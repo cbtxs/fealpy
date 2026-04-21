@@ -13,8 +13,8 @@
 
 这个任务的重点是“测试系统”本身，而不是把新网格模块一次性测完整。
 
-建议分支：`feature/mesh/mesh_02_test_system`，任务完成后PR合并回 `feature/mesh`；
-建议 task：在 `kb\developments\new_mesh_module\mesh_02_test_system` 目录下完成，若有必要可以通过子目录的方式添加子任务。
+建议分支：`feature/mesh-02-test-system`，任务完成后PR合并回 `feature/mesh`；
+建议 task：在 `kb/developments/new_mesh_module/mesh_02_test_system` 目录下完成，若有必要可以通过子目录的方式添加子任务。
 
 注：测试进入 tests 目录，而非 test。
 
@@ -122,8 +122,8 @@
 每位参与者至少要输出以下几类可追溯资产中的一项或多项：
 
 - 自动化测试系统设计说明
-- 新网格模块单元测试文件
-- 新网格模块集成测试文件
+- 新网格模块示例单元测试文件
+- 新网格模块示例集成测试文件
 - 测试运行脚本或统一入口
 - Bug / 设计问题清单
 - 测试验证记录或回归结果
