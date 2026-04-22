@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import final, TYPE_CHECKING
+from typing import final, TYPE_CHECKING, ParamSpec
 
 from ...backend import Tensor, Index
 from ..schema.entity_schema import EntityContext
@@ -12,6 +12,7 @@ if TYPE_CHECKING:
 
 __all__ = ["EntityView"]
 
+P = ParamSpec("P")
 
 @final
 class EntityView:
@@ -82,5 +83,5 @@ class EntityView:
     def top_dimension(self) -> int:
         return self.schema.top_dim
 
-    def transform[**P](self, func: Callable[P, Tensor], kind: str = "value") -> Callable[P, Tensor]:
+    def transform(self, func: Callable[P, Tensor], kind: str = "value") -> Callable[P, Tensor]:
         return self.schema.transform(self.context(), func, kind)

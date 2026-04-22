@@ -13,9 +13,9 @@ _Self = TypeVar("_Self")
 _DT = TypeVar("_DT")
 dtype = NewType("dtype", object)
 device = NewType("device", object)
-type Number = Union[int, float, complex]
-type Size = Tuple[int, ...]
-type Index = Union[int, slice, TensorLike]
+Number = Union[int, float, complex]
+Size = Tuple[int, ...]
+Index = Union[int, slice, "TensorLike"]
 
 
 class TensorLike(metaclass=ABCMeta):

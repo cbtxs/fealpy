@@ -10,4 +10,4 @@ from .manager import BackendManager
 
 backend_manager = BackendManager(default_backend='numpy')
 bm = backend_manager
-type Tensor = TensorLike
+Tensor = TensorLike

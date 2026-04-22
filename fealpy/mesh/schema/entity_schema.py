@@ -1,7 +1,7 @@
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import ClassVar, Literal
+from typing import ClassVar, Literal, ParamSpec
 
 from ...backend import bm
 from ...backend import Tensor, Index
@@ -13,7 +13,8 @@ __all__ = [
     "ShapedEntitySchema"
 ]
 
-type EntityShape = Literal["node", "edge", "tri", "quad", "prism", "pyramid", "tet", "hex"]
+P = ParamSpec("P")
+EntityShape = Literal["node", "edge", "tri", "quad", "prism", "pyramid", "tet", "hex"]
 
 
 @dataclass(slots=True, frozen=True)
@@ -110,7 +111,7 @@ class EntitySchema:
         raise NotImplementedError()
 
     @classmethod
-    def transform[**P](cls, ctx: EntityContext, func: Callable[P, Tensor], kind: str = "value") -> Callable[P, Tensor]:
+    def transform(cls, ctx: EntityContext, func: Callable[P, Tensor], kind: str = "value") -> Callable[P, Tensor]:
         """Transform functions from reference to physical element."""
         raise NotImplementedError()
 
