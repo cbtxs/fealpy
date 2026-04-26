@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
 
+import numpy as np
+
 from ..backend import backend_manager as bm
 from ..decorator import variantmethod
 from ..mesh import TetrahedronMesh, TriangleMesh
@@ -233,11 +235,28 @@ def extract_triangle_data(gmsh_module):
         raise ValueError("triangles are missing physical region assignments")
 
     return {
-        "node": bm.array(filtered_coords_np, dtype=bm.float64),
-        "triangle": bm.array(triangle, dtype=bm.int64),
+        "node": filtered_coords_np,
+        "triangle": triangle,
         "triangle_region": bm.array(triangle_region, dtype=bm.int64),
         "node_index_map": node_index_map,
     }
+
+
+def _orient_triangle_cells(node, triangle):
+    triangle_np = bm.to_numpy(triangle)
+    if triangle_np.size == 0:
+        return triangle
+    node_np = bm.to_numpy(node)
+    p0 = node_np[triangle_np[:, 0], :2]
+    p1 = node_np[triangle_np[:, 1], :2]
+    p2 = node_np[triangle_np[:, 2], :2]
+    signed_area = 0.5 * ((p1[:, 0] - p0[:, 0]) * (p2[:, 1] - p0[:, 1]) - (p1[:, 1] - p0[:, 1]) * (p2[:, 0] - p0[:, 0]))
+    flip_mask = signed_area < 0.0
+    if not bool(np.any(flip_mask)):
+        return triangle
+    triangle_np = triangle_np.copy()
+    triangle_np[flip_mask] = triangle_np[flip_mask][:, [0, 2, 1]]
+    return bm.array(triangle_np, dtype=bm.int64)
 
 
 def extract_boundary_edges(gmsh_module, node_index_map: Dict[int, int]):
