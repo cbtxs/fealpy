@@ -170,34 +170,93 @@ def _ns_boundary_shape_derivative(
             resolved_objective_parameters.get("shape_density_formula", "paper"),
         )
     ).strip().lower()
-    factor_volume = float(resolved_objective_parameters.get("factor_volume", 0.0) or 0.0)
-    factor_barycenter = float(resolved_objective_parameters.get("factor_barycenter", 0.0) or 0.0)
-    reference_volume = float(resolved_objective_parameters.get("volume_reference", 0.0) or 0.0)
-    reference_barycenter = bm.asarray(
-        resolved_objective_parameters.get("barycenter_reference", bm.zeros(2, dtype=float)),
-        dtype=float,
-    ).reshape(-1)
-    gradient = bm.zeros((design_node_ids.size, 2), dtype=float)
-    density_values = bm.zeros(design_node_ids.size, dtype=float)
-    for index, node_id in enumerate(design_node_ids.tolist()):
-        normal = bm.asarray(normals[index], dtype=float)
-        state_normal = bm.zeros(2, dtype=float)
-        if 0 <= int(node_id) < state_grad_at_nodes.shape[0]:
-            grad_u = bm.asarray(state_grad_at_nodes[int(node_id)], dtype=float)
-            state_normal = grad_u @ normal
-        density = float(viscosity) * float(bm.dot(state_normal, state_normal))
-        if density_variant not in {"paper", "paper_dissipation", "paper_dissipation_only"}:
-            adjoint = get_value(adjoint_result, "adjoint", default=None)
-            if isinstance(adjoint, Mapping):
-                adjoint_velocity = get_value(adjoint, "velocity", "state_velocity", "u")
-                adjoint_grad_at_nodes = _velocity_gradient_at_nodes(mesh, adjoint_velocity) if adjoint_velocity is not None else None
-                if adjoint_grad_at_nodes is not None and 0 <= int(node_id) < adjoint_grad_at_nodes.shape[0]:
-                    grad_v = bm.asarray(adjoint_grad_at_nodes[int(node_id)], dtype=float)
-                    adjoint_normal = grad_v @ normal
-                    density -= float(viscosity) * float(bm.dot(adjoint_normal, state_normal))
-        density_values[index] = density
-        gradient[index] = density * normal * float(vertex_weights[index])
+    num_design_nodes = int(design_node_ids.size)
+    # 收集状态速度梯度：shape = (N_gamma, 2, 2)
+    selected_state_grad = bm.zeros((num_design_nodes, 2, 2), dtype=float)
 
+    valid_state_nodes = (
+        (design_node_ids >= 0)
+        & (design_node_ids < int(state_grad_at_nodes.shape[0]))
+    )
+    if bm.any(valid_state_nodes):
+        valid_ids = design_node_ids[valid_state_nodes]
+        selected_state_grad[valid_state_nodes] = bm.asarray(
+            state_grad_at_nodes[valid_ids],
+            dtype=float,
+        )
+    # state_normal[i] = grad_u(x_i) @ n_i
+    # shape = (N_gamma, 2)
+    state_normal = bm.einsum(
+        "nij,nj->ni",
+        selected_state_grad,
+        normals,
+    )
+    # paper density:
+    # density = mu |∂_n u|^2
+    density_values = float(viscosity) * bm.einsum(
+        "ni,ni->n",
+        state_normal,
+        state_normal,
+    )
+    use_adjoint_density = density_variant not in {
+        "paper",
+        "paper_dissipation",
+        "paper_dissipation_only",
+    }
+    if use_adjoint_density:
+        adjoint = get_value(adjoint_result, "adjoint", default=None)
+        adjoint_velocity = get_value(
+            adjoint,
+            "velocity",
+            "state_velocity",
+            "u",
+            default=None,
+        )
+        # 关键：伴随速度梯度只计算一次
+        adjoint_grad_at_nodes = (
+            _velocity_gradient_at_nodes(mesh, adjoint_velocity)
+            if adjoint_velocity is not None
+            else None
+        )
+        if adjoint_grad_at_nodes is not None:
+            selected_adjoint_grad = bm.zeros((num_design_nodes, 2, 2), dtype=float)
+            valid_adjoint_nodes = (
+                (design_node_ids >= 0)
+                & (design_node_ids < int(adjoint_grad_at_nodes.shape[0]))
+            )
+            if bm.any(valid_adjoint_nodes):
+                valid_ids = design_node_ids[valid_adjoint_nodes]
+                selected_adjoint_grad[valid_adjoint_nodes] = bm.asarray(
+                    adjoint_grad_at_nodes[valid_ids],
+                    dtype=float,
+                )
+            # adjoint_normal[i] = grad_lambda(x_i) @ n_i
+            # shape = (N_gamma, 2)
+            adjoint_normal = bm.einsum(
+                "nij,nj->ni",
+                selected_adjoint_grad,
+                normals,
+            )
+            # density -= mu (∂_n λ · ∂_n u)
+            adjoint_correction = float(viscosity) * bm.einsum(
+                "ni,ni->n",
+                adjoint_normal,
+                state_normal,
+            )
+            adjoint_density_weight = float(
+                resolved_objective_parameters.get(
+                    "adjoint_density_weight",
+                    1.0,
+                )
+            )
+            density_values = density_values - adjoint_density_weight * adjoint_correction
+    # nodal vector representative:
+    # gradient_i = density_i * n_i * vertex_weight_i
+    gradient = (
+        density_values[:, None]
+        * bm.asarray(normals, dtype=float)
+        * bm.asarray(vertex_weights, dtype=float)[:, None]
+    )
     return {
         int(node_id): (float(vector[0]), float(vector[1]))
         for node_id, vector in zip(design_node_ids.tolist(), gradient, strict=True)

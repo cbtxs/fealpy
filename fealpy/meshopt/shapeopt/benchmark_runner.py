@@ -16,12 +16,12 @@ from .benchmark_common import (
     _build_vtu_point_data,
     _compute_convergence_rates,
     _map_scalar_product,
-    _polygon_vertex_normals,
     get_mesh_nodes,
     get_value,
     require_mesh_nodes,
 )
 from .geometry_gradient import assemble_geometry_gradient
+from .geometry_regularization import _polygon_vertex_normals,_polygon_area_and_centroid
 from .mesh_propagation import RemeshResult, propagate_mesh, remesh_mesh, check_mesh_quality
 from .objective import evaluate_objective
 from .shape_optimizer import OptimizationResult, ShapeOptimizer
@@ -204,22 +204,6 @@ class BenchmarkRunnerMixin:
             "iteration": 0,
         }
 
-    def build_optimizer(self, options: Mapping[str, Any] | None = None) -> ShapeOptimizer:
-        merged_options = dict(self.options)
-        if options is not None:
-            merged_options.update(dict(options))
-        merged_options.setdefault("objective_parameters", self.objective_parameters)
-        return ShapeOptimizer(
-            geometry_contract=self.geometry_contract,
-            state_solver=self.build_state_solver(),
-            objective_evaluator=evaluate_objective,
-            adjoint_solver=self.build_adjoint_solver(),
-            geometry_gradient_assembler=assemble_geometry_gradient,
-            mesh_propagator=self.build_mesh_propagator(),
-            cache=self.cache,
-            options=merged_options,
-        )
-
     def build_mesh_propagator(self):
         if not hasattr(self, "_mesh_propagator_cache") or self._mesh_propagator_cache is None:
             class _MeshPropagator:
@@ -276,8 +260,25 @@ class BenchmarkRunnerMixin:
             if export_initial_state:
                 self.export_vtu_frame(output_dir / f"{vtu_prefix}_000.vtu", initial_state)
             options["intermediate_result_callback"] = self._build_vtu_export_callback(output_dir, vtu_prefix)
-        return self.build_optimizer(options=options).run(initial_state)
-
+            
+        merged_options = dict(self.options)
+        if options is not None:
+            merged_options.update(dict(options))
+        merged_options.setdefault("objective_parameters", self.objective_parameters)
+    
+        so = ShapeOptimizer(
+            geometry_contract=self.geometry_contract,
+            state_solver=self.build_state_solver(),
+            objective_evaluator=evaluate_objective,
+            adjoint_solver=self.build_adjoint_solver(),
+            geometry_gradient_assembler=assemble_geometry_gradient,
+            mesh_propagator=self.build_mesh_propagator(),
+            cache=self.cache,
+            options=merged_options,
+        )
+        return so.run(initial_state)
+    
+    
     def shape_gradient_test(self, *, h: Any = None, rng: Any = None, verbose: bool = True) -> float:
         custom_rng = rng or random.Random()
         initial_state = self.build_initial_state()
