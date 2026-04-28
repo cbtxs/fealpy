@@ -19,17 +19,17 @@ DEFAULT_CENTER = (0.0, 0.0)
 DEFAULT_RADIUS = 0.5
 DEFAULT_MESH_SIZE = 0.375
 DEFAULT_MESH_SIZE_PROFILE = "graded"
-DEFAULT_MESH_SIZE_INNER = 0.0125
-DEFAULT_MESH_SIZE_OUTER = 0.15
-DEFAULT_MESH_SIZE_TRANSITION = 0.8
-DEFAULT_INITIAL_STEP_SIZE = 0.15
-DEFAULT_MAX_ITERATIONS = 70
-DEFAULT_ALGORITHM = "gradient_descent"
+DEFAULT_MESH_SIZE_INNER = 0.025
+DEFAULT_MESH_SIZE_OUTER = 0.25
+DEFAULT_MESH_SIZE_TRANSITION = 1.3
+DEFAULT_INITIAL_STEP_SIZE = 1.0
+DEFAULT_MAX_ITERATIONS = 800
+DEFAULT_ALGORITHM = "gradient_descent"  # "lbfgs" or "gradient_descent"
 DEFAULT_RTOL = 5.0e-4
 DEFAULT_LINEAR_SOLVER = "mumps"
-DEFAULT_FACTOR_VOLUME = 0
+DEFAULT_FACTOR_VOLUME = 1e3
 DEFAULT_FACTOR_BARYCENTER = 0
-DEFAULT_MU_DEF = 5.0e2
+DEFAULT_MU_DEF = 5e3
 DEFAULT_MU_FIX = 1.0
 DEFAULT_VISCOSITY = 1.0
 DEFAULT_REMESH_QUALITY_PROFILE = "cashocs"
@@ -45,7 +45,6 @@ DEFAULT_OPTIONS = {
     "algorithm": DEFAULT_ALGORITHM,
     "rtol": DEFAULT_RTOL,
     "initial_step_size": DEFAULT_INITIAL_STEP_SIZE,
-    "descent_direction_sign": 1.0,
     "linear_solver": DEFAULT_LINEAR_SOLVER,
     "line_search_reduction": 0.5,
     "epsilon_armijo": 1.0e-4,
@@ -154,7 +153,7 @@ if __name__ == "__main__":  # pragma: no cover
         "spatial_dim": 2,
     }
     objective_parameters = {
-        "q": 3,
+        "q": 4,
         "viscosity": viscosity,
         "factor_volume": factor_volume,
         "factor_barycenter": factor_barycenter,
@@ -174,7 +173,7 @@ if __name__ == "__main__":  # pragma: no cover
         "regularization_term": lambda *args, **kwargs: 0.0,
         "shape_derivative_source": lambda *args, **kwargs: None,
         "adjoint_rhs_scale": 2.0,
-        'is_hole_boundary': True,
+        "shape_density_variant": "adjoint",
     }
     pde = ObstacleStokesFluidModel(box=box, viscosity=viscosity)
     state_solver = StationaryIncompressibleStokesLFEMModel(

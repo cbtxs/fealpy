@@ -133,9 +133,6 @@ def _polygon_vertex_normals(points: Any, is_hole_boundary: bool = True) -> Any:
     normals = bm.where(fallback_norm[:, None] > 0.0, normals, bm.asarray([[1.0, 0.0]], dtype=float))
     alignment = bm.sum(normals * (coords - centroid), axis=1)
     normals = bm.where(alignment[:, None] < 0.0, -normals, normals)
-    if is_hole_boundary:
-        print("Hole boundary detected; flipping normals to point inward.")
-        normals = -normals
     
     norm = bm.linalg.norm(normals, axis=1)
     return bm.divide(normals, norm[:, None], out=bm.zeros_like(normals), where=norm[:, None] > 0.0)

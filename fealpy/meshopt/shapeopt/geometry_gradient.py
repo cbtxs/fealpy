@@ -12,7 +12,7 @@ from fealpy.fem import BilinearForm, BoundaryFaceSourceIntegrator, DirichletBC, 
 from fealpy.functionspace import LagrangeFESpace, TensorFunctionSpace
 from fealpy.material import LinearElasticMaterial
 from fealpy.solver import spsolve
-from .geometry_regularization import _polygon_vertex_normals
+from .geometry_regularization import _polygon_vertex_normals,_polygon_area_and_centroid
 
 from .benchmark_common import get_mesh_nodes, get_value
 
@@ -244,27 +244,55 @@ def _vector_array_to_nodal_map(array: Any) -> dict[int, tuple[float, ...]]:
         int(i): tuple(float(component) for component in row)
         for i, row in enumerate(values)
     }
+    
+def _add_gradient_maps(left: Any, right: Any) -> Any:
+    """Add two gradient-like objects while preserving mapping structure."""
+    if left is None:
+        return right
+    if right is None:
+        return left
 
+    if isinstance(left, Mapping) and isinstance(right, Mapping):
+        keys = set(left) | set(right)
+        result = {}
+        for key in keys:
+            lv = bm.asarray(left.get(key, 0.0), dtype=float).reshape(-1)
+            rv = bm.asarray(right.get(key, 0.0), dtype=float).reshape(-1)
 
-def _polygon_area_and_centroid(points: Any, fallback_center: tuple[float, float]) -> tuple[float, Any]:
-    """Compute polygon area and centroid using the shoelace formula."""
-    coords = bm.asarray(points, dtype=float)
-    if coords.shape[0] < 3:
-        return 0.0, bm.asarray(fallback_center, dtype=float)
+            if lv.size == 1 and rv.size > 1:
+                lv = bm.full(rv.shape, float(lv[0]), dtype=float)
+            if rv.size == 1 and lv.size > 1:
+                rv = bm.full(lv.shape, float(rv[0]), dtype=float)
 
-    x = coords[:, 0]
-    y = coords[:, 1]
-    x_next = bm.roll(x, -1)
-    y_next = bm.roll(y, -1)
-    cross = x * y_next - x_next * y
-    area = 0.5 * float(bm.sum(cross))
-    if abs(area) <= 1.0e-14:
-        return 0.0, coords.mean(axis=0)
+            if lv.shape != rv.shape:
+                size = max(lv.size, rv.size)
+                if lv.size < size:
+                    lv = bm.pad(lv, (0, size - lv.size))
+                if rv.size < size:
+                    rv = bm.pad(rv, (0, size - rv.size))
 
-    cx = float(bm.sum((x + x_next) * cross) / (6.0 * area))
-    cy = float(bm.sum((y + y_next) * cross) / (6.0 * area))
-    return abs(area), bm.asarray([cx, cy], dtype=float)
+            value = lv + rv
+            result[int(key)] = tuple(float(v) for v in value)
+        return result
 
+    if isinstance(left, Mapping):
+        result = dict(left)
+        right_value = bm.asarray(right, dtype=float).reshape(-1)
+        for key, value in result.items():
+            lv = bm.asarray(value, dtype=float).reshape(-1)
+            rv = right_value
+            if rv.size == 1 and lv.size > 1:
+                rv = bm.full(lv.shape, float(rv[0]), dtype=float)
+            result[int(key)] = tuple(float(v) for v in lv + rv)
+        return result
+
+    if isinstance(right, Mapping):
+        return _add_gradient_maps(right, left)
+
+    try:
+        return bm.asarray(left, dtype=float) + bm.asarray(right, dtype=float)
+    except Exception:
+        return right
 
 def _polygon_area_gradient(points: Any) -> Any:
     """Compute the discrete area gradient for an ordered 2D polygon."""
@@ -282,41 +310,6 @@ def _polygon_area_gradient(points: Any) -> Any:
         ],
         axis=1,
     )
-
-
-# def _polygon_vertex_normals(points: Any) -> Any:
-#     """Approximate outward vertex normals for an ordered polygon."""
-#     coords = bm.asarray(points, dtype=float)
-#     if coords.shape[0] == 0:
-#         return bm.zeros_like(coords)
-#     if coords.shape[0] == 1:
-#         return bm.asarray([[1.0, 0.0]], dtype=float)
-
-#     centroid = coords.mean(axis=0)
-#     prev_coords = bm.roll(coords, 1, axis=0)
-#     next_coords = bm.roll(coords, -1, axis=0)
-#     prev_edge = coords - prev_coords
-#     next_edge = next_coords - coords
-#     prev_norm = bm.linalg.norm(prev_edge, axis=1)
-#     next_norm = bm.linalg.norm(next_edge, axis=1)
-#     prev_unit = bm.divide(prev_edge, prev_norm[:, None], out=bm.zeros_like(prev_edge), where=prev_norm[:, None] > 0.0)
-#     next_unit = bm.divide(next_edge, next_norm[:, None], out=bm.zeros_like(next_edge), where=next_norm[:, None] > 0.0)
-#     tangent = prev_unit + next_unit
-#     fallback_tangent = next_coords - prev_coords
-#     tangent_norm = bm.linalg.norm(tangent, axis=1)
-#     tangent = bm.where(tangent_norm[:, None] > 0.0, tangent, fallback_tangent)
-#     normals = bm.stack((tangent[:, 1], -tangent[:, 0]), axis=-1)
-#     normal_norm = bm.linalg.norm(normals, axis=1)
-#     fallback = coords - centroid
-#     fallback_norm = bm.linalg.norm(fallback, axis=1)
-#     normals = bm.where(normal_norm[:, None] > 0.0, normals, fallback)
-#     normals = bm.where(fallback_norm[:, None] > 0.0, normals, bm.asarray([1.0, 0.0], dtype=float))
-#     flip = bm.einsum("ij,ij->i", normals, coords - centroid) < 0.0
-#     normals[flip] *= -1.0
-#     norms = bm.linalg.norm(normals, axis=1)
-#     normals = bm.divide(normals, norms[:, None], out=bm.zeros_like(normals), where=norms[:, None] > 0.0)
-#     return normals
-
 
 def _velocity_gradient_at_nodes(mesh: Any, field: Any) -> Any | None:
     """Average a vector field gradient to mesh nodes."""
@@ -336,7 +329,6 @@ def _velocity_gradient_at_nodes(mesh: Any, field: Any) -> Any | None:
     weights = weights / weights_sum[:, None]
     grad_at_nodes = bm.einsum("lk, kij -> lij", weights, grad_u)
     return bm.asarray(grad_at_nodes, dtype=float)
-
 
 def _state_adjoint_boundary_gradient(
     mesh: Any,
@@ -722,6 +714,24 @@ def assemble_geometry_gradient(
             "raw_shape_derivative",
             default=None,
         )
+    
+    objective_shape_derivative = get_value(
+    objective_result,
+    "shape_derivative",
+    "raw_shape_derivative",
+    default=None,
+    )
+    adjoint_shape_derivative = get_value(
+        adjoint_result,
+        "shape_derivative",
+        "raw_shape_derivative",
+        default=None,
+    )
+    shape_derivative = _add_gradient_maps(
+        adjoint_shape_derivative,
+        objective_shape_derivative,
+    )
+    
     if shape_derivative is None and combined_gradient is not None:
         shape_derivative = combined_gradient
         combined_gradient_is_fallback = True
@@ -824,8 +834,7 @@ def assemble_geometry_gradient(
         descent_source = normal_gradient
     if descent_source is None:
         descent_source = raw_gradient
-    descent_sign = float(get_value(options, "descent_direction_sign", default=-1.0))
-    descent_direction = _scale_value(descent_source, descent_sign) if descent_source is not None else None
+    descent_direction = _scale_value(descent_source, -1.0) if descent_source is not None else None
 
     return GeometryGradientResult(
         raw_gradient=raw_gradient,
@@ -895,12 +904,11 @@ def compute_descent_direction(
     descent_direction = getattr(geometry_gradient, "descent_direction", None)
     if descent_direction is not None:
         return descent_direction
-    descent_sign = float(get_value(options, "descent_direction_sign", default=-1.0))
     node_gradient = getattr(geometry_gradient, "node_gradient", None)
     if node_gradient is not None:
-        return _scale_value(node_gradient, descent_sign)
+        return _scale_value(node_gradient, -1.0)
     normal_gradient = getattr(geometry_gradient, "normal_gradient", geometry_gradient)
-    return _scale_value(normal_gradient, descent_sign)
+    return _scale_value(normal_gradient, -1.0)
 
 
 def build_boundary_displacement(

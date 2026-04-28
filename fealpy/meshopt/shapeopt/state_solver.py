@@ -95,40 +95,6 @@ def _build_fem_update_guess(fem: Any, initial_guess: Any = None) -> Any:
     return velocity_space.function()
 
 
-def _pin_pressure_gauge(
-    fem: Any,
-    matrix: Any,
-    rhs: Any,
-    fluid_model: Any,
-    gauge_dof: int = 0,
-    gauge_value: Any = 0.0,
-) -> tuple[Any, Any]:
-    pressure_space = getattr(fem, "pspace", None)
-    velocity_space = getattr(fem, "uspace", None)
-    if pressure_space is None or velocity_space is None:
-        return matrix, rhs
-    pde = getattr(fluid_model, "pde", fluid_model)
-    pgdof = pressure_space.number_of_global_dofs()
-    if pgdof <= 0:
-        return matrix, rhs
-    gauge_index = int(gauge_dof)
-    if gauge_index < 0:
-        gauge_index += pgdof
-    if gauge_index < 0 or gauge_index >= pgdof:
-        raise IndexError(f"pressure gauge dof {gauge_dof} out of range for {pgdof} pressure dofs")
-    pressure_mask = bm.zeros(pgdof, dtype=bool)
-    pressure_mask[gauge_index] = True
-    pressure_values = bm.zeros(pgdof, dtype=pressure_space.ftype, device=getattr(pressure_space, "device", None))
-    pressure_values[gauge_index] = gauge_value
-    bc = DirichletBC(
-        (velocity_space, pressure_space),
-        gd=(pde.velocity_dirichlet, pressure_values),
-        threshold=(pde.is_velocity_boundary, pressure_mask),
-        method="interp",
-    )
-    return bc.apply(matrix, rhs)
-
-
 def solve_state_system(
     mesh: Any,
     fluid_model: Any,
@@ -158,23 +124,7 @@ def solve_state_system(
     apply_bc = getattr(fem, "apply_bc", None)
     if callable(apply_bc):
         matrix, rhs = apply_bc(matrix, rhs, getattr(fluid_model, "pde", fluid_model))
-    pressure_gauge = get_value(
-        options,
-        "pressure_gauge",
-        default=get_value(getattr(fluid_model, "options", None), "pressure_gauge", default="lagrange_multiplier"),
-    )
-    
-    if pressure_gauge == "pin_dof":
-        matrix, rhs = _pin_pressure_gauge(
-            fem,
-            matrix,
-            rhs,
-            fluid_model,
-            gauge_dof=get_value(options, "pressure_gauge_dof", default=get_value(getattr(fluid_model, "options", None), "pressure_gauge_dof", default=0)),
-            gauge_value=get_value(options, "pressure_gauge_value", default=get_value(getattr(fluid_model, "options", None), "pressure_gauge_value", default=0.0)),
-        )
-    elif hasattr(fem, "lagrange_multiplier"):
-        matrix, rhs = fem.lagrange_multiplier(matrix, rhs)
+
     x = solve(matrix, rhs, solver=get_value(options, "linear_solver", default="mumps"))
     
     ugdof = fem.uspace.number_of_global_dofs()

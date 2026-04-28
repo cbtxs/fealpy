@@ -12,7 +12,7 @@ from .benchmark_common import get_value
 from .geometry_contract import refresh_propagation_cache
 from .geometry_gradient import build_boundary_displacement
 from .l_bfgs import ShapeLBFGSState
-
+from .geometry_contract import refresh_propagation_cache, build_geometry_contract
 
 @dataclass(slots=True)
 class OptimizationHistoryEntry:
@@ -240,21 +240,13 @@ class ShapeOptimizer:
         )
         self._remesh_iteration_interval_value = self._resolve_int_option("remesh_iter", default=0)
         self._lbfgs_memory_size_value = self._resolve_int_option(
-            "lbfgs_memory_size",
-            "memory_size",
-            "NumGrad",
-            default=10,
-            minimum=1,
+            "lbfgs_memory_size","memory_size","NumGrad",default=10,minimum=1,
         )
         self._objective_parameters_default = self.get_value(self.options, "objective_parameters", default=None)
         self.algorithm = str(self.get_value(self.options, "algorithm", default="lbfgs")).casefold()
-        self.lbfgs_state = ShapeLBFGSState(memory_size=self._lbfgs_memory_size()) if self.algorithm == "lbfgs" else None
+        self.lbfgs_state = ShapeLBFGSState(memory_size=self._lbfgs_memory_size_value) if self.algorithm == "lbfgs" else None
         self._lbfgs_pending_update: tuple[Any, Any] | None = None
         self._component_method_cache: dict[tuple[int, str], Any] = {}
-    
-    def _use_fixed_step_descent(self) -> bool:
-        """Return whether the optimizer should use a fixed-step descent update."""
-        return self.algorithm in {"fixed_step_descent", "fixed_step", "fixed_step_steepest", "fd"}
 
     def _resolve_float_option(self, *names: str, default: float) -> float:
         value = self.get_value(self.options, *names, default=default)
@@ -303,56 +295,6 @@ class ShapeOptimizer:
         if current_objective is not None:
             current_objective = float(current_objective)
         return mesh, objective_parameters, current_objective
-
-    def _evaluate_current_objective(self, current_state: Any) -> float | None:
-        """Re-evaluate the current objective when it is missing."""
-        mesh, objective_parameters, _ = self._resolve_state_context(current_state)
-        state_result = self._invoke_component(
-            self.state_solver,
-            "solve_state_system",
-            mesh,
-            self.geometry_contract,
-            initial_guess=self.get_value(current_state, "initial_guess"),
-            options=self.options,
-        )
-        objective_result = self._invoke_component(
-            self.objective_evaluator,
-            "evaluate_objective",
-            mesh,
-            state_result,
-            objective_parameters,
-            current_state=current_state,
-        )
-        objective_value = self.get_value(objective_result, "total_objective", "objective", default=None)
-        return None if objective_value is None else float(objective_value)
-
-    def _step_size(self) -> float:
-        """Return the default step size."""
-        return self._initial_step_size
-
-    def _armijo_epsilon(self) -> float:
-        """Return the Armijo factor."""
-        return self._armijo_epsilon_value
-
-    def _line_search_reduction(self) -> float:
-        """Return the line-search reduction factor."""
-        return self._line_search_reduction_value
-
-    def _minimum_step_size(self) -> float:
-        """Return the minimum step size."""
-        return self._minimum_step_size_value
-
-    def _max_line_search_iterations(self) -> int:
-        """Return the maximum number of backtracking trials."""
-        return self._max_line_search_iterations_value
-
-    def _remesh_iteration_interval(self) -> int:
-        """Return the remeshing iteration interval."""
-        return self._remesh_iteration_interval_value
-
-    def _lbfgs_memory_size(self) -> int:
-        """Return the L-BFGS memory size."""
-        return self._lbfgs_memory_size_value
 
     def _negate_value(self, value: Any) -> Any:
         """Negate a scalar, vector, or nested mapping."""
@@ -455,15 +397,6 @@ class ShapeOptimizer:
         updated["accepted"] = False
         updated["reason"] = reason
         return updated
-
-    def _current_iteration(self, current_state: Any) -> int | None:
-        """Return the current iteration index."""
-        iteration = self.get_value(current_state, "iteration", "iteration_index", default=None)
-        if iteration is None and self.cache is not None:
-            iteration = self.get_value(self.cache, "iteration", default=None)
-        if iteration is None:
-            return None
-        return int(iteration)
 
     def _annotate_iteration(self, state: Any, iteration: int) -> Any:
         """Attach the iteration number to the state."""
@@ -575,10 +508,10 @@ class ShapeOptimizer:
         objective_parameters = self.get_value(current_state, "objective_parameters")
         if objective_parameters is None:
             objective_parameters = self._objective_parameters_default if self._objective_parameters_default is not None else {}
-        step_size = self._step_size() if initial_step_size is None else float(initial_step_size)
-        reduction_factor = self._line_search_reduction()
-        min_step_size = self._minimum_step_size()
-        max_iterations = self._max_line_search_iterations()
+        step_size = self._initial_step_size
+        reduction_factor = self._line_search_reduction_value
+        min_step_size = self._minimum_step_size_value
+        max_iterations = self._max_line_search_iterations_value
         diagnostics = bool(self.get_value(self.options, "diagnostics", "optimization_diagnostics", default=False))
 
         trial_state = None
@@ -686,7 +619,7 @@ class ShapeOptimizer:
         requires_remesh = bool(accepted and (backtracked or self._requires_remesh(current_state, quality_info)))
 
         return LineSearchResult(
-            initial_step_size=self._step_size() if initial_step_size is None else float(initial_step_size),
+            initial_step_size=self._initial_step_size,
             step_size=step_size,
             current_objective=current_objective,
             trial_objective=trial_objective,
@@ -697,97 +630,6 @@ class ShapeOptimizer:
             quality_info=quality_info,
             trial_state_result=trial_state_result,
             trial_objective_result=trial_objective_result,
-        )
-
-    def _fixed_step_trial(
-        self,
-        mesh: Any,
-        current_state: Any,
-        descent_direction: Any,
-        current_objective: float | None,
-        step_size: float | None = None,
-    ) -> LineSearchResult:
-        """Run one fixed-step steepest-descent trial without backtracking."""
-        propagation_parameters = self.get_value(self.cache, "propagation_parameters", default={})
-        objective_parameters = self.get_value(current_state, "objective_parameters")
-        if objective_parameters is None:
-            objective_parameters = self._objective_parameters_default if self._objective_parameters_default is not None else {}
-        resolved_step_size = self._step_size() if step_size is None else float(step_size)
-        diagnostics = bool(self.get_value(self.options, "diagnostics", "optimization_diagnostics", default=False))
-        if diagnostics:
-            print(f"[opt-fixed] step={resolved_step_size:.6e}")
-        boundary_displacement = build_boundary_displacement(
-            descent_direction,
-            resolved_step_size,
-            self.geometry_contract,
-            self.options,
-            mesh=mesh,
-            cache=self.cache,
-            objective_parameters=objective_parameters,
-        )
-        trial_state = self._invoke_component(
-            self.mesh_propagator,
-            "build_trial_mesh",
-            mesh,
-            boundary_displacement,
-            self.geometry_contract,
-            propagation_parameters,
-            cache=self.cache,
-        )
-        quality_info = self.get_value(trial_state, "quality_info")
-        trial_mesh = self.get_value(trial_state, "trial_mesh", "mesh")
-        trial_objective = self.get_value(trial_state, "trial_objective")
-        quality_state = self._quality_state(quality_info)
-        quality_flag = self.get_value(quality_info, "accepted", default=None)
-        definitely_rejected = quality_state in {"rejected", "invalid"}
-        if quality_flag is False and quality_state not in {"good", "marginal", "accepted", "poor", None}:
-            definitely_rejected = True
-
-        if definitely_rejected:
-            trial_objective = current_objective
-        elif trial_mesh is not None and quality_info is not None:
-            trial_objective_result = None
-            trial_state_result = self._invoke_component(
-                self.state_solver,
-                "solve_state_system",
-                trial_mesh,
-                self.geometry_contract,
-                initial_guess=self.get_value(current_state, "initial_guess"),
-                options=self.options,
-            )
-            if trial_objective is None:
-                trial_objective_result = self._invoke_component(
-                    self.objective_evaluator,
-                    "evaluate_objective",
-                    trial_mesh,
-                    trial_state_result,
-                    objective_parameters,
-                    current_state={"mesh": trial_mesh, "objective_parameters": objective_parameters},
-                )
-            if trial_objective is None and trial_objective_result is not None:
-                evaluated_trial_objective = self.get_value(trial_objective_result, "total_objective", "objective", default=None)
-                if evaluated_trial_objective is not None:
-                    trial_objective = float(evaluated_trial_objective)
-        if trial_objective is None:
-            trial_objective = current_objective
-        quality_state = self._quality_state(quality_info)
-        accepted = trial_mesh is not None and quality_state not in {"rejected", "invalid"}
-        requires_remesh = bool(accepted and self._requires_remesh(current_state, quality_info))
-        if diagnostics:
-            print(
-                f"[opt-fixed] accepted={accepted} quality={quality_state} "
-                f"current={current_objective} trial={trial_objective}"
-            )
-        return LineSearchResult(
-            initial_step_size=resolved_step_size,
-            step_size=resolved_step_size,
-            current_objective=current_objective,
-            trial_objective=trial_objective,
-            accepted=accepted,
-            requires_remesh=requires_remesh,
-            boundary_displacement=boundary_displacement,
-            trial_state=trial_state,
-            quality_info=quality_info,
         )
 
     def run(self, initial_state: Any) -> OptimizationResult:
@@ -889,26 +731,19 @@ class ShapeOptimizer:
             descent_direction = self.get_value(geometry_gradient_result, "descent_direction")
             if descent_direction is None:
                 descent_direction = next((self.get_value(geometry_gradient_result, name, default=None) for name in ("node_gradient", "normal_gradient")), None)
-        if self._use_fixed_step_descent():
-            search_result = self._fixed_step_trial(
-                mesh,
-                current_state,
-                descent_direction,
-                current_objective,
-                step_size=self._step_size(),
-            )
-        else:
-            decrease_measure = self._directional_decrease_measure(geometry_gradient_result)
-            if bool(self.get_value(self.options, "strict_normal_boundary_update", default=False)):
-                decrease_measure = None
-            search_result = self._backtracking_trial(
-                mesh,
-                current_state,
-                descent_direction,
-                current_objective,
-                initial_step_size=None,
-                directional_derivative=decrease_measure,
-            )
+
+        decrease_measure = self._directional_decrease_measure(geometry_gradient_result)
+        if bool(self.get_value(self.options, "strict_normal_boundary_update", default=False)):
+            decrease_measure = None
+        search_result = self._backtracking_trial(
+            mesh,
+            current_state,
+            descent_direction,
+            current_objective,
+            initial_step_size=None,
+            directional_derivative=decrease_measure,
+        )
+        
         trial_state = search_result.trial_state
         trial_objective = search_result.trial_objective
         accepted = search_result.accepted
@@ -922,36 +757,78 @@ class ShapeOptimizer:
             quality_info=quality_info,
             reason="not_accepted",
         )
+        
         requires_remesh = False
-        if accepted:
+        if not accepted:
+            accepted_state = current_state
+        else:
             remesh_result = self._remesh_accepted_state(
                 trial_state,
                 quality_info,
                 current_state,
             )
-            requires_remesh = remesh_result.requires_remesh
-            accepted_objective = self.get_value(remesh_result.remeshed_state, "objective", "current_objective")
-            if accepted_objective is None:
-                accepted_objective = trial_objective
-                
-            trial_state_result = self.get_value(search_result, "trial_state_result", default=None)
-
-            accepted_state = self.update_current_state(
-                remesh_result.remeshed_state,
-                accepted_objective=accepted_objective,
-                objective_parameters=objective_parameters,
-                state_result=trial_state_result,
-                initial_guess=trial_state_result,
-            )
-            if remesh_result.remeshed or remesh_result.restart_optimization:
+            requires_remesh = bool(remesh_result.requires_remesh)
+            accepted_state_base = remesh_result.remeshed_state
+            remeshed = bool(remesh_result.remeshed or remesh_result.restart_optimization)
+            if remeshed:
+                objective_parameters = self.get_value(
+                    accepted_state_base,
+                    "objective_parameters",
+                    default=objective_parameters,
+                )
+                new_mesh = self.get_value(accepted_state_base, "mesh", "trial_mesh")
+                boundary_roles = self.get_value(
+                    accepted_state_base,
+                    "boundary_nodes_by_role",
+                    default=None,
+                )
+                if new_mesh is not None and isinstance(boundary_roles, Mapping):
+                    self.geometry_contract = build_geometry_contract(
+                        new_mesh,
+                        boundary_roles,
+                        spatial_dim=self.get_value(
+                            self.geometry_contract,
+                            "spatial_dim",
+                            default=2,
+                        ),
+                    )
+                if isinstance(self.options, dict):
+                    self.options["objective_parameters"] = objective_parameters
+                accepted_state = self.update_current_state(
+                    accepted_state_base,
+                    accepted_objective=None,
+                    objective_parameters=objective_parameters,
+                    state_result=None,
+                    initial_guess=None,
+                )
                 self._reset_lbfgs_state()
+
             else:
-                self._store_pending_lbfgs_update(boundary_displacement, lbfgs_gradient)
-        else:
-            accepted_state = current_state
+                accepted_objective = self.get_value(
+                    accepted_state_base,
+                    "objective",
+                    "current_objective",
+                    default=trial_objective,
+                )
+                trial_state_result = self.get_value(
+                    search_result,
+                    "trial_state_result",
+                    default=None,
+                )
+                accepted_state = self.update_current_state(
+                    accepted_state_base,
+                    accepted_objective=accepted_objective,
+                    objective_parameters=objective_parameters,
+                    state_result=trial_state_result,
+                    initial_guess=trial_state_result,
+                )
+                self._store_pending_lbfgs_update(
+                    boundary_displacement,
+                    lbfgs_gradient,
+                )
 
         history_entry = self.record_iteration_log(
-            iteration=int(self._current_iteration(current_state) or 0),
+            iteration=self.get_value(current_state, "iteration", "iteration_index", default=None),
             current_objective=current_objective,
             trial_objective=trial_objective,
             step_size=step_size,
@@ -989,7 +866,25 @@ class ShapeOptimizer:
         """Run a line search for a given direction."""
         mesh, _, current_objective = self._resolve_state_context(current_state)
         if current_objective is None:
-            current_objective = self._evaluate_current_objective(current_state)
+            mesh, objective_parameters, _ = self._resolve_state_context(current_state)
+            state_result = self._invoke_component(
+                self.state_solver,
+                "solve_state_system",
+                mesh,
+                self.geometry_contract,
+                initial_guess=self.get_value(current_state, "initial_guess"),
+                options=self.options,
+            )
+            objective_result = self._invoke_component(
+                self.objective_evaluator,
+                "evaluate_objective",
+                mesh,
+                state_result,
+                objective_parameters,
+                current_state=current_state,
+            )
+            current_objective = self.get_value(objective_result, "total_objective", "objective", default=None)
+
         search_result = self._backtracking_trial(
             mesh,
             current_state,
@@ -1030,7 +925,7 @@ class ShapeOptimizer:
         decrease_measure = 0.0
         if directional_derivative is not None:
             decrease_measure = self._scalar_measure(directional_derivative)
-        armijo_rhs = current_objective + self._armijo_epsilon() * step_size * decrease_measure
+        armijo_rhs = current_objective + self._armijo_epsilon_value * step_size * decrease_measure
         objective_tolerance = max(float(self.get_value(self.options, "objective_tolerance", default=0.0)), 0.0)
         return trial_objective <= armijo_rhs + objective_tolerance
     

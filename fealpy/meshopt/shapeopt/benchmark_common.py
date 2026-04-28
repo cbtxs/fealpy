@@ -96,58 +96,6 @@ def _build_visualization_mesh(mesh: Any) -> Any:
     return LagrangeTriangleMesh.from_triangle_mesh(mesh, p=2)
 
 
-def _polygon_area_and_centroid(points: Any, fallback_center: tuple[float, float] = (0.0, 0.0)) -> tuple[float, bm.ndarray]:
-    coords = bm.asarray(points, dtype=float)
-    if coords.ndim != 2 or coords.shape[0] < 3 or coords.shape[1] < 2:
-        return 0.0, bm.asarray(fallback_center, dtype=float)
-    x = coords[:, 0]
-    y = coords[:, 1]
-    x_next = bm.roll(x, -1)
-    y_next = bm.roll(y, -1)
-    cross = x * y_next - x_next * y
-    area = 0.5 * float(bm.sum(cross))
-    if abs(area) <= 1.0e-14:
-        return 0.0, coords.mean(axis=0)
-    cx = float(bm.sum((x + x_next) * cross) / (6.0 * area))
-    cy = float(bm.sum((y + y_next) * cross) / (6.0 * area))
-    return abs(area), bm.asarray([cx, cy], dtype=float)
-
-
-def _polygon_vertex_normals(points: Any) -> bm.ndarray:
-    coords = bm.asarray(points, dtype=float)
-    if coords.shape[0] == 0:
-        return bm.zeros_like(coords)
-    if coords.shape[0] == 1:
-        return bm.asarray([[1.0, 0.0]], dtype=float)
-    centroid = coords.mean(axis=0)
-    normals = bm.zeros_like(coords, dtype=float)
-    for index in range(coords.shape[0]):
-        prev_point = coords[index - 1]
-        current_point = coords[index]
-        next_point = coords[(index + 1) % coords.shape[0]]
-        prev_edge = current_point - prev_point
-        next_edge = next_point - current_point
-        tangent = bm.zeros(2, dtype=float)
-        prev_norm = float(bm.linalg.norm(prev_edge))
-        next_norm = float(bm.linalg.norm(next_edge))
-        if prev_norm > 0.0:
-            tangent += prev_edge / prev_norm
-        if next_norm > 0.0:
-            tangent += next_edge / next_norm
-        if float(bm.linalg.norm(tangent)) <= 0.0:
-            tangent = next_point - prev_point
-        normal = bm.asarray([tangent[1], -tangent[0]], dtype=float)
-        if float(bm.linalg.norm(normal)) <= 0.0:
-            normal = current_point - centroid
-        if float(bm.linalg.norm(normal)) <= 0.0:
-            normal = bm.asarray([1.0, 0.0], dtype=float)
-        if float(bm.dot(normal, current_point - centroid)) < 0.0:
-            normal = -normal
-        norm = float(bm.linalg.norm(normal))
-        normals[index] = bm.asarray([1.0, 0.0], dtype=float) if norm <= 0.0 else normal / norm
-    return normals
-
-
 def _map_scalar_product(left: Any, right: Any) -> float:
     if left is None or right is None:
         return 0.0
@@ -370,8 +318,6 @@ __all__ = [
     "get_boundary_node_mask",
     "get_role_nodes",
     "_build_visualization_mesh",
-    "_polygon_area_and_centroid",
-    "_polygon_vertex_normals",
     "_map_scalar_product",
     "_vector_field_to_nodal_array",
     "_prolong_nodal_vector_to_visualization_mesh",
