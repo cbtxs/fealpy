@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
+from fealpy.typing import TensorLike
 
 from fealpy.backend import backend_manager as bm
 from fealpy.mesh import LagrangeTriangleMesh
@@ -47,35 +48,7 @@ def _add_cli_argument(
     parser.add_argument(*option_strings, dest=dest or name, type=type, default=default)
 
 
-def get_mesh_nodes(mesh: Any) -> bm.ndarray | None:
-    if isinstance(mesh, Mapping):
-        nodes = mesh.get("node", mesh.get("nodes"))
-        if nodes is None:
-            return None
-        return bm.asarray(nodes, dtype=float)
-    nodes = getattr(mesh, "node", None)
-    if nodes is None:
-        nodes = getattr(mesh, "nodes", None)
-    if nodes is None:
-        return None
-    return bm.asarray(nodes, dtype=float)
-
-
-def require_mesh_nodes(mesh: Any) -> bm.ndarray:
-    nodes = get_mesh_nodes(mesh)
-    if nodes is None:
-        raise ValueError("mesh does not expose node coordinates")
-    return bm.asarray(nodes, dtype=float)
-
-
-def get_boundary_node_mask(mesh: Any) -> bm.ndarray:
-    method = next((getattr(mesh, attribute, None) for attribute in ("is_boundary_node", "boundary_node_flag") if callable(getattr(mesh, attribute, None))), None)
-    if method is not None:
-        return bm.asarray(method(), dtype=bool).reshape(-1)
-    raise ValueError("mesh does not expose a boundary-node flag")
-
-
-def get_role_nodes(mesh: Any, *names: str) -> bm.ndarray:
+def get_role_nodes(mesh: Any, *names: str) -> TensorLike:
     nodes = next(
         (
             bm.asarray(value, dtype=int).reshape(-1)
@@ -115,8 +88,8 @@ def _map_scalar_product(left: Any, right: Any) -> float:
     return float(bm.asarray(left, dtype=float)) * float(bm.asarray(right, dtype=float))
 
 
-def _vector_field_to_nodal_array(mesh: Any, vector_field: Any, dim: int = 2) -> bm.ndarray | None:
-    nodes = get_mesh_nodes(mesh)
+def _vector_field_to_nodal_array(mesh: Any, vector_field: Any, dim: int = 2) -> TensorLike | None:
+    nodes = mesh.node
     if nodes is None:
         return None
     node_count = int(nodes.shape[0])
@@ -157,7 +130,7 @@ def _vector_field_to_nodal_array(mesh: Any, vector_field: Any, dim: int = 2) -> 
     return None
 
 
-def _prolong_nodal_vector_to_visualization_mesh(mesh: Any, nodal_vectors: bm.ndarray, vis_mesh: Any | None = None) -> bm.ndarray:
+def _prolong_nodal_vector_to_visualization_mesh(mesh: Any, nodal_vectors: TensorLike, vis_mesh: Any | None = None) -> TensorLike:
     values = bm.asarray(nodal_vectors, dtype=float)
     if values.ndim == 1:
         values = values.reshape(-1, 1)
@@ -177,7 +150,7 @@ def _prolong_nodal_vector_to_visualization_mesh(mesh: Any, nodal_vectors: bm.nda
     if values.shape[0] == vis_node_count:
         return values
 
-    mesh_nodes = get_mesh_nodes(mesh)
+    mesh_nodes = mesh.node
     if mesh_nodes is None:
         raise ValueError("mesh does not expose node coordinates")
     if values.shape[0] != mesh_nodes.shape[0]:
@@ -203,8 +176,8 @@ def _build_vtu_point_data(
     vis_mesh: Any | None = None,
     *,
     step_result: Any = None,
-) -> dict[str, bm.ndarray]:
-    point_data: dict[str, bm.ndarray] = {}
+) -> dict[str, TensorLike]:
+    point_data: dict[str, TensorLike] = {}
     velocity = getattr(state_result, "velocity", None)
     pressure = getattr(state_result, "pressure", None)
 
@@ -313,9 +286,6 @@ __all__ = [
     "get_value",
     "_parse_bool",
     "_add_cli_argument",
-    "get_mesh_nodes",
-    "require_mesh_nodes",
-    "get_boundary_node_mask",
     "get_role_nodes",
     "_build_visualization_mesh",
     "_map_scalar_product",

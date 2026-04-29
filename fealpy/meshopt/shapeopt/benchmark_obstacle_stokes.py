@@ -19,17 +19,17 @@ DEFAULT_CENTER = (0.0, 0.0)
 DEFAULT_RADIUS = 0.5
 DEFAULT_MESH_SIZE = 0.375
 DEFAULT_MESH_SIZE_PROFILE = "graded"
-DEFAULT_MESH_SIZE_INNER = 0.025
-DEFAULT_MESH_SIZE_OUTER = 0.25
-DEFAULT_MESH_SIZE_TRANSITION = 1.3
-DEFAULT_INITIAL_STEP_SIZE = 1.0
+DEFAULT_MESH_SIZE_INNER = 0.012
+DEFAULT_MESH_SIZE_OUTER = 0.2
+DEFAULT_MESH_SIZE_TRANSITION = 1.5
+DEFAULT_INITIAL_STEP_SIZE = 0.03
 DEFAULT_MAX_ITERATIONS = 800
-DEFAULT_ALGORITHM = "gradient_descent"  # "lbfgs" or "gradient_descent"
+DEFAULT_ALGORITHM = "lbfgs"  # "lbfgs" or "gradient_descent"
 DEFAULT_RTOL = 5.0e-4
 DEFAULT_LINEAR_SOLVER = "mumps"
 DEFAULT_FACTOR_VOLUME = 1e3
 DEFAULT_FACTOR_BARYCENTER = 0
-DEFAULT_MU_DEF = 5e3
+DEFAULT_MU_DEF = 5e4
 DEFAULT_MU_FIX = 1.0
 DEFAULT_VISCOSITY = 1.0
 DEFAULT_REMESH_QUALITY_PROFILE = "cashocs"
@@ -136,7 +136,6 @@ if __name__ == "__main__":  # pragma: no cover
         "damping_factor": 0.0,
         "mu_def": mu_def,
         "mu_fix": mu_fix,
-        "reextend_from_boundary": False,
         "quality_quantile": 0.0,
         "test_for_intersections": True,
     }
@@ -173,7 +172,6 @@ if __name__ == "__main__":  # pragma: no cover
         "regularization_term": lambda *args, **kwargs: 0.0,
         "shape_derivative_source": lambda *args, **kwargs: None,
         "adjoint_rhs_scale": 2.0,
-        "shape_density_variant": "adjoint",
     }
     pde = ObstacleStokesFluidModel(box=box, viscosity=viscosity)
     state_solver = StationaryIncompressibleStokesLFEMModel(

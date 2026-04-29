@@ -7,29 +7,18 @@ from typing import Any, Mapping
 
 from fealpy.backend import backend_manager as bm
 from fealpy.fem import (
-    BilinearForm,
-    BlockForm,
     DirichletBC,
     LinearBlockForm,
     LinearForm,
-    PressWorkIntegrator,
-    ScalarDiffusionIntegrator,
     VectorSourceIntegrator,
 )
 from fealpy.solver import spsolve
 
-try:
-    from .geometry_regularization import (
+from .geometry_regularization import (
         _polygon_vertex_normals,
         _polygon_vertex_weights,
-    )
-    from .objective import ObjectiveDerivativeSource
-except ImportError:  # pragma: no cover
-    from geometry_regularization import (
-        _polygon_vertex_normals,
-        _polygon_vertex_weights,
-    )
-    from objective import ObjectiveDerivativeSource
+)
+from .objective import ObjectiveDerivativeSource
 
 
 @dataclass(slots=True)
@@ -53,11 +42,8 @@ class AdjointWeakForm:
     mesh: Any
     velocity_space: Any
     pressure_space: Any
-    velocity_bilinear_form: Any
-    pressure_velocity_form: Any
-    velocity_pressure_form: Any
+    matrix: Any
     load_form: Any
-    block_form: Any
     linear_block_form: Any
     adjoint_rhs_source: Any = None
     boundary_conditions: tuple[Any, ...] = ()
@@ -106,29 +92,13 @@ def _ns_boundary_shape_derivative(
     geometry_contract: Any,
     options: Any = None,
 ) -> tuple[dict[int, tuple[float, float]], dict[int, float]] | None:
-    """构造稳态 NS 耗散目标的严格边界形状导数代表。
-
-    这里采用论文中的 Hadamard 结构：
-
-    dJ(Ω)[V] = ∫_{Γ_D} G_NS (V · n) ds
-
-    对于当前弯管耗散目标，优先对齐论文第 5.1 节的最简式：
-
-    G_NS = μ |∂_n u|^2
-
-    如果显式指定了扩展模式，则也可保留伴随修正项
-
-    G_NS = μ (|∂_n u|^2 - ∂_n λ · ∂_n u)
-
-    然后将其作为法向边界代表 `G_NS n` 返回，供后续几何梯度与 Riesz
-    投影继续处理。
-    """
+    """构造稳态 NS 耗散目标的边界形状导数代表。"""
     state_velocity = get_value(state_result, "velocity", "state_velocity", "u")
     if state_velocity is None:
         return None
 
     objective_parameters = get_value(options, "objective_parameters", default=None)
-    is_hole_boundary = bool(get_value(objective_parameters, "is_hole_boundary", default=False))
+    is_hole_boundary = get_value(objective_parameters, "is_hole_boundary", default=None)
     resolved_objective_parameters = objective_parameters if isinstance(objective_parameters, Mapping) else {}
     design_node_order = get_value(
         resolved_objective_parameters,
@@ -164,12 +134,6 @@ def _ns_boundary_shape_derivative(
             get_value(state_result, "viscosity", "mu", "nu", default=1.0),
         )
     )
-    density_variant = str(
-        resolved_objective_parameters.get(
-            "shape_density_variant",
-            resolved_objective_parameters.get("shape_density_formula", "paper"),
-        )
-    ).strip().lower()
     num_design_nodes = int(design_node_ids.size)
     # 收集状态速度梯度：shape = (N_gamma, 2, 2)
     selected_state_grad = bm.zeros((num_design_nodes, 2, 2), dtype=float)
@@ -191,65 +155,49 @@ def _ns_boundary_shape_derivative(
         selected_state_grad,
         normals,
     )
-    # paper density:
-    # density = mu |∂_n u|^2
-    density_values = float(viscosity) * bm.einsum(
+    density_values = -float(viscosity) * bm.einsum(
         "ni,ni->n",
         state_normal,
         state_normal,
     )
-    use_adjoint_density = density_variant not in {
-        "paper",
-        "paper_dissipation",
-        "paper_dissipation_only",
-    }
-    if use_adjoint_density:
-        adjoint = get_value(adjoint_result, "adjoint", default=None)
-        adjoint_velocity = get_value(
-            adjoint,
-            "velocity",
-            "state_velocity",
-            "u",
-            default=None,
+    adjoint = get_value(adjoint_result, "adjoint", default=None)
+    adjoint_velocity = get_value(
+        adjoint,
+        "velocity",
+        "state_velocity",
+        "u",
+        default=None,
+    )
+    adjoint_grad_at_nodes = (
+        _velocity_gradient_at_nodes(mesh, adjoint_velocity)
+        if adjoint_velocity is not None
+        else None
+    )
+    if adjoint_grad_at_nodes is not None:
+        selected_adjoint_grad = bm.zeros((num_design_nodes, 2, 2), dtype=float)
+        valid_adjoint_nodes = (
+            (design_node_ids >= 0)
+            & (design_node_ids < int(adjoint_grad_at_nodes.shape[0]))
         )
-        # 关键：伴随速度梯度只计算一次
-        adjoint_grad_at_nodes = (
-            _velocity_gradient_at_nodes(mesh, adjoint_velocity)
-            if adjoint_velocity is not None
-            else None
+        if bm.any(valid_adjoint_nodes):
+            valid_ids = design_node_ids[valid_adjoint_nodes]
+            selected_adjoint_grad[valid_adjoint_nodes] = bm.asarray(
+                adjoint_grad_at_nodes[valid_ids],
+                dtype=float,
+            )
+        # adjoint_normal[i] = grad_lambda(x_i) @ n_i
+        # shape = (N_gamma, 2)
+        adjoint_normal = bm.einsum(
+            "nij,nj->ni",
+            selected_adjoint_grad,
+            normals,
         )
-        if adjoint_grad_at_nodes is not None:
-            selected_adjoint_grad = bm.zeros((num_design_nodes, 2, 2), dtype=float)
-            valid_adjoint_nodes = (
-                (design_node_ids >= 0)
-                & (design_node_ids < int(adjoint_grad_at_nodes.shape[0]))
-            )
-            if bm.any(valid_adjoint_nodes):
-                valid_ids = design_node_ids[valid_adjoint_nodes]
-                selected_adjoint_grad[valid_adjoint_nodes] = bm.asarray(
-                    adjoint_grad_at_nodes[valid_ids],
-                    dtype=float,
-                )
-            # adjoint_normal[i] = grad_lambda(x_i) @ n_i
-            # shape = (N_gamma, 2)
-            adjoint_normal = bm.einsum(
-                "nij,nj->ni",
-                selected_adjoint_grad,
-                normals,
-            )
-            # density -= mu (∂_n λ · ∂_n u)
-            adjoint_correction = float(viscosity) * bm.einsum(
-                "ni,ni->n",
-                adjoint_normal,
-                state_normal,
-            )
-            adjoint_density_weight = float(
-                resolved_objective_parameters.get(
-                    "adjoint_density_weight",
-                    1.0,
-                )
-            )
-            density_values = density_values - adjoint_density_weight * adjoint_correction
+        adjoint_correction = float(viscosity) * bm.einsum(
+            "ni,ni->n",
+            adjoint_normal,
+            state_normal,
+        )
+        density_values = density_values - adjoint_correction
     # nodal vector representative:
     # gradient_i = density_i * n_i * vertex_weight_i
     gradient = (
@@ -274,33 +222,6 @@ def _normalize_adjoint_rhs(adjoint_rhs: Any) -> tuple[Any, Any]:
         wrapped = ObjectiveDerivativeSource(source=adjoint_rhs)
         return wrapped.source, wrapped
     return adjoint_rhs, adjoint_rhs
-
-
-def _as_adjoint_result(result: Any) -> AdjointSolveResult:
-    """把外部求解结果规整成伴随结果。"""
-    if isinstance(result, AdjointSolveResult):
-        return result
-    if isinstance(result, Mapping):
-        return AdjointSolveResult(
-            adjoint=result.get("adjoint"),
-            system_matrix=result.get("system_matrix"),
-            rhs=result.get("rhs"),
-            adjoint_vector=result.get("adjoint_vector"),
-            adjoint_rhs=result.get("adjoint_rhs"),
-            mesh=result.get("mesh"),
-            shape_derivative=result.get("shape_derivative"),
-            shape_density=result.get("shape_density"),
-        )
-    return AdjointSolveResult(
-        adjoint=get_value(result, "adjoint"),
-        system_matrix=get_value(result, "system_matrix", "matrix"),
-        rhs=get_value(result, "rhs"),
-        adjoint_vector=get_value(result, "adjoint_vector", "solution"),
-        adjoint_rhs=get_value(result, "adjoint_rhs"),
-        mesh=get_value(result, "mesh"),
-        shape_derivative=get_value(result, "shape_derivative"),
-        shape_density=get_value(result, "shape_density"),
-    )
 
 
 def _build_adjoint_dirichlet_bc(
@@ -357,30 +278,16 @@ def assemble_adjoint_weak_form(
     geometry_contract: Any,
     options: Any = None,
 ) -> AdjointWeakForm:
-    if hasattr(state_result, "state_spaces"):
-        spaces = state_result.state_spaces
-        if callable(spaces):
-            spaces = spaces(mesh, geometry_contract)
-    elif hasattr(state_result, "build_state_spaces") and callable(state_result.build_state_spaces):
-        spaces = state_result.build_state_spaces(mesh, geometry_contract)
-    else:
-        spaces = (
-            get_value(state_result, "velocity_space", "uspace", "u_space"),
-            get_value(state_result, "pressure_space", "pspace", "p_space"),
-        )
-    if not (isinstance(spaces, (tuple, list)) and len(spaces) >= 2):
-        raise ValueError("state_result must provide velocity and pressure spaces")
-
+    spaces = (
+        get_value(state_result, "velocity_space", "uspace", "u_space"),
+        get_value(state_result, "pressure_space", "pspace", "p_space"),
+    )
     velocity_space, pressure_space = spaces[0], spaces[1]
+    state_matrix = get_value(state_result, "system_matrix", "matrix", default=None)
+    matrix = state_matrix.T
+    
     source, source_metadata = _normalize_adjoint_rhs(adjoint_rhs)
     q = get_value(options, "q", default=None)
-    viscosity = get_value(state_result, "viscosity", "mu", "nu", default=1.0)
-    velocity_bilinear_form = BilinearForm(velocity_space)
-    velocity_bilinear_form.add_integrator(ScalarDiffusionIntegrator(coef=viscosity, q=q))
-    pressure_velocity_form = BilinearForm((pressure_space, velocity_space))
-    pressure_velocity_form.add_integrator(PressWorkIntegrator(coef=-1.0, q=q))
-    velocity_pressure_form = BilinearForm((pressure_space, velocity_space))
-    velocity_pressure_form.add_integrator(PressWorkIntegrator(coef=-1.0, q=q))
     load_form = LinearForm(velocity_space)
     if source not in (None, 0, 0.0):
         load_form.add_integrator(VectorSourceIntegrator(source, q=q))
@@ -388,16 +295,8 @@ def assemble_adjoint_weak_form(
         mesh=mesh,
         velocity_space=velocity_space,
         pressure_space=pressure_space,
-        velocity_bilinear_form=velocity_bilinear_form,
-        pressure_velocity_form=pressure_velocity_form,
-        velocity_pressure_form=velocity_pressure_form,
+        matrix=matrix,
         load_form=load_form,
-        block_form=BlockForm(
-            [
-                [velocity_bilinear_form, pressure_velocity_form],
-                [velocity_pressure_form.T, None],
-            ]
-        ),
         linear_block_form=LinearBlockForm([load_form, LinearForm(pressure_space)]),
         adjoint_rhs_source=source_metadata,
         boundary_conditions=(
@@ -414,82 +313,43 @@ def solve_adjoint_system(
     options: Any = None,
 ) -> AdjointSolveResult:
     """求解伴随方程。"""
-    provider = get_value(
-        state_result,
-        "solve_adjoint_system",
-        "solve_adjoint_equation",
-        "solve",
-    )
-    if callable(provider):
-        result = provider(
-            mesh,
-            adjoint_rhs,
-            geometry_contract,
-            options=options,
-        )
-        result = _as_adjoint_result(result)
-        if result.shape_derivative is None:
-            ns_shape = _ns_boundary_shape_derivative(mesh, state_result, result, geometry_contract, options)
-            if isinstance(ns_shape, tuple) and len(ns_shape) == 2:
-                result.shape_derivative, result.shape_density = ns_shape
-            else:
-                result.shape_derivative = ns_shape
-        return result
-
     weak_form = assemble_adjoint_weak_form(mesh, state_result, adjoint_rhs, geometry_contract, options=options)
+    # if isinstance(weak_form, AdjointWeakForm):
+    velocity_space = weak_form.velocity_space
+    pressure_space = weak_form.pressure_space
+    
+    velocity_dofs = velocity_space.number_of_global_dofs()
+    pressure_dofs = pressure_space.number_of_global_dofs()
+    mixed_dofs = int(velocity_dofs + pressure_dofs)
+    matrix = weak_form.matrix
+    state_matrix_shape = getattr(matrix, "shape", None)
+    augmented_system = False
+    if state_matrix_shape is not None:
+        matrix_dims = tuple(int(value) for value in state_matrix_shape[:2])
+        augmented_system = matrix_dims == (mixed_dofs + 1, mixed_dofs + 1)
+         
+    rhs = weak_form.linear_block_form.assembly(format="dense")
+    if augmented_system:
+        rhs = bm.concat([rhs, bm.zeros((1,), dtype=float)])
+    bc = _build_adjoint_dirichlet_bc(state_result, velocity_space, pressure_space, options)
 
-    if isinstance(weak_form, AdjointWeakForm):
-        reuse_state_matrix = bool(get_value(options, "reuse_state_matrix", default=True))
-        diagnostics = bool(get_value(options, "diagnostics", default=False))
-        state_matrix = get_value(state_result, "system_matrix", "matrix", default=None)
-        velocity_dofs = weak_form.velocity_space.number_of_global_dofs()
-        pressure_dofs = weak_form.pressure_space.number_of_global_dofs()
-        mixed_dofs = int(velocity_dofs + pressure_dofs)
-        state_matrix_shape = getattr(state_matrix, "shape", None)
-        if reuse_state_matrix and state_matrix_shape is not None:
-            if tuple(int(value) for value in state_matrix_shape[:2]) != (mixed_dofs, mixed_dofs):
-                reuse_state_matrix = False
-                if diagnostics:
-                    print(
-                        "[adjoint] reuse_state_matrix=0, "
-                        f"state matrix shape {state_matrix_shape} does not match mixed dofs {mixed_dofs}"
-                    )
-        if reuse_state_matrix and state_matrix is not None and hasattr(state_matrix, "T"):
-            matrix = state_matrix.T
-            if diagnostics:
-                print("[adjoint] reuse_state_matrix=1, using transpose of state/Newton matrix")
-        else:
-            matrix = weak_form.block_form.assembly(format="csr")
-            if diagnostics:
-                print("[adjoint] reuse_state_matrix=0, assembling adjoint block matrix")
-        rhs = weak_form.linear_block_form.assembly(format="dense")
-        bc = _build_adjoint_dirichlet_bc(state_result, weak_form.velocity_space, weak_form.pressure_space, options)
-        matrix, rhs = bc.apply(matrix, rhs)
-        x = spsolve(matrix, rhs, solver=get_value(options, "linear_solver", default="mumps"))
-        velocity = weak_form.velocity_space.function()
-        pressure = weak_form.pressure_space.function()
-        velocity[:] = x[:velocity_dofs]
-        pressure[:] = x[velocity_dofs:velocity_dofs + pressure_dofs]
-        result = AdjointSolveResult(
-            adjoint={"velocity": velocity, "pressure": pressure},
-            system_matrix=matrix,
-            rhs=rhs,
-            adjoint_vector=x,
-            adjoint_rhs=adjoint_rhs,
-            mesh=mesh,
-        )
-        if result.shape_derivative is None:
-            ns_shape = _ns_boundary_shape_derivative(mesh, state_result, result, geometry_contract, options)
-            if isinstance(ns_shape, tuple) and len(ns_shape) == 2:
-                result.shape_derivative, result.shape_density = ns_shape
-            else:
-                result.shape_derivative = ns_shape
-        return result
+    boundary_dof_index = getattr(bc, "boundary_dof_index", None)
+    if boundary_dof_index is not None and len(boundary_dof_index) > 0:
+        rhs = bm.set_at(rhs, boundary_dof_index, 0.0)
+
+    x = spsolve(matrix, rhs, solver=get_value(options, "linear_solver", default="mumps"))
+    velocity_adjoin = velocity_space.function()
+    pressure_adjoin = pressure_space.function()
+    velocity_adjoin[:] = x[:velocity_dofs]
+    if augmented_system:
+        pressure_adjoin[:] = x[velocity_dofs:-1]
+    else:
+        pressure_adjoin[:] = x[velocity_dofs:velocity_dofs + pressure_dofs]
     result = AdjointSolveResult(
-        adjoint=None,
-        system_matrix=weak_form,
-        rhs=adjoint_rhs,
-        adjoint_vector=None,
+        adjoint={"velocity": velocity_adjoin, "pressure": pressure_adjoin},
+        system_matrix=matrix,
+        rhs=rhs,
+        adjoint_vector=x,
         adjoint_rhs=adjoint_rhs,
         mesh=mesh,
     )
@@ -499,4 +359,5 @@ def solve_adjoint_system(
             result.shape_derivative, result.shape_density = ns_shape
         else:
             result.shape_derivative = ns_shape
+
     return result

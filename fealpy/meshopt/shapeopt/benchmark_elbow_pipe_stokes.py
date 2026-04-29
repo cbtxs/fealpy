@@ -12,9 +12,13 @@ from fealpy.model.navier_stokes.exp0008 import ElbowPipeStokesFluidModel
 
 from fealpy.meshopt.shapeopt.benchmark_common import _remesh_quality_parameters
 from fealpy.meshopt.shapeopt.benchmark_runner import ShapeOptimizationRunner
+from fealpy.meshopt.shapeopt.geometry_regularization import (
+    ObstacleGeometryRegularization,
+    _polygon_area_and_centroid,
+)
 
 DEFAULT_PIPE_PARAMETERS = {
-    "channel_width": 1.0,
+    "channel_width": 0.75,
     "inlet_length": 2.4,
     "bend_length": 3.0,
     "rise_height": 2.55,
@@ -22,11 +26,11 @@ DEFAULT_PIPE_PARAMETERS = {
     "corner_chamfer_ratio": 0.45,
     "design_margin_inlet_ratio": 1.0 - 1.0 / 2.4,
     "design_margin_outlet_ratio": 0.5,
-    "mesh_size_global": 0.12,
+    "mesh_size_global": 0.10,
     "line_samples_per_unit": 8.0,
     "arc_samples": 8,
     "mesh_size_profile": "graded",
-    "mesh_size_inner": 0.05,
+    "mesh_size_inner": 0.04,
     "mesh_size_outer": 0.1,
     "mesh_size_transition": 0.5,
 }
@@ -34,12 +38,13 @@ DEFAULT_INLET_MAX_VELOCITY = 1.5
 DEFAULT_REYNOLDS_NUMBER = 400.0
 DEFAULT_DENSITY = 1.0
 DEFAULT_VISCOSITY = None
-DEFAULT_ALGORITHM = "steepest_descent"
+DEFAULT_ALGORITHM = "steepest_descent"  # "lbfgs" or "gradient_descent"
 DEFAULT_RTOL = 5.0e-4
-DEFAULT_INITIAL_STEP_SIZE = 0.05
-DEFAULT_MAX_ITERATIONS = 1
+DEFAULT_INITIAL_STEP_SIZE = 1.0
+DEFAULT_MAX_ITERATIONS = 50
 DEFAULT_REMESH_QUALITY_PROFILE = "cashocs"
 DEFAULT_LINEAR_SOLVER = "mumps"
+DEFAULT_FACTOR_VOLUME = 1.0
 DEFAULT_BOUNDARY_MARKERS = {
     "inlet": (2,),
     "outlet": (3,),
@@ -48,16 +53,14 @@ DEFAULT_BOUNDARY_MARKERS = {
     "design": (4,),
 }
 DEFAULT_OPTIONS = {
-    "q": 3,
+    "q": 4,
     "algorithm": DEFAULT_ALGORITHM,
     "rtol": DEFAULT_RTOL,
     "initial_step_size": DEFAULT_INITIAL_STEP_SIZE,
-    "area_preserving_projection": True,
-    "boundary_smoothing_weight": 0.2,
-    "boundary_smoothing_iterations": 1,
-    "strict_normal_boundary_update": True,
-    "boundary_smoothing_preserve_normal_direction": True,
-    "area_preserving_projection_preserve_normal_direction": True,
+    "area_preserving_projection": False,
+    "armijo_use_finite_difference_directional_derivative": False,
+    "armijo_use_finite_difference_directional_derivative_on_reject": True,
+    "armijo_fd_step_size": 1.0e-6,
     "line_search_reduction": 0.5,
     "epsilon_armijo": 1.0e-4,
     "minimum_step_size": 1.0e-8,
@@ -88,6 +91,7 @@ if __name__ == "__main__":  # pragma: no cover
     mesh_size_transition = float(pipe_parameters["mesh_size_transition"])
     inlet_max_velocity = float(DEFAULT_INLET_MAX_VELOCITY)
     density = float(DEFAULT_DENSITY)
+    factor_volume = float(DEFAULT_FACTOR_VOLUME)
     mean_inlet_velocity = (2.0 / 3.0) * inlet_max_velocity
     reference_length = channel_width
     effective_viscosity = density * mean_inlet_velocity * reference_length / float(DEFAULT_REYNOLDS_NUMBER)
@@ -124,6 +128,17 @@ if __name__ == "__main__":  # pragma: no cover
     design_coords = nodes[bm.asarray(design_boundary_node_order, dtype=int)]
     design_center = tuple(float(v) for v in bm.mean(design_coords, axis=0).reshape(-1)[:2])
     design_radius = float(bm.mean(bm.linalg.norm(design_coords - bm.asarray(design_center, dtype=float), axis=1)))
+    design_area, design_barycenter = _polygon_area_and_centroid(
+        design_coords,
+        fallback_center=design_center,
+    )
+    geometry_regularization = ObstacleGeometryRegularization(
+        design_node_order=design_boundary_node_order,
+        reference_volume=float(design_area),
+        reference_barycenter=bm.asarray(design_barycenter, dtype=float),
+        factor_volume=factor_volume,
+        factor_barycenter=0.0,
+    )
     boundary_markers = dict(DEFAULT_BOUNDARY_MARKERS)
     geometry_contract = None
     propagation_parameters = {
@@ -138,8 +153,6 @@ if __name__ == "__main__":  # pragma: no cover
         "damping_factor": 0.0,
         "mu_def": 5.0e2,
         "mu_fix": 1.0,
-        "reextend_from_boundary": True,
-        "reextension_mode": "normal",
         "quality_quantile": 0.0,
         "test_for_intersections": True,
     }
@@ -158,13 +171,16 @@ if __name__ == "__main__":  # pragma: no cover
         "propagation_parameters": propagation_parameters,
     }
     objective_parameters = {
-        "q": 3,
+        "q": 4,
         "viscosity": effective_viscosity,
+        "factor_volume": factor_volume,
+        "use_initial_volume": True,
+        "volume_reference": float(design_area),
+        "geometry_regularization": geometry_regularization,
         "reynolds_number": float(DEFAULT_REYNOLDS_NUMBER),
         "inlet_max_velocity": inlet_max_velocity,
         "density": density,
         "reference_length": reference_length,
-        "shape_density_variant": "paper",
         "design_boundary_node_order": design_boundary_node_order,
         "design_boundary_node_ids": design_boundary_node_order,
         "mesh_size_profile": mesh_size_profile,
@@ -174,9 +190,11 @@ if __name__ == "__main__":  # pragma: no cover
         "fixed_x_left": fixed_x_left,
         "fixed_x_right": fixed_x_right,
         "adjoint_rhs_scale": 2.0,
+        "volume_term": geometry_regularization.volume_term,
         "shape_derivative_source": lambda *args, **kwargs: None,
         "regularization_term": lambda *args, **kwargs: 0.0,
     }
+    
     pde = ElbowPipeStokesFluidModel(
         inlet_x=inlet_x,
         inlet_ymin=inlet_ymin,
@@ -187,6 +205,7 @@ if __name__ == "__main__":  # pragma: no cover
         inlet_max_velocity=inlet_max_velocity,
         pressure_neumann=True,
     )
+    pde.mesh = mesh
     state_solver = StationaryIncompressibleNSLFEMModel(
         pde=pde,
         mesh=mesh,
@@ -222,6 +241,8 @@ if __name__ == "__main__":  # pragma: no cover
         {
             "reynolds_number": DEFAULT_REYNOLDS_NUMBER,
             "effective_viscosity": effective_viscosity,
+            "factor_volume": factor_volume,
+            "area_preserving_projection": options["area_preserving_projection"],
             "mesh_size": boundary_info["mesh_size"],
             "algorithm": options["algorithm"],
             "rtol": options["rtol"],

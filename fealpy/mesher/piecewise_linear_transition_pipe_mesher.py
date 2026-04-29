@@ -465,7 +465,7 @@ class PiecewiseLinearTransitionPipeMesher2D:
             "boundary_cycle": np.asarray(boundary_cycle, dtype=int),
         }
 
-    def build_mesh_from_boundary_points(self, boundary_points: Any) -> TriangleMesh:
+    def build_mesh_from_boundary_points(self, boundary_points) -> TriangleMesh:
         coords = np.asarray(boundary_points, dtype=float)
         if coords.ndim != 2 or coords.shape[0] < 3 or coords.shape[1] < 2:
             raise ValueError("boundary_points must be a polygon with at least three vertices")

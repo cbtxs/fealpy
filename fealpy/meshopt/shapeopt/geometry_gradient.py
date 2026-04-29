@@ -14,7 +14,7 @@ from fealpy.material import LinearElasticMaterial
 from fealpy.solver import spsolve
 from .geometry_regularization import _polygon_vertex_normals,_polygon_area_and_centroid
 
-from .benchmark_common import get_mesh_nodes, get_value
+from .benchmark_common import get_value
 
 @dataclass(slots=True)
 class GeometryGradientResult:
@@ -35,7 +35,7 @@ def _mesh_dimension(mesh: Any, geometry_contract: Any = None) -> int | None:
     value = get_value(geometry_contract, "spatial_dim", default=None)
     if value is not None:
         return int(value)
-    nodes = get_mesh_nodes(mesh)
+    nodes = mesh.node
     if nodes is not None and nodes.ndim >= 2:
         return int(nodes.shape[1])
     return None
@@ -158,9 +158,9 @@ def _boundary_normal_unit_vectors(
     if dim != 2:
         return None
 
-    nodes = get_mesh_nodes(mesh)
+    nodes = mesh.node
     if nodes is None:
-        nodes = get_mesh_nodes(reference_mesh)
+        nodes = reference_mesh.node
     if nodes is None:
         return None
     if bm.any(node_ids < 0) or bm.any(node_ids >= nodes.shape[0]):
@@ -223,7 +223,7 @@ def _build_nodal_vector_array(
     dim: int,
 ) -> Any | None:
     """把节点映射转成完整向量场数组。"""
-    nodes = get_mesh_nodes(mesh)
+    nodes = mesh.node
     if nodes is None:
         return None
     nodal_values = bm.zeros((nodes.shape[0], dim), dtype=float)
@@ -311,86 +311,9 @@ def _polygon_area_gradient(points: Any) -> Any:
         axis=1,
     )
 
-def _velocity_gradient_at_nodes(mesh: Any, field: Any) -> Any | None:
-    """Average a vector field gradient to mesh nodes."""
-    if field is None or not hasattr(field, "space") or not hasattr(field.space, "grad_value"):
-        return None
-    qf = mesh.quadrature_formula(q=4, etype="cell")
-    bcs, ws = qf.get_quadrature_points_and_weights()
-    grad_u = field.space.grad_value(uh=field, bc=bcs)
-    grad_u = bm.einsum("n, knij -> kij", ws, grad_u)
-    cellmeasure = mesh.entity_measure("cell")
-    n2c = mesh.node_to_cell()
-    weights = bm.ones(n2c.shape)
-    weights *= cellmeasure
-    weights = n2c.mul(weights)
-    weights = weights.toarray()
-    weights_sum = bm.sum(weights, axis=1)
-    weights = weights / weights_sum[:, None]
-    grad_at_nodes = bm.einsum("lk, kij -> lij", weights, grad_u)
-    return bm.asarray(grad_at_nodes, dtype=float)
-
-def _state_adjoint_boundary_gradient(
-    mesh: Any,
-    state_result: Any,
-    adjoint_result: Any,
-    geometry_contract: Any,
-    cache: Any,
-    options: Any,
-) -> dict[int, tuple[float, float]] | None:
-    """Build a cashocs-like boundary gradient from state and adjoint fields."""
-    state_velocity = get_value(state_result, "velocity", "state_velocity", "u")
-    adjoint = get_value(adjoint_result, "adjoint", default=None)
-    if state_velocity is None or not isinstance(adjoint, Mapping):
-        return None
-
-    adjoint_velocity = get_value(adjoint, "velocity", "state_velocity", "u")
-    if state_velocity is None or adjoint_velocity is None:
-        return None
-
-    objective_parameters = get_value(options, "objective_parameters", default=None)
-    resolved_objective_parameters = objective_parameters if isinstance(objective_parameters, Mapping) else {}
-    factor_volume = float(resolved_objective_parameters.get("factor_volume", 0.0) or 0.0)
-    factor_barycenter = float(resolved_objective_parameters.get("factor_barycenter", 0.0) or 0.0)
-    reference_volume = float(resolved_objective_parameters.get("volume_reference", 0.0) or 0.0)
-    viscosity = float(
-        resolved_objective_parameters.get(
-            "viscosity",
-            get_value(state_result, "viscosity", "mu", "nu", default=1.0),
-        )
-    )
-
-    design_node_ids = _boundary_node_ids(cache, geometry_contract, options)
-    if design_node_ids.size == 0:
-        return None
-    nodes = get_mesh_nodes(mesh)
-    if nodes is None:
-        return None
-    design_node_ids = bm.asarray(design_node_ids, dtype=int)
-    node_coords = nodes[design_node_ids]
-    normals = _polygon_vertex_normals(node_coords)
-
-    state_grad_at_nodes = bm.asarray(_velocity_gradient_at_nodes(mesh, state_velocity), dtype=float)
-    adjoint_grad_at_nodes = bm.asarray(_velocity_gradient_at_nodes(mesh, adjoint_velocity), dtype=float)
-    if state_grad_at_nodes is None or adjoint_grad_at_nodes is None:
-        return None
-
-    valid = (design_node_ids >= 0) & (design_node_ids < state_grad_at_nodes.shape[0]) & (design_node_ids < adjoint_grad_at_nodes.shape[0])
-    gradient = bm.zeros((design_node_ids.size, 2), dtype=float)
-    if bm.any(valid):
-        valid_ids = design_node_ids[valid]
-        valid_normals = normals[valid]
-        state_normal = bm.einsum("nij,nj->ni", state_grad_at_nodes[valid_ids], valid_normals)
-        adjoint_normal = bm.einsum("nij,nj->ni", adjoint_grad_at_nodes[valid_ids], valid_normals)
-        density = viscosity * (2*bm.sum(state_normal * state_normal, axis=1) - bm.sum(adjoint_normal * state_normal, axis=1))
-        gradient[valid] = density[:, None] * valid_normals
-
-    return {int(node_id): (float(vector[0]), float(vector[1])) for node_id, vector in zip(design_node_ids.tolist(), gradient, strict=True)}
-
-
 def _design_boundary_face_ids(mesh: Any, design_node_ids: Any) -> Any:
     """根据设计边界节点，推断设计边界面编号。"""
-    nodes = get_mesh_nodes(mesh)
+    nodes = mesh.node
     if nodes is None or design_node_ids.size == 0:
         return bm.zeros(0, dtype=int)
     faces = mesh.entity("face") if hasattr(mesh, "entity") else getattr(mesh, "face", None)
@@ -412,7 +335,7 @@ class _BoundaryShapeDerivativeSource:
     def __init__(self, mesh: Any, nodal_map: Mapping[int, Any], design_node_ids: Any, dim: int) -> None:
         self.mesh = mesh
         self.dim = dim
-        self.node_coords = get_mesh_nodes(mesh)
+        self.node_coords = mesh.node
         self.design_node_ids = bm.asarray(design_node_ids, dtype=int)
         self.values = {
             int(node): _coerce_vector(value, dim)
@@ -499,7 +422,7 @@ def _solve_linear_elasticity_projection(
     boundary_values: Mapping[int, Any] | None = None,
 ) -> Any | None:
     """用线弹性方程把节点源项投影为平滑向量场。"""
-    nodes = get_mesh_nodes(mesh)
+    nodes = mesh.node
     dim = _mesh_dimension(mesh, geometry_contract)
     if nodes is None or dim is None:
         return None
@@ -562,24 +485,6 @@ def _solve_linear_elasticity_projection(
 def _solution_to_priority_array(solution: Any, dim: int, node_count: int) -> Any:
     """把优先级自由度解转成节点-分量数组。"""
     return bm.asarray(solution, dtype=float).reshape(dim, node_count).T
-
-
-def _apply_boundary_reextension(
-    mesh: Any,
-    boundary_values: Mapping[int, Any],
-    geometry_contract: Any,
-    cache: Any,
-    options: Any = None,
-) -> Any | None:
-    """把边界值重新扩展到体域内部。"""
-    return _solve_linear_elasticity_projection(
-        mesh,
-        boundary_values,
-        geometry_contract,
-        cache,
-        options,
-        boundary_values=boundary_values,
-    )
 
 
 def _zero_fixed_nodes_in_mapping(
@@ -684,20 +589,7 @@ def assemble_geometry_gradient(
 ) -> GeometryGradientResult:
     """组装几何梯度。"""
     propagation_parameters = _cache_propagation_parameters(cache, options)
-    combined_gradient = None
-    combined_gradient_is_fallback = False
-    if get_value(adjoint_result, "adjoint", default=None) is not None:
-        combined_gradient = _state_adjoint_boundary_gradient(
-            mesh,
-            state_result,
-            adjoint_result,
-            geometry_contract,
-            cache,
-            options,
-        )
     raw_gradient = get_value(adjoint_result, "gradient", "raw_gradient")
-    if raw_gradient is None and combined_gradient is not None:
-        raw_gradient = combined_gradient
     if raw_gradient is None:
         raw_gradient = get_value(objective_result, "gradient", "raw_gradient")
 
@@ -732,9 +624,6 @@ def assemble_geometry_gradient(
         objective_shape_derivative,
     )
     
-    if shape_derivative is None and combined_gradient is not None:
-        shape_derivative = combined_gradient
-        combined_gradient_is_fallback = True
     if shape_derivative is None and raw_gradient is not None:
         shape_derivative = raw_gradient
     if shape_derivative is None:
@@ -744,7 +633,7 @@ def assemble_geometry_gradient(
 
     fixed_node_ids = _fixed_node_ids(cache, geometry_contract, options)
     dim = _mesh_dimension(mesh, geometry_contract)
-    use_real_projection = mesh is not None and get_mesh_nodes(mesh) is not None and dim is not None
+    use_real_projection = mesh is not None and mesh.node is not None and dim is not None
 
     boundary_normal_component = project_to_boundary_normals(
         shape_derivative,
@@ -795,37 +684,6 @@ def assemble_geometry_gradient(
             if fixed_node_ids.size > 0:
                 riesz_projection = _zero_fixed_nodes_in_mapping(riesz_projection, fixed_node_ids)
             propagated_gradient = riesz_projection
-            if combined_gradient_is_fallback:
-                propagated_gradient = _negate_value(propagated_gradient)
-            if bool(get_value(propagation_parameters, "reextend_from_boundary", default=False)):
-                reextension_mode = get_value(propagation_parameters, "reextension_mode", default="surface")
-                boundary_values = riesz_projection
-                if reextension_mode == "normal" and isinstance(riesz_projection, Mapping):
-                    boundary_values = project_to_boundary_normals(
-                        riesz_projection,
-                        geometry_contract,
-                        cache,
-                        options,
-                    )
-                reextended = _apply_boundary_reextension(
-                    mesh,
-                    boundary_values if isinstance(boundary_values, Mapping) else _normalize_boundary_vector_map(
-                        boundary_values,
-                        design_nodes,
-                        dim,
-                        cache=cache,
-                        project_normals=False,
-                    ),
-                    geometry_contract,
-                    cache,
-                    options,
-                )
-                if reextended is not None:
-                    propagated_gradient = _vector_array_to_nodal_map(reextended)
-                    if combined_gradient_is_fallback:
-                        propagated_gradient = _negate_value(propagated_gradient)
-                    if fixed_node_ids.size > 0:
-                        propagated_gradient = _zero_fixed_nodes_in_mapping(propagated_gradient, fixed_node_ids)
 
     normal_gradient = boundary_normal_component
     node_gradient = propagated_gradient
@@ -921,166 +779,14 @@ def build_boundary_displacement(
     objective_parameters: Any = None,
 ) -> Any:
     """构造边界位移。"""
-    smoothed_direction = _smooth_boundary_displacement(
-        descent_direction,
-        geometry_contract,
-        cache,
-        options,
-        mesh=mesh,
-        objective_parameters=objective_parameters,
-    )
     projected_direction = project_to_area_preserving_tangent_space(
-        smoothed_direction,
+        descent_direction,
         geometry_contract,
         cache,
         options,
         mesh=mesh,
     )
     return _scale_value(projected_direction, step_size)
-
-
-def _smooth_boundary_displacement(
-    descent_direction: Any,
-    geometry_contract: Any,
-    cache: Any,
-    options: Any = None,
-    mesh: Any = None,
-    objective_parameters: Any = None,
-) -> Any:
-    """对边界位移做一维邻点平滑。"""
-    weight = float(get_value(options, "boundary_smoothing_weight", default=0.0))
-    iterations = int(get_value(options, "boundary_smoothing_iterations", default=1))
-    if weight <= 0.0 or iterations <= 0:
-        return descent_direction
-
-    weight = max(0.0, min(1.0, weight))
-    preserve_normal_direction = bool(
-        get_value(
-            options,
-            "boundary_smoothing_preserve_normal_direction",
-            "strict_normal_boundary_update",
-            default=False,
-        )
-    )
-    node_order = next(
-        (
-            value
-            for value in (
-                get_value(objective_parameters, "design_boundary_node_order", "design_boundary_node_ids", default=None),
-                get_value(options, "design_boundary_node_order", "design_boundary_node_ids", default=None),
-                get_value(_cache_propagation_parameters(cache, options), "boundary_nodes", "design_boundary_nodes", default=None),
-            )
-            if value is not None
-        ),
-        None,
-    )
-    if node_order is None:
-        return descent_direction
-
-    node_ids = bm.asarray(node_order, dtype=int).reshape(-1)
-    if node_ids.size < 3:
-        return descent_direction
-
-    fixed_node_ids = _fixed_node_ids(cache, geometry_contract, options)
-    fixed_mask = bm.isin(node_ids, fixed_node_ids)
-
-    if preserve_normal_direction:
-        normals = _boundary_normal_unit_vectors(node_ids, cache, geometry_contract, mesh=mesh)
-        if normals is not None and normals.shape[0] == node_ids.size:
-            dim = normals.shape[1]
-
-            def _smooth_scalar(values: Any) -> Any:
-                result = bm.asarray(values, dtype=float).copy()
-                if result.ndim != 1:
-                    return bm.asarray(values, dtype=float)
-                for _ in range(iterations):
-                    result = (1.0 - weight) * result + 0.5 * weight * (
-                        bm.roll(result, 1, axis=0) + bm.roll(result, -1, axis=0)
-                    )
-                    if fixed_mask.any():
-                        result[fixed_mask] = 0.0
-                return result
-
-            if isinstance(descent_direction, Mapping):
-                node_keys = bm.asarray(list(descent_direction.keys()), dtype=int)
-                node_values = bm.asarray([_coerce_vector(value, dim) for value in descent_direction.values()], dtype=float)
-                order = bm.argsort(node_keys)
-                node_keys = node_keys[order]
-                node_values = node_values[order]
-                positions = bm.searchsorted(node_keys, node_ids)
-                valid = positions < node_keys.size
-                if bm.any(valid):
-                    matched = bm.zeros_like(valid)
-                    valid_positions = positions[valid]
-                    matched[valid] = node_keys[valid_positions] == node_ids[valid]
-                    valid &= matched
-                scalar_values = bm.zeros(node_ids.size, dtype=float)
-                if bm.any(valid):
-                    scalar_values[valid] = bm.einsum("ij,ij->i", node_values[positions[valid]], normals[valid])
-                smoothed_scalar = _smooth_scalar(scalar_values)
-                return {int(node_id): tuple(float(component) for component in smoothed_scalar[index] * normals[index]) for index, node_id in enumerate(node_ids.tolist())}
-
-            values = bm.asarray(descent_direction, dtype=float)
-            if values.ndim == 1 and values.size == node_ids.size:
-                smoothed_scalar = _smooth_scalar(values)
-                return smoothed_scalar[:, None] * normals
-            if values.ndim >= 2 and values.shape[0] == node_ids.size:
-                vector_values = values[:, :dim]
-                scalar_values = bm.einsum("ij,ij->i", vector_values, normals)
-                smoothed_scalar = _smooth_scalar(scalar_values)
-                return smoothed_scalar[:, None] * normals
-        # If we cannot recover a reliable normal field, fall back to the current vector smoothing path.
-
-    def _smooth_array(values: Any) -> Any:
-        result = bm.asarray(values, dtype=float).copy()
-        if result.ndim == 1:
-            for _ in range(iterations):
-                result = (1.0 - weight) * result + 0.5 * weight * (
-                    bm.roll(result, 1, axis=0) + bm.roll(result, -1, axis=0)
-                )
-                if fixed_mask.any():
-                    result[fixed_mask] = 0.0
-            return result
-
-        if result.ndim >= 2 and result.shape[0] == node_ids.size:
-            for _ in range(iterations):
-                result = (1.0 - weight) * result + 0.5 * weight * (
-                    bm.roll(result, 1, axis=0) + bm.roll(result, -1, axis=0)
-                )
-                if fixed_mask.any():
-                    result[fixed_mask] = 0.0
-            return result
-        return bm.asarray(values, dtype=float)
-
-    if isinstance(descent_direction, Mapping):
-        dim = _mesh_dimension(mesh, geometry_contract)
-        if dim is None:
-            sample_value = next((value for value in descent_direction.values() if value is not None), None)
-            if sample_value is None:
-                return descent_direction
-            sample_array = bm.asarray(sample_value, dtype=float).reshape(-1)
-            dim = int(sample_array.size) if sample_array.size > 1 else 1
-        values = bm.zeros((node_ids.size, dim), dtype=float)
-        node_keys = bm.asarray(list(descent_direction.keys()), dtype=int)
-        node_values = bm.asarray([_coerce_vector(value, dim) for value in descent_direction.values()], dtype=float)
-        order = bm.argsort(node_keys)
-        node_keys = node_keys[order]
-        node_values = node_values[order]
-        positions = bm.searchsorted(node_keys, node_ids)
-        valid = positions < node_keys.size
-        if bm.any(valid):
-            matched = bm.zeros_like(valid)
-            valid_positions = positions[valid]
-            matched[valid] = node_keys[valid_positions] == node_ids[valid]
-            valid &= matched
-        if bm.any(valid):
-            values[valid] = node_values[positions[valid]]
-        smoothed = _smooth_array(values)
-        return {int(node_id): tuple(float(component) for component in smoothed[index]) for index, node_id in enumerate(node_ids.tolist())}
-
-    values = bm.asarray(descent_direction, dtype=float)
-    smoothed = _smooth_array(values)
-    return smoothed
 
 
 def build_trial_update(
@@ -1135,11 +841,11 @@ def project_to_area_preserving_tangent_space(
     if design_node_ids.size < 3:
         return raw_gradient
 
-    nodes = get_mesh_nodes(mesh)
+    nodes = mesh.node
     if nodes is None:
         reference_mesh = get_value(cache, "reference_mesh", default=None)
         if reference_mesh is not None:
-            nodes = get_mesh_nodes(reference_mesh)
+            nodes = reference_mesh.node
     if nodes is None:
         return raw_gradient
 
@@ -1256,5 +962,3 @@ def project_to_area_preserving_tangent_space(
         return result
 
     return raw_gradient
-
-

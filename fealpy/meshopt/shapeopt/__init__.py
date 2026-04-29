@@ -2,7 +2,7 @@
 
 from fealpy.model.stokes.exp0009 import ObstacleStokesFluidModel
 
-from .adjoint_solver import AdjointSolveResult, assemble_adjoint_weak_form, solve_adjoint_system
+from .adjoint_solver import AdjointSolveResult, solve_adjoint_system
 from .benchmark_runner import ShapeOptimizationRunner
 from .geometry_contract import (
     GeometryContract,
