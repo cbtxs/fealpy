@@ -16,16 +16,14 @@ from .benchmark_common import (
     _build_vtu_point_data,
     _compute_convergence_rates,
     _map_scalar_product,
-    get_mesh_nodes,
     get_value,
-    require_mesh_nodes,
 )
 from .geometry_gradient import assemble_geometry_gradient
 from .geometry_regularization import _polygon_vertex_normals,_polygon_area_and_centroid
 from .mesh_propagation import RemeshResult, propagate_mesh, remesh_mesh, check_mesh_quality
 from .objective import evaluate_objective
 from .shape_optimizer import OptimizationResult, ShapeOptimizer
-from .state_solver import _as_state_result, solve_state_system
+from .state_solver import solve_state_system
 
 
 def _null_shape_derivative_source(*args: Any, **kwargs: Any) -> None:
@@ -141,7 +139,7 @@ class BenchmarkRunnerMixin:
             design_order = tuple(int(node) for node in bm.asarray(design_order, dtype=int).reshape(-1).tolist())
             if len(design_order) == 0:
                 return False
-            boundary_points = require_mesh_nodes(trial_mesh)[bm.asarray(design_order, dtype=int)]
+            boundary_points = trial_mesh.node[bm.asarray(design_order, dtype=int)]
             remeshed_mesh = self.mesher.build_mesh_from_boundary_points(boundary_points)
             boundary_nodes_by_role = self._mesh_boundary_roles(remeshed_mesh)
             updated_objective_parameters = dict(get_value(current_state, "objective_parameters", default=getattr(self, "objective_parameters", {})))
@@ -295,13 +293,13 @@ class BenchmarkRunnerMixin:
         }
         if h is None:
             h = {}
-            design_coords = require_mesh_nodes(mesh)[design_ids]
+            design_coords = mesh.node[design_ids]
             normals = _polygon_vertex_normals(design_coords)
             random_weights = [float(custom_rng.uniform(-1.0, 1.0)) for _ in range(int(design_ids.size))]
             for node_id, normal, weight in zip(design_ids.tolist(), normals, random_weights, strict=True):
                 h[int(node_id)] = tuple(float(weight * component) for component in normal)
         current_cost = float(objective_result.total_objective)
-        coords = get_mesh_nodes(mesh)
+        coords = mesh.node
         if coords is None:
             raise ValueError("benchmark mesh does not expose coordinates for Taylor testing")
         coords_arr = bm.asarray(coords, dtype=float)

@@ -296,6 +296,18 @@ class ShapeOptimizer:
             current_objective = float(current_objective)
         return mesh, objective_parameters, current_objective
 
+    def _resolve_current_state_result(self, current_state: Any, mesh: Any) -> Any:
+        """Reuse a cached state result when it is still valid for the current mesh."""
+        cached_state_result = self.get_value(current_state, "state_result", default=None)
+        if cached_state_result is None:
+            return None
+        if not bool(self.get_value(current_state, "state_solution_valid", default=False)):
+            return None
+        cached_mesh = self.get_value(cached_state_result, "mesh", default=None)
+        if cached_mesh is not None and cached_mesh != mesh:
+            return None
+        return cached_state_result
+
     def _negate_value(self, value: Any) -> Any:
         """Negate a scalar, vector, or nested mapping."""
         if isinstance(value, Number):
@@ -365,17 +377,112 @@ class ShapeOptimizer:
         )
         if directional_derivative is not None:
             return self._scalar_measure(directional_derivative)
-        raw_gradient = self.get_value(
+        armijo_gradient = self.get_value(
             geometry_gradient_result,
-            "raw_gradient",
             "propagated_gradient",
+            "node_gradient",
             "normal_gradient",
+            "raw_gradient",
             default=None,
         )
         descent_direction = self.get_value(geometry_gradient_result, "descent_direction", default=None)
-        if raw_gradient is None or descent_direction is None:
+        if armijo_gradient is None or descent_direction is None:
             return 0.0
-        return self._dot_measure(raw_gradient, descent_direction)
+        return self._dot_measure(armijo_gradient, descent_direction)
+
+    def _evaluate_trial_objective_along_direction(
+        self,
+        mesh: Any,
+        current_state: Any,
+        descent_direction: Any,
+        step_size: float,
+    ) -> float | None:
+        """Evaluate the actual trial objective for a fixed step size."""
+        propagation_parameters = self.get_value(self.cache, "propagation_parameters", default={})
+        objective_parameters = self.get_value(current_state, "objective_parameters")
+        if objective_parameters is None:
+            objective_parameters = self._objective_parameters_default if self._objective_parameters_default is not None else {}
+
+        boundary_displacement = build_boundary_displacement(
+            descent_direction,
+            step_size,
+            self.geometry_contract,
+            self.options,
+            mesh=mesh,
+            cache=self.cache,
+            objective_parameters=objective_parameters,
+        )
+        trial_state = self._invoke_component(
+            self.mesh_propagator,
+            "build_trial_mesh",
+            mesh,
+            boundary_displacement,
+            self.geometry_contract,
+            propagation_parameters,
+            cache=self.cache,
+        )
+        quality_info = self.get_value(trial_state, "quality_info")
+        quality_state = self._quality_state(quality_info)
+        quality_flag = self.get_value(quality_info, "accepted", default=None)
+        if quality_state in {"rejected", "invalid"}:
+            return None
+        if bool(self.get_value(quality_info, "has_negative_cells", default=False)):
+            return None
+        if quality_flag is False and quality_state not in {"good", "marginal", "accepted", "poor", None}:
+            return None
+
+        trial_mesh = self.get_value(trial_state, "trial_mesh", "mesh")
+        if trial_mesh is None:
+            return None
+
+        trial_state_result = self._invoke_component(
+            self.state_solver,
+            "solve_state_system",
+            trial_mesh,
+            self.geometry_contract,
+            initial_guess=self.get_value(current_state, "initial_guess"),
+            options=self.options,
+        )
+        if getattr(trial_state_result, "converged", None) is False:
+            return None
+
+        trial_objective_result = self._invoke_component(
+            self.objective_evaluator,
+            "evaluate_objective",
+            trial_mesh,
+            trial_state_result,
+            objective_parameters,
+            current_state={"mesh": trial_mesh, "objective_parameters": objective_parameters},
+        )
+        trial_objective = self.get_value(trial_objective_result, "total_objective", "objective", default=None)
+        return None if trial_objective is None else float(trial_objective)
+
+    def _finite_difference_directional_decrease_measure(
+        self,
+        mesh: Any,
+        current_state: Any,
+        descent_direction: Any,
+        current_objective: float | None,
+    ) -> float | None:
+        """Estimate the Armijo directional derivative along the actual trial path."""
+        if descent_direction is None:
+            return None
+        if current_objective is None:
+            return None
+
+        step = abs(float(self.get_value(self.options, "armijo_fd_step_size", default=1.0e-6)))
+        if step <= 0.0:
+            return None
+
+        plus_objective = self._evaluate_trial_objective_along_direction(
+            mesh,
+            current_state,
+            descent_direction,
+            step,
+        )
+        if plus_objective is not None:
+            return (float(plus_objective) - float(current_objective)) / step
+        return None
 
     def _quality_state(self, quality_info: Any) -> str | None:
         """Return the normalized mesh quality state."""
@@ -521,6 +628,14 @@ class ShapeOptimizer:
         boundary_displacement = None
         line_search_iteration = 0
         backtracked = False
+        use_fd_on_reject = bool(
+            self.get_value(
+                self.options,
+                "armijo_use_finite_difference_directional_derivative_on_reject",
+                default=False,
+            )
+        )
+        fd_directional_derivative_used = False
 
         while line_search_iteration < max_iterations and step_size >= min_step_size:
             if diagnostics:
@@ -597,6 +712,30 @@ class ShapeOptimizer:
                 directional_derivative=directional_derivative,
                 quality_info=quality_info,
             )
+            if (
+                not accepted
+                and use_fd_on_reject
+                and not fd_directional_derivative_used
+                and trial_objective is not None
+                and current_objective is not None
+                and quality_state not in {"rejected", "invalid"}
+            ):
+                fd_directional_derivative = self._finite_difference_directional_decrease_measure(
+                    mesh,
+                    current_state,
+                    descent_direction,
+                    current_objective,
+                )
+                if fd_directional_derivative is not None:
+                    directional_derivative = fd_directional_derivative
+                    fd_directional_derivative_used = True
+                    accepted = self.accept_trial_update(
+                        current_objective,
+                        trial_objective,
+                        step_size,
+                        directional_derivative=directional_derivative,
+                        quality_info=quality_info,
+                    )
             if diagnostics:
                 quality_state = self._quality_state(quality_info)
                 print(
@@ -673,15 +812,16 @@ class ShapeOptimizer:
     def step(self, current_state: Any) -> StepResult:
         """Run one optimization step."""
         mesh, objective_parameters, current_objective = self._resolve_state_context(current_state)
-
-        state_result = self._invoke_component(
-            self.state_solver,
-            "solve_state_system",
-            mesh,
-            self.geometry_contract,
-            initial_guess=self.get_value(current_state, "initial_guess"),
-            options=self.options,
-        )
+        state_result = self._resolve_current_state_result(current_state, mesh)
+        if state_result is None:
+            state_result = self._invoke_component(
+                self.state_solver,
+                "solve_state_system",
+                mesh,
+                self.geometry_contract,
+                initial_guess=self.get_value(current_state, "initial_guess"),
+                options=self.options,
+            )
         objective_result = self._invoke_component(
             self.objective_evaluator,
             "evaluate_objective",
@@ -732,7 +872,17 @@ class ShapeOptimizer:
             if descent_direction is None:
                 descent_direction = next((self.get_value(geometry_gradient_result, name, default=None) for name in ("node_gradient", "normal_gradient")), None)
 
-        decrease_measure = self._directional_decrease_measure(geometry_gradient_result)
+        if bool(self.get_value(self.options, "armijo_use_finite_difference_directional_derivative", default=False)):
+            decrease_measure = self._finite_difference_directional_decrease_measure(
+                mesh,
+                current_state,
+                descent_direction,
+                current_objective,
+            )
+            if decrease_measure is None:
+                decrease_measure = self._directional_decrease_measure(geometry_gradient_result)
+        else:
+            decrease_measure = self._directional_decrease_measure(geometry_gradient_result)
         if bool(self.get_value(self.options, "strict_normal_boundary_update", default=False)):
             decrease_measure = None
         search_result = self._backtracking_trial(
@@ -867,14 +1017,16 @@ class ShapeOptimizer:
         mesh, _, current_objective = self._resolve_state_context(current_state)
         if current_objective is None:
             mesh, objective_parameters, _ = self._resolve_state_context(current_state)
-            state_result = self._invoke_component(
-                self.state_solver,
-                "solve_state_system",
-                mesh,
-                self.geometry_contract,
-                initial_guess=self.get_value(current_state, "initial_guess"),
-                options=self.options,
-            )
+            state_result = self._resolve_current_state_result(current_state, mesh)
+            if state_result is None:
+                state_result = self._invoke_component(
+                    self.state_solver,
+                    "solve_state_system",
+                    mesh,
+                    self.geometry_contract,
+                    initial_guess=self.get_value(current_state, "initial_guess"),
+                    options=self.options,
+                )
             objective_result = self._invoke_component(
                 self.objective_evaluator,
                 "evaluate_objective",
@@ -926,7 +1078,9 @@ class ShapeOptimizer:
         if directional_derivative is not None:
             decrease_measure = self._scalar_measure(directional_derivative)
         armijo_rhs = current_objective + self._armijo_epsilon_value * step_size * decrease_measure
-        objective_tolerance = max(float(self.get_value(self.options, "objective_tolerance", default=0.0)), 0.0)
+        configured_tolerance = max(float(self.get_value(self.options, "objective_tolerance", default=0.0)), 0.0)
+        scale = max(1.0, abs(float(current_objective)), abs(float(trial_objective)))
+        objective_tolerance = max(configured_tolerance, 1.0e-9 * scale)
         return trial_objective <= armijo_rhs + objective_tolerance
     
     def update_current_state(
@@ -976,7 +1130,7 @@ class ShapeOptimizer:
                 updated_state["initial_guess"] = initial_guess
             elif state_result is not None:
                 updated_state["initial_guess"] = state_result
-            updated_state["state_solution_valid"] = False
+            updated_state["state_solution_valid"] = state_result is not None
             updated_state["adjoint_solution_valid"] = False
             updated_state["gradient_solution_valid"] = False
             updated_state["scalar_product_valid"] = False
@@ -989,7 +1143,7 @@ class ShapeOptimizer:
             "trial_state": accepted_state,
             "state_result": state_result,
             "initial_guess": initial_guess if initial_guess is not None else state_result,
-            "state_solution_valid": False,
+            "state_solution_valid": state_result is not None,
             "adjoint_solution_valid": False,
             "gradient_solution_valid": False,
             "scalar_product_valid": False,
@@ -1073,5 +1227,3 @@ def check_one_step_optimization_finite_difference(
         objective_decrease=current_objective - trial_objective,
         accepted=bool(step_result.get("accepted")),
     )
-
-

@@ -7,8 +7,6 @@ from typing import Any, Mapping, Sequence
 
 from fealpy.backend import backend_manager as bm
 
-from .benchmark_common import get_mesh_nodes
-
 
 def _resolve_design_boundary_node_order(
     current_state: Any,
@@ -105,7 +103,16 @@ def _polygon_vertex_weights(points: Any) -> Any:
     return 0.5 * (prev_lengths + next_lengths)
 
 
-def _polygon_vertex_normals(points: Any, is_hole_boundary: bool = True) -> Any:
+def _polygon_signed_area(points: Any) -> float:
+    coords = bm.asarray(points, dtype=float)
+    if coords.ndim != 2 or coords.shape[0] < 3:
+        return 0.0
+    x = coords[:, 0]
+    y = coords[:, 1]
+    return 0.5 * float(bm.sum(x * bm.roll(y, -1) - bm.roll(x, -1) * y))
+
+
+def _polygon_vertex_normals(points: Any, is_hole_boundary: bool | None = None) -> Any:
     coords = bm.asarray(points, dtype=float)
     if coords.shape[0] == 0:
         return bm.zeros_like(coords)
@@ -133,6 +140,10 @@ def _polygon_vertex_normals(points: Any, is_hole_boundary: bool = True) -> Any:
     normals = bm.where(fallback_norm[:, None] > 0.0, normals, bm.asarray([[1.0, 0.0]], dtype=float))
     alignment = bm.sum(normals * (coords - centroid), axis=1)
     normals = bm.where(alignment[:, None] < 0.0, -normals, normals)
+    if is_hole_boundary is None:
+        is_hole_boundary = _polygon_signed_area(coords) < 0.0
+    if is_hole_boundary:
+        normals = -normals
     
     norm = bm.linalg.norm(normals, axis=1)
     return bm.divide(normals, norm[:, None], out=bm.zeros_like(normals), where=norm[:, None] > 0.0)
@@ -170,7 +181,7 @@ class ObstacleGeometryRegularization:
         objective_parameters: Any = None,
         current_state: Any = None,
     ) -> None:
-        nodes = get_mesh_nodes(mesh)
+        nodes = mesh.node
         design_node_order = self._resolve_design_node_order(current_state, objective_parameters)
         design_ids = bm.asarray(design_node_order, dtype=int)
         if nodes is None or design_ids.size < 3:
@@ -196,7 +207,7 @@ class ObstacleGeometryRegularization:
         objective_parameters: Any = None,
         current_state: Any = None,
     ) -> tuple[Any, Any, float, Any, Any, Any, Any, Any]:
-        nodes = get_mesh_nodes(mesh)
+        nodes = mesh.node
         design_node_order = self._resolve_design_node_order(current_state, objective_parameters)
         design_ids = bm.asarray(design_node_order, dtype=int)
         if nodes is None or design_ids.size < 3:

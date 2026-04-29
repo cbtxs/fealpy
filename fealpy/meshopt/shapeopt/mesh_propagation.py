@@ -11,14 +11,14 @@ from itertools import combinations
 from numbers import Real
 from typing import Any, Mapping
 
-from fealpy.backend import backend_manager as bm
+from fealpy.backend import bm
 from fealpy.fem import BilinearForm, DirichletBC, LinearElasticityIntegrator
 from fealpy.functionspace import LagrangeFESpace, TensorFunctionSpace
 from fealpy.sparse import csr_matrix
 from fealpy.material import LinearElasticMaterial
 from fealpy.solver import spsolve as fealpy_spsolve
 
-from .benchmark_common import get_mesh_nodes, get_value
+from .benchmark_common import get_value
 from scipy.sparse.csgraph import dijkstra
 
 
@@ -133,17 +133,6 @@ def _set_mesh_nodes(mesh: Any, coordinates: Any) -> Any:
     return mesh
 
 
-def get_mesh_cells(mesh: Any) -> Any | None:
-    """提取单元连接。"""
-    if isinstance(mesh, Mapping):
-        cells = mesh.get("cell", mesh.get("cells"))
-    else:
-        cells = get_value(mesh, "cell", "cells")
-    if cells is None:
-        return None
-    return bm.asarray(cells, dtype=int)
-
-
 def get_boundary_nodes(mesh: Any, propagation_parameters: Any) -> Any | None:
     nodes = get_value(propagation_parameters, "boundary_nodes", "design_boundary_nodes")
     if nodes is None and hasattr(mesh, "boundary_node_index") and callable(mesh.boundary_node_index):
@@ -229,8 +218,8 @@ def _shortest_distances_to_sources(
     source_nodes: Any,
 ) -> Any | None:
     """计算每个节点到给定源节点集合的近似图距离。"""
-    nodes = get_mesh_nodes(mesh)
-    cells = get_mesh_cells(mesh)
+    nodes = mesh.node
+    cells = mesh.cell
     if nodes is None or cells is None:
         return None
     if source_nodes.size == 0:
@@ -266,7 +255,7 @@ def _compute_node_stiffness_profile(
     propagation_parameters: Any,
 ) -> Any | None:
     """计算节点刚度分布。"""
-    nodes = get_mesh_nodes(mesh)
+    nodes = mesh.node
     if nodes is None:
         return None
 
@@ -322,7 +311,7 @@ def _compute_node_stiffness_profile(
     if interior_nodes.size == 0:
         return profile
 
-    cells = get_mesh_cells(mesh)
+    cells = mesh.cell
     if cells is None:
         return profile
     laplacian = _build_graph_laplacian(nodes.shape[0], cells)
@@ -359,8 +348,8 @@ def _solve_weighted_extension(
     node_weights: Any | None = None,
 ) -> Any | None:
     """使用加权调和扩展求解全局位移场。"""
-    nodes = get_mesh_nodes(mesh)
-    cells = get_mesh_cells(mesh)
+    nodes = mesh.node
+    cells = mesh.cell
     if nodes is None or cells is None:
         return None
 
@@ -412,7 +401,7 @@ def _compute_deformation_metrics(
     deformation: Any,
 ) -> tuple[Any, Any] | tuple[None, None]:
     """计算每个单元的体积变化与角度变化指标。"""
-    nodes = get_mesh_nodes(mesh)
+    nodes = mesh.node
     if isinstance(mesh, Mapping):
         cells = mesh.get("cell", mesh.get("cells"))
     else:
@@ -558,8 +547,8 @@ def _triangle_quality_from_measure(
 
 def _compute_cell_quality_values(mesh: Any, quality_measure: str) -> Any | None:
     """计算每个单元的质量值。"""
-    nodes = get_mesh_nodes(mesh)
-    cells = get_mesh_cells(mesh)
+    nodes = mesh.node
+    cells = mesh.cell
     if nodes is None or cells is None or cells.shape[1] != 3 or nodes.shape[1] < 2:
         return None
 
@@ -717,8 +706,8 @@ def _mesh_quality_parameters(propagation_parameters: Any) -> tuple[str, str, flo
 
 def _boundary_normals_from_centroid(mesh: Any, boundary_nodes: Any) -> Any | None:
     """用几何中心近似边界法向。"""
-    nodes = get_mesh_nodes(mesh)
-    cells = get_mesh_cells(mesh)
+    nodes = mesh.node
+    cells = mesh.cell
     if nodes is None or cells is None:
         return None
     boundary_nodes = bm.asarray(boundary_nodes, dtype=int)
@@ -763,44 +752,6 @@ def _boundary_normals_from_centroid(mesh: Any, boundary_nodes: Any) -> Any | Non
     return values
 
 
-def _reextend_deformation_from_boundary(
-    mesh: Any,
-    deformation: Any,
-    propagation_parameters: Any,
-) -> Any:
-    """从边界重新扩展变形场。"""
-    if not bool(get_value(propagation_parameters, "reextend_from_boundary", default=False)):
-        return bm.asarray(deformation, dtype=float)
-
-    boundary_nodes = get_boundary_nodes(mesh, propagation_parameters)
-    if boundary_nodes is None or boundary_nodes.size == 0:
-        return bm.asarray(deformation, dtype=float)
-
-    reextension_mode = get_value(propagation_parameters, "reextension_mode", default="surface")
-    deformation = bm.asarray(deformation, dtype=float)
-    boundary_displacement = bm.zeros_like(deformation, dtype=float)
-    boundary_displacement[boundary_nodes] = deformation[boundary_nodes]
-
-    if reextension_mode == "normal":
-        normals = _boundary_normals_from_centroid(mesh, boundary_nodes)
-        if normals is not None:
-            projected = bm.zeros_like(boundary_displacement)
-            projected[boundary_nodes] = bm.einsum("ij,ij->i", deformation[boundary_nodes], normals)[:, None] * normals
-            boundary_displacement = projected
-
-    weighted = _solve_weighted_extension(
-        mesh,
-        boundary_displacement,
-        propagation_parameters,
-        node_weights=_compute_node_stiffness_profile(mesh, propagation_parameters),
-    )
-    if weighted is not None:
-        weighted[boundary_nodes] = boundary_displacement[boundary_nodes]
-        return weighted
-
-    return deformation
-
-
 def _solve_linear_elasticity_extension(
     mesh: Any,
     boundary_displacement: Any,
@@ -810,10 +761,7 @@ def _solve_linear_elasticity_extension(
     use_distance_mu = bool(get_value(propagation_parameters, "use_distance_mu", default=False))
     mu_def = float(get_value(propagation_parameters, "mu_def", default=1.0))
     mu_fix = float(get_value(propagation_parameters, "mu_fix", default=1.0))
-    reextend_from_boundary = bool(
-        get_value(propagation_parameters, "reextend_from_boundary", default=False)
-    )
-    if use_distance_mu or (abs(mu_def - mu_fix) > 1e-12) or reextend_from_boundary:
+    if use_distance_mu or (abs(mu_def - mu_fix) > 1e-12):
         node_weights = _compute_node_stiffness_profile(mesh, propagation_parameters)
         deformation = _solve_weighted_extension(
             mesh,
@@ -823,14 +771,10 @@ def _solve_linear_elasticity_extension(
         )
         if deformation is None:
             return None
-        return _reextend_deformation_from_boundary(
-            mesh,
-            deformation,
-            propagation_parameters,
-        )
+        return deformation
 
-    nodes = get_mesh_nodes(mesh)
-    cells = get_mesh_cells(mesh)
+    nodes = mesh.node
+    cells = mesh.cell
     if nodes is None or cells is None:
         return None
 
@@ -988,7 +932,7 @@ def propagate_mesh(
             used_deformation_extension = True
             deformation_extension_result = handler_mesh
         else:
-            nodes = get_mesh_nodes(trial_mesh)
+            nodes = trial_mesh.node
             if nodes is not None:
                 trial_mesh = _set_mesh_nodes(trial_mesh, nodes + deformation)
             extension_path = "linear_elasticity"
@@ -1073,8 +1017,8 @@ def check_mesh_quality(
         quality_measure=quality_measure,
         quantile=quality_quantile,
     )
-    nodes = get_mesh_nodes(mesh)
-    cells = get_mesh_cells(mesh)
+    nodes = mesh.node
+    cells = mesh.cell
     if cell_qualities is not None:
         has_negative_cells = False
         signed_area = None
