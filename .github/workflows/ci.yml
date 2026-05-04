@@ -25,11 +25,11 @@ jobs:
 
     steps:
       - name: 检出代码 (Checkout Code)
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       # 3. 依赖缓存策略 (The Minute Saver)
       - name: 设置 Python 环境与依赖缓存 (Setup Python & Cache)
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
           cache: 'pip' # 强制开启 pip 缓存，跳过下次漫长的 Numpy/SciPy 下载
