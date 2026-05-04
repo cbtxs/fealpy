@@ -1,0 +1,59 @@
+name: FEALPy Mesh CI (MVP)
+
+# 1. 触发时机与分支策略
+on:
+  push:
+    branches:
+      - main
+      - develop
+      - feature/mesh
+      - feature/mesh-02-test-system
+  pull_request:
+    branches:
+      - main
+      - develop
+      - feature/mesh
+
+jobs:
+  test:
+    name: Mesh Module Tests
+    # 2. 环境设置：MVP 阶段仅运行 Ubuntu + Python 3.10 单一环境以节约额度
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10"]
+
+    steps:
+      - name: 检出代码 (Checkout Code)
+        uses: actions/checkout@v3
+
+      # 3. 依赖缓存策略 (The Minute Saver)
+      - name: 设置 Python 环境与依赖缓存 (Setup Python & Cache)
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: 'pip' # 强制开启 pip 缓存，跳过下次漫长的 Numpy/SciPy 下载
+
+      - name: 安装测试依赖 (Install Dependencies)
+        run: |
+          python -m pip install --upgrade pip
+          # 安装测试所需核心依赖，实际运行请根据 FEALPy 的 requirements 调整
+          pip install pytest pytest-cov numpy scipy 
+          # 安装 FEALPy 自身
+          pip install -e .
+
+      # 4. 环境自白书 (Environment Confession)
+      - name: 打印环境自白书 (Print Environment Info)
+        run: |
+          echo "=== 操作系统信息 ==="
+          uname -a
+          echo "=== Python 版本 ==="
+          python --version
+          echo "=== 核心依赖版本 ==="
+          pip show numpy scipy pytest
+
+      # 5. 极速拦截器：日常 PR 和 Push 只跑核心单元测试
+      - name: 运行日常快速单元测试 (Fast Unit Tests)
+        run: |
+          # 只执行 tests/mesh/unit/ 目录，并且跳过被打上 slow 标签的耗时测试
+          pytest tests/mesh/ -m "not slow" --junitxml=report.xml
