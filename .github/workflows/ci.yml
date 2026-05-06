@@ -1,23 +1,24 @@
 name: FEALPy Mesh CI (MVP)
 
-# 1. 触发时机与分支策略
 on:
   push:
     branches:
       - main
       - develop
-      - feature/mesh
-      - feature/mesh-02-test-system
+      - feature/mesh* # 支持通配符，兼容 feature/mesh 和 feature/mesh-02-test-system 等
   pull_request:
     branches:
       - main
       - develop
-      - feature/mesh
+      - feature/mesh*
+
+# 优化 1：强制使用 Node.js 24，彻底消灭弃用警告
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   test:
-    name: Mesh Module Tests
-    # 2. 环境设置：MVP 阶段仅运行 Ubuntu + Python 3.10 单一环境以节约额度
+    name: Mesh Module Unit Tests
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -27,22 +28,18 @@ jobs:
       - name: 检出代码 (Checkout Code)
         uses: actions/checkout@v4
 
-      # 3. 依赖缓存策略 (The Minute Saver)
       - name: 设置 Python 环境与依赖缓存 (Setup Python & Cache)
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-          cache: 'pip' # 强制开启 pip 缓存，跳过下次漫长的 Numpy/SciPy 下载
+          cache: 'pip' 
 
       - name: 安装测试依赖 (Install Dependencies)
         run: |
           python -m pip install --upgrade pip
-          # 安装测试所需核心依赖，实际运行请根据 FEALPy 的 requirements 调整
           pip install pytest pytest-cov numpy scipy 
-          # 安装 FEALPy 自身
           pip install -e .
 
-      # 4. 环境自白书 (Environment Confession)
       - name: 打印环境自白书 (Print Environment Info)
         run: |
           echo "=== 操作系统信息 ==="
@@ -52,8 +49,21 @@ jobs:
           echo "=== 核心依赖版本 ==="
           pip show numpy scipy pytest
 
-      # 5. 极速拦截器：日常 PR 和 Push 只跑核心单元测试
-      - name: 运行日常快速单元测试 (Fast Unit Tests)
+      # 优化 2 & 4：精准定位 unit 目录，并开启代码覆盖率检查
+      - name: 运行极速单元测试 (Fast Unit Tests)
         run: |
-          # 只执行 tests/mesh/unit/ 目录，并且跳过被打上 slow 标签的耗时测试
-          pytest tests/mesh/ -m "not slow" --junitxml=report.xml
+          pytest tests/mesh/unit/ \
+            --cov=fealpy.mesh \
+            --cov-report=xml \
+            --junitxml=test-report.xml
+
+      # 优化 3：上传测试报告，即使测试失败（failure()）也强制上传，便于本地排查
+      - name: 上传测试报告 (Upload Test Artifacts)
+        if: always() 
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-report-python${{ matrix.python-version }}
+          path: |
+            test-report.xml
+            coverage.xml
+          retention-days: 7 # 仅保留7天，防止无意义地挤占 500MB 免费存储额度
