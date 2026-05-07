@@ -21,7 +21,7 @@ def radius_ratio(mesh):
     ss = bm.sum(s[cell2face],axis=1)
     node = mesh.block.positions
     cell = mesh.sector("tet").indices
-    v10 = node[cell[:, 0],:] - node[cell[:, 1],:] 
+    v10 = node[cell[:, 0],:] - node[cell[:, 1],:]
     v20 = node[cell[:, 0],:] - node[cell[:, 2],:]
     v30 = node[cell[:, 0],:] - node[cell[:, 3],:]
     l10 = bm.sum(v10**2, axis=1, keepdims=True)
@@ -42,7 +42,7 @@ def dihedral_angle(mesh):
     node = mesh.block.positions
     cell = mesh.sector("tet").indices
     localFace = TetrahedronSchema.local_entity('tri')
-        
+
     n = [bm.cross(node[cell[:, j],:] - node[cell[:, i],:],
         node[cell[:, k],:] - node[cell[:, i],:]) for i, j, k in localFace]
     l =[bm.sqrt(bm.sum(ni**2, axis=1)) for ni in n]
@@ -63,7 +63,7 @@ def face_area(mesh):
 def cell_volume(mesh):
     cell = mesh.sector("tet").indices
     node = mesh.block.positions
-    v01 = node[cell[:, 1],:] - node[cell[:, 0],:] 
+    v01 = node[cell[:, 1],:] - node[cell[:, 0],:]
     v02 = node[cell[:, 2],:] - node[cell[:, 0],:]
     v03 = node[cell[:, 3],:] - node[cell[:, 0],:]
     volume = bm.abs(bm.sum(v03*bm.cross(v01, v02), axis=1))/6.0
