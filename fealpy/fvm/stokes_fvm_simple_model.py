@@ -19,6 +19,11 @@ from . import (
     DirichletBC,
     RhieChowInterpolation
 )
+from .simple_residual import (
+    cell_l2_norm,
+    collocated_mass_residual,
+    relative_l2_update,
+)
 
 class StokesFVMSimpleModel(ComputationalModel):
     """
@@ -47,33 +52,42 @@ class StokesFVMSimpleModel(ComputationalModel):
 
     def set_mesh(self, nx: int = 10, ny: int = 10) -> None:
         """Set the computational mesh."""
-        self.mesh = self.pde.init_mesh['uniform_tri'](nx=nx, ny=ny)
+        self.mesh = self.pde.init_mesh['uniform_qrad'](nx=nx, ny=ny)
         self.cm = self.mesh.entity_measure('cell')
-        
+        self.NC = self.mesh.number_of_cells()
 
     def set_space(self, degree: int = 0) -> None:
         """Set the function spaces for velocity and pressure."""
         self.p = degree
         self.space = ScaledMonomialSpace2d(self.mesh, self.p)
         self.velocity_space = TensorFunctionSpace(self.space, shape=(2, -1))
-        self.NC = self.mesh.number_of_cells()
+        self._momentum_system_cache = None
+        self._pressure_correction_system_cache = None
 
-    def temporary_velocity(self, p,u0) -> Tuple[TensorLike, TensorLike]:
-        """Solve for temporary velocity u* using the momentum equation."""
+    def momentum_system(self):
+        """Assemble and cache the constant Stokes momentum system."""
+        if self._momentum_system_cache is not None:
+            return self._momentum_system_cache
+
         bform = BilinearForm(self.velocity_space)
         bform.add_integrator(ScalarDiffusionIntegrator(q=self.p + 2))
         B = bform.assembly()
-        ap = B.diags().values
         lform = LinearForm(self.velocity_space)
         lform.add_integrator(ScalarSourceIntegrator(self.pde.source, q=self.p + 2))
         f = lform.assembly()
 
         dbc = DirichletBC(self.mesh, self.pde.dirichlet_velocity)
         B, f = dbc.DiffusionApply(B, f)
-        
+        # FEALPy sparse assembly can leave duplicate entries here.
+        B = B.tocoo().coalesce().tocsr()
+        ap = B.diags().values
+        self._momentum_system_cache = (B, f, ap)
+        return self._momentum_system_cache
+
+    def temporary_velocity(self, p, uf, u0) -> Tuple[TensorLike, TensorLike]:
+        """Solve the Stokes momentum equation for intermediate velocity u*."""
+        B, f, ap = self.momentum_system()
         grad_p = GradientReconstruct(self.mesh).LSQ(p)  # (NC, 2)
-        # grad_p = GradientReconstruct(self.mesh).AverageGradientreNeumann(p, self.pde.neumann_pressure)  # (NC, 2)
-        # grad_p = GradientReconstruct(self.mesh).AverageGradientreDirichlet(p, self.pde.dirichlet_pressure)  # (NC, 2)
         p1 = bm.einsum('i,i->i', grad_p[:,0], self.cm)
         p2 = bm.einsum('i,i->i', grad_p[:,1], self.cm)
         p_grad_integrator = bm.concatenate((p1,p2))
@@ -81,13 +95,11 @@ class StokesFVMSimpleModel(ComputationalModel):
         u = spsolve(B, f,"mumps")
 
         cross = self.compute_cross_diffusion(u0)
-        for i in range(10):
+        for _ in range(10):
             rhs = f + cross
             uh_new = spsolve(B, rhs)
             err = bm.max(bm.abs(uh_new - u))
-            print(f"[Iter {i+1}] residual = {err}")
             if err < 10e-5:
-                print("Converged.")
                 break
             u = uh_new
             cross = self.compute_cross_diffusion(u)
@@ -104,58 +116,90 @@ class StokesFVMSimpleModel(ComputationalModel):
         return lform.assembly()
     
     def pressure_correct(self, ap: TensorLike, uf: TensorLike) -> TensorLike:
-        """Solve for pressure correction p' to enforce continuity."""
-        cm = self.mesh.entity_measure('cell')
-        em = self.mesh.entity_measure('edge')
-        dp = 1/ap[:len(cm)]
-        e2c = self.mesh.edge_to_cell()
-        dp_edge = (dp[e2c[:,0]]+dp[e2c[:,1]])/2
-        dp_edge = em*dp_edge
-        div_u = DivergenceReconstruct(self.mesh).Reconstruct(uf)  # (NE,)
-        
-        bform2 = BilinearForm(self.space)
-        bform2.add_integrator(ScalarDiffusionIntegrator(q=2,coef=dp_edge))
-        A = bform2.assembly()
-        
-        A1 = COOTensor(bm.array([bm.zeros(len(cm), dtype=bm.int32),
-                             bm.arange(len(cm), dtype=bm.int32)]), cm, spshape=(1, len(cm)))
-        A = BlockForm([[A, A1.T], [A1, None]])
-        A = A.assembly_sparse_matrix(format='csr')
+        """Solve the pressure-correction equation used by SIMPLE."""
+        A = self.pressure_correction_system(ap)
+        div_u = DivergenceReconstruct(self.mesh).Reconstruct(uf)  # (NC,)
         b0 = bm.array([0])
         b = bm.concatenate([-div_u, b0], axis=0)
-        sol = spsolve(A, b,"mumps")
+        sol = spsolve(A, b, "mumps")
         p_c = sol[:-1]
         return p_c
 
-    def solve(self, max_iter: int = 100, tol: float = 1e-5, relax: float = 0.32) -> Tuple[TensorLike, TensorLike]:
+    def pressure_correction_system(self, ap: TensorLike):
+        """Assemble and cache the constant Stokes pressure-correction matrix."""
+        if self._pressure_correction_system_cache is not None:
+            return self._pressure_correction_system_cache
+
+        cm = self.mesh.entity_measure('cell')
+        em = self.mesh.entity_measure('edge')
+        # Same convention as NSFVMSimpleModel.  This keeps the Stokes SIMPLE
+        # branch aligned with the accepted SIMPLE implementation; revisiting
+        # the coefficient should be done in both solvers together.
+        dp = 1/ap[:len(cm)]
+        e2c = self.mesh.edge_to_cell()
+        dp_edge = (dp[e2c[:,0]]+dp[e2c[:,1]])/2
+        dp_edge = dp_edge*em
+        bform2 = BilinearForm(self.space)
+        bform2.add_integrator(ScalarDiffusionIntegrator(q=2,coef=dp_edge))
+        A = bform2.assembly()
+        LagA = self.mesh.entity_measure("cell")
+        A1 = COOTensor(bm.array([bm.zeros(len(LagA), dtype=bm.int32),
+                 bm.arange(len(LagA), dtype=bm.int32)]),LagA,
+            spshape=(1, len(LagA)),
+        )
+        A = BlockForm([[A, A1.T], [A1, None]])
+        A = A.assembly_sparse_matrix(format="csr")
+        self._pressure_correction_system_cache = A
+        return A
+
+    def solve(
+        self,
+        max_iter: int = 100,
+        tol: float = 1e-5,
+        relax: float = 0.32,
+        tol_mass=None,
+        tol_pressure_update=None,
+    ) -> Tuple[TensorLike, TensorLike]:
         """Solve the Stokes equation using the SIMPLE algorithm."""
+        tol_mass = tol if tol_mass is None else tol_mass
+        tol_pressure_update = (
+            10.0 * tol if tol_pressure_update is None else tol_pressure_update
+        )
         p = bm.zeros(self.NC)
+        uf = bm.zeros((self.mesh.number_of_faces(), 2))
         u = bm.zeros(2 * self.NC)
-        ap, u = self.temporary_velocity(p, u)
+        ap, u = self.temporary_velocity(p, uf, u)
         self.residuals = []
         bd_edge = self.mesh.boundary_face_index()
         edge_middle_point = self.mesh.entity_barycenter('edge')
         bdedgepoint = edge_middle_point[bd_edge]
         bdedgeu = self.pde.dirichlet_velocity(bdedgepoint)
-        L2_p_corr0 = 10
+        rhie_chow = RhieChowInterpolation(self.mesh)
         for i in range(max_iter):
-            uf = RhieChowInterpolation(self.mesh).Interpolation(u,ap,p)
+            uf = rhie_chow.Interpolation(u,ap,p)
             uf[bd_edge, :] = bdedgeu
             # uf = self.Ucell2edge(u, self.pde.dirichlet_velocity)
             p_corr = self.pressure_correct(ap, uf)
-            L2_p_corr = bm.sqrt(bm.sum(self.cm * (p_corr)**2))
-            delta_L2_p_corr0 = L2_p_corr - L2_p_corr0
-            self.residuals.append(float(L2_p_corr))
-            self.logger.info(f"[Iter {i+1}] L2 norm of the delta pressure correction : {delta_L2_p_corr0}")
-            if delta_L2_p_corr0 > 0:
+            p_update = relax * p_corr
+            residual = {
+                "mass": collocated_mass_residual(self.mesh, uf),
+                "pressure_update": relative_l2_update(self.mesh, p_update, p),
+                "pressure_correction": cell_l2_norm(self.mesh, p_corr),
+            }
+            self.residuals.append(residual)
+            self.logger.info(
+                f"[Iter {i+1}] mass residual: {residual['mass']:.2e}, "
+                f"pressure update residual: {residual['pressure_update']:.2e}, "
+                f"pressure correction L2: {residual['pressure_correction']:.2e}"
+            )
+            if (
+                residual["mass"] < tol_mass
+                and residual["pressure_update"] < tol_pressure_update
+            ):
                 self.logger.info("Converged.")
                 break
-            elif bm.abs(delta_L2_p_corr0) < tol:
-                self.logger.info("Converged.")
-                break
-            p += relax*p_corr
-            L2_p_corr0 = L2_p_corr
-            _, u = self.temporary_velocity(p,u)
+            p += p_update
+            _, u = self.temporary_velocity(p,uf,u)
 
         self.uh = u[:self.NC]
         self.vh = u[self.NC:]
@@ -198,6 +242,29 @@ class StokesFVMSimpleModel(ComputationalModel):
     def plot_residual(self) -> None:
 
         import matplotlib.pyplot as plt
+        if self.residuals and isinstance(self.residuals[0], dict):
+            mass = [residual["mass"] for residual in self.residuals]
+            pressure_update = [
+                residual["pressure_update"] for residual in self.residuals
+            ]
+            plt.figure(figsize=(8, 5))
+            plt.semilogy(mass, marker="o", linestyle="-", color="b", label="mass")
+            plt.semilogy(
+                pressure_update,
+                marker="s",
+                linestyle="-",
+                color="r",
+                label="pressure update",
+            )
+            plt.legend()
+            plt.title("SIMPLE Residuals vs Iteration")
+            plt.xlabel("Iteration")
+            plt.ylabel("Residual (log scale)")
+            plt.grid(True, which="both", ls="--")
+            plt.tight_layout()
+            plt.show()
+            return
+
         plt.figure(figsize=(8, 5))
         plt.semilogy(self.residuals, marker='o', linestyle='-', color='b')
         plt.title("Pressure Correction Residual vs Iteration")

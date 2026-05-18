@@ -18,7 +18,11 @@ from fealpy.fvm import (
     GradientReconstruct,
     DivergenceReconstruct,
     DirichletBC,
-    NeumannBC,
+)
+from .simple_residual import (
+    cell_l2_norm,
+    relative_l2_update,
+    staggered_mass_residual,
 )
 
 class NSFVMStaggeredSimpleModel(ComputationalModel):
@@ -69,14 +73,12 @@ class NSFVMStaggeredSimpleModel(ComputationalModel):
 
         f = LinearForm(uspace).add_integrator(ScalarSourceIntegrator(self.pde.source_u, q=2)).assembly()
         grad_p = GradientReconstruct(self.umesh).LSQ(p_u)
-        # grad_p = GradientReconstruct(self.umesh).AverageGradientreNeumann(p_u, self.pde.neumann_pressure)
         f -= bm.einsum('i,i->i', grad_p[:, 0], self.ucm)
         dbc = DirichletBC(self.umesh, self.pde.dirichlet_velocity_u,
                           threshold=lambda x: (bm.abs(x) < 1e-10) | (bm.abs(x - 1) < 1e-10))
         A, f = dbc.DiffusionApply(A, f)
         A, f = dbc.ThresholdApply(A, f)
         uap = A.diags().values
-        # print(A.to_dense())
         return spsolve(A, f,"mumps"), uap
 
     def compute_temporary_velocity_v(self, p_v, uf) -> Tuple[TensorLike, TensorLike]:
@@ -89,7 +91,6 @@ class NSFVMStaggeredSimpleModel(ComputationalModel):
         A = bform.assembly()
 
         f = LinearForm(vspace).add_integrator(ScalarSourceIntegrator(self.pde.source_v, q=2)).assembly()
-        # grad_p = GradientReconstruct(self.vmesh).AverageGradientreNeumann(p_v,self.pde.neumann_pressure)
         grad_p = GradientReconstruct(self.vmesh).LSQ(p_v)
         f -= bm.einsum('i,i->i', grad_p[:, 1], self.vcm)
         dbc = DirichletBC(self.vmesh, self.pde.dirichlet_velocity_v,
@@ -104,15 +105,16 @@ class NSFVMStaggeredSimpleModel(ComputationalModel):
         Solve for pressure correction p' to enforce continuity.
         """
         pspace = ScaledMonomialSpace2d(self.pmesh, 0)
+        # Mathematical risk:
+        # This legacy SIMPLE coefficient uses face measure / a_p_edge.  It is
+        # not the same response used by the cleaned staggered PISO model
+        # (velocity control-volume response V/a_p mapped to pressure faces).
+        # Keep it unchanged for the current SIMPLE baseline, but do not treat
+        # it as a validated general pressure-correction coefficient.
         p_edge = self.pmesh.entity_measure('edge')
-        p_edge2 = bm.einsum('i,i->i', p_edge,p_edge)
         A = BilinearForm(pspace).add_integrator(
             ScalarDiffusionIntegrator(q=2,coef=p_edge / a_p_edge)
         ).assembly()  
-        # print(1 / a_p_edge)p_edge
-        # print(A.to_dense())
-        # nbc = NeumannBC(self.pmesh, self.pde.neumann_pressure)
-        # f = nbc.DiffusionApply(f)
         LagA = self.pmesh.entity_measure('cell')
         A1 = COOTensor(bm.array([bm.zeros(len(LagA), dtype=bm.int32),
                              bm.arange(len(LagA), dtype=bm.int32)]), LagA, spshape=(1, len(LagA)))
@@ -124,12 +126,22 @@ class NSFVMStaggeredSimpleModel(ComputationalModel):
         p_correct = sol[:-1]   
         return p_correct
 
-    def solve(self, max_iter: int = 200, tol: float = 1e-6) -> Tuple[TensorLike, TensorLike, TensorLike]:
+    def solve(
+        self,
+        max_iter: int = 200,
+        tol: float = 1e-6,
+        relax: float = 0.32,
+        tol_mass=None,
+        tol_pressure_update=None,
+    ) -> Tuple[TensorLike, TensorLike, TensorLike]:
         """
         Solve the Stokes equation using the SIMPLE algorithm.
         """
+        tol_mass = tol if tol_mass is None else tol_mass
+        tol_pressure_update = (
+            10.0 * tol if tol_pressure_update is None else tol_pressure_update
+        )
         p = bm.zeros(self.ppoints.shape[0])
-        # p = self.pde.pressure(self.ppoints)
         UNE = self.umesh.number_of_edges()
         uf = bm.zeros(UNE)
         vf = bm.zeros(UNE)
@@ -153,10 +165,22 @@ class NSFVMStaggeredSimpleModel(ComputationalModel):
             edge_vel, a_p_edge = self.staggered_mesh.map_velocity_uvcell_to_pedge(uh, vh, a_p_u, a_p_v)
             self.div_rhs = self.div.StagReconstruct(edge_vel)
             p_corr = self.correct_pressure_compute(-self.div_rhs, a_p_edge)
-            err = bm.sqrt(bm.sum(self.pcm * p_corr ** 2))
-            self.residuals.append(float(err))
-            self.logger.info(f"[Iter {i+1}] Pressure correction residual: {err:.2e}")
-            if err < tol:
+            p_update = relax * p_corr
+            residual = {
+                "mass": staggered_mass_residual(self.pmesh, edge_vel),
+                "pressure_update": relative_l2_update(self.pmesh, p_update, p),
+                "pressure_correction": cell_l2_norm(self.pmesh, p_corr),
+            }
+            self.residuals.append(residual)
+            self.logger.info(
+                f"[Iter {i+1}] mass residual: {residual['mass']:.2e}, "
+                f"pressure update residual: {residual['pressure_update']:.2e}, "
+                f"pressure correction L2: {residual['pressure_correction']:.2e}"
+            )
+            if (
+                residual["mass"] < tol_mass
+                and residual["pressure_update"] < tol_pressure_update
+            ):
                 self.logger.info("Converged.")
                 break
             ucell2pedge = self.staggered_mesh.get_dof_mapping_ucell2pedge()
@@ -166,13 +190,7 @@ class NSFVMStaggeredSimpleModel(ComputationalModel):
             v_corr = (p_corr[pe2c[vcell2pedge,0]]-p_corr[pe2c[vcell2pedge,1]])/self.staggered_mesh.hy
             u_corr = self.ucm / a_p_u * u_corr
             v_corr = self.vcm / a_p_v * v_corr
-            # if err < 1e-3:
-            #     p += 0.3*p_corr
-            # elif err < 1e-1:
-            #     p += 0.05*p_corr
-            # else:
-            #     p += 0.05*p_corr
-            p += 0.2*p_corr
+            p += p_update
             uh += u_corr
             vh += v_corr
             uf1 = (uh[ue2c[:,0]] + uh[ue2c[:,1]])/2
@@ -185,8 +203,6 @@ class NSFVMStaggeredSimpleModel(ComputationalModel):
         
         self.uh, self.vh, self.ph = uh, vh, p
         self.edge_vel, _ = self.staggered_mesh.map_velocity_uvcell_to_pedge(uh, vh, a_p_u, a_p_v)
-        # print(self.edge_vel.shape)
-        # print(self.pmesh.number_of_edges())
         self.p_correct = p_corr
         return uh, vh, p
 
@@ -201,9 +217,6 @@ class NSFVMStaggeredSimpleModel(ComputationalModel):
         uerror = bm.sqrt(bm.sum(self.umesh.entity_measure("cell") * (self.uh - self.uI)**2))
         verror = bm.sqrt(bm.sum(self.vmesh.entity_measure("cell") * (self.vh - self.vI)**2))
         perror = bm.sqrt(bm.sum(self.pmesh.entity_measure("cell") * (self.ph - self.pI)**2))
-        # uerr = bm.max(bm.abs(self.uh - self.uI))
-        # verr = bm.max(bm.abs(self.vh - self.vI))
-        # perr = bm.max(bm.abs(self.ph - self.pI))
         return uerror, verror, perror
 
     def plot(self) -> None:
@@ -230,11 +243,24 @@ class NSFVMStaggeredSimpleModel(ComputationalModel):
         plt.show()
 
     def plot_residual(self) -> None:
-        '''Plot the residual descent curve of pressure p correction.'''
+        """Plot residual decay curve."""
         import matplotlib.pyplot as plt
+
+        mass = [residual["mass"] for residual in self.residuals]
+        pressure_update = [
+            residual["pressure_update"] for residual in self.residuals
+        ]
         plt.figure(figsize=(8, 5))
-        plt.semilogy(self.residuals, marker='o', linestyle='-', color='b')
-        plt.title("Pressure Correction Residual vs Iteration")
+        plt.semilogy(mass, marker="o", linestyle="-", color="b", label="mass")
+        plt.semilogy(
+            pressure_update,
+            marker="s",
+            linestyle="-",
+            color="r",
+            label="pressure update",
+        )
+        plt.legend()
+        plt.title("SIMPLE Residuals vs Iteration")
         plt.xlabel("Iteration")
         plt.ylabel("Residual (log scale)")
         plt.grid(True, which="both", ls="--")
@@ -250,8 +276,6 @@ class NSFVMStaggeredSimpleModel(ComputationalModel):
         c2e = self.pmesh.cell2edge
         u = (self.edge_vel[c2e[:,1]]+self.edge_vel[c2e[:,3]])/2
         v = (self.edge_vel[c2e[:,0]]+self.edge_vel[c2e[:,2]])/2
-        print("u shape:",u.shape)
-        print("v shape:",v.shape)
         u2d = u.reshape((ny, nx),order="F")
         v2d = v.reshape((ny, nx),order="F")
         p2d = self.ph.reshape((ny, nx),order="F")

@@ -6,32 +6,32 @@ from fealpy.fvm import StokesFVMSimpleModel
 def main():
     parser = argparse.ArgumentParser(description="SIMPLE-based FVM Stokes Solver")
 
-    parser.add_argument('--pde', default=1, type=int, 
+    parser.add_argument('--pde', default=1, type=int,
                         help='Stokes PDE example ID')
-    
-    parser.add_argument('--nx', default=32, type=int, 
+
+    parser.add_argument('--nx', default=20, type=int,
                         help='Number of cells in x-direction')
-    
-    parser.add_argument('--ny', default=32, type=int, 
+
+    parser.add_argument('--ny', default=20, type=int,
                         help='Number of cells in y-direction')
-    
-    parser.add_argument('--space_degree', default=0, type=int, 
+
+    parser.add_argument('--space_degree', default=0, type=int,
                         help='Space degree')
-   
+
     parser.add_argument('--backend',default='numpy', type=str,
                         help="the backend of fealpy, can be 'numpy', 'torch', 'tensorflow' or 'jax'.")
-    
+
     parser.add_argument('--pbar_log', default=True, type=bool,
                         help='Whether to show progress bar, default is True')
-    
+
     parser.add_argument('--log_level',
                         default='INFO', type=str,
                         help='Log level, default is INFO, options are DEBUG, INFO, WARNING, ERROR, CRITICAL')
 
-    parser.add_argument('--max_iter', default=10, type=int)
-    
-    parser.add_argument('--tol', default=1e-3, type=float)
-    
+    parser.add_argument('--max_iter', default=100, type=int)
+
+    parser.add_argument('--tol', default=1e-5, type=float)
+
     parser.add_argument('--relax', default=0.32, type=float)
 
     parser.add_argument('--plot', action='store_true')
@@ -48,9 +48,9 @@ def main():
     print(f"L2 error (u) = {uerror}")
     print(f"L2 error (v) = {verror}")
     print(f"L2 error (p) = {perror}")
+    # model.plot()
     if options["plot"]:
         model.plot()
-        model.plot_residual()
 
 
 if __name__ == "__main__":

@@ -19,6 +19,11 @@ from fealpy.fvm import (
     DirichletBC,
     RhieChowInterpolation    
 )
+from .simple_residual import (
+    cell_l2_norm,
+    collocated_mass_residual,
+    relative_l2_update,
+)
 
 
 class NSFVMSimpleModel(ComputationalModel):
@@ -57,39 +62,20 @@ class NSFVMSimpleModel(ComputationalModel):
         self.space = ScaledMonomialSpace2d(self.mesh, self.p)
         self.velocity_space = TensorFunctionSpace(self.space, shape=(2, -1))
 
-    def sum_duplicates_csr_manual(self,csr):
-        from fealpy.sparse import csr_matrix
-        indptr = csr.indptr       # shape (nrow+1,)
-        indices = csr.indices     # shape (nnz,)
-        data = csr.data           # shape (nnz,)
-        nrow, ncol = csr.shape
-        counts = indptr[1:] - indptr[:-1]
-        row = bm.repeat(bm.arange(nrow), counts)
-        flat_idx = row * ncol + indices
-        summed = bm.bincount(flat_idx, weights=data, minlength=nrow*ncol)
-        nnz_idx = bm.nonzero(summed)[0]
-        new_data = summed[nnz_idx]
-        new_row, new_col = divmod(nnz_idx, ncol)
-        return csr_matrix((new_data, (new_row, new_col)), shape=csr.shape)
-
-# --- SIMPLE components ----------------------------------------------------
-
     def temporary_velocity(self, p, uf, u0) -> Tuple[TensorLike, TensorLike]:
         """Solve momentum eqn for intermediate velocity u*."""
-        # Diffusion
         bform = BilinearForm(self.velocity_space)
         bform.add_integrator(ScalarDiffusionIntegrator(q=self.p + 2))
-        # Convection
         bform.add_integrator(ConvectionIntegrator(q=self.p + 2, coef=uf))
         B = bform.assembly()
-        # Source
         lform = LinearForm(self.velocity_space)
         lform.add_integrator(ScalarSourceIntegrator(self.pde.source, q=self.p + 2))
         f = lform.assembly()
         dbc = DirichletBC(self.mesh, self.pde.dirichlet_velocity)
         B, f = dbc.DiffusionApply(B, f)
-        #fealpy中的稀疏矩阵是有问题的,需要手动合并重复的行列项
-        B = self.sum_duplicates_csr_manual(B)
+        f = dbc.ConvectionApply(f, uf)
+        # FEALPy sparse assembly can leave duplicate entries here.
+        B = B.tocoo().coalesce().tocsr()
         ap = B.diags().values
         grad_p = GradientReconstruct(self.mesh).LSQ(p)  # (NC, 2)
         p1 = bm.einsum('i,i->i', grad_p[:,0], self.cm)
@@ -99,13 +85,11 @@ class NSFVMSimpleModel(ComputationalModel):
         u = spsolve(B, f, "mumps")
 
         cross = self.compute_cross_diffusion(u0)
-        for i in range(10):
+        for _ in range(10):
             rhs = f + cross
             uh_new = spsolve(B, rhs)
             err = bm.max(bm.abs(uh_new - u))
-            print(f"[Iter {i+1}] residual = {err}")
             if err < 10e-5:
-                # print("Converged.")
                 break
             u = uh_new
             cross = self.compute_cross_diffusion(u)
@@ -117,12 +101,11 @@ class NSFVMSimpleModel(ComputationalModel):
         lform = LinearForm(self.velocity_space)
         U = bm.stack((uh[:self.NC], uh[self.NC:]), axis=1)
         grad_u = GradientReconstruct(self.mesh).AverageGradientreDirichlet(U,self.pde.dirichlet_velocity)
-        # grad_u = GradientReconstruct(self.mesh).LSQ(uh)
         grad_f = GradientReconstruct(self.mesh).reconstruct(grad_u)  # (NE, 2)
         lform.add_integrator(ScalarCrossDiffusionIntegrator(uh, grad_f))
         return lform.assembly()
     
-    def pressure_correct(self, ap: TensorLike, uf: TensorLike,p) -> TensorLike:
+    def pressure_correct(self, ap: TensorLike, uf: TensorLike) -> TensorLike:
         """Solve pressure correction equation.
         在这里实际上是有问题的,理论上计算dp_edge的程序应该是:
         dp = cm/ap[:len(cm)]
@@ -137,6 +120,12 @@ class NSFVMSimpleModel(ComputationalModel):
         """
         cm = self.mesh.entity_measure('cell')
         em = self.mesh.entity_measure('edge')
+        # Mathematical risk:
+        # The standard SIMPLE response would use V/a_p on cells before face
+        # interpolation.  This historical branch uses 1/a_p multiplied by
+        # face measure to maintain the current convergence behavior, so it
+        # should be revisited before treating this model as a general SIMPLE
+        # discretization.
         dp = 1/ap[:len(cm)]
         e2c = self.mesh.edge_to_cell()
         dp_edge = (dp[e2c[:,0]]+dp[e2c[:,1]])/2
@@ -158,8 +147,19 @@ class NSFVMSimpleModel(ComputationalModel):
         p_c = sol[:-1]
         return p_c
 
-    def solve(self, max_iter: int = 100, tol: float = 1e-5, relax: float = 0.32) -> Tuple[TensorLike, TensorLike]:
+    def solve(
+        self,
+        max_iter: int = 100,
+        tol: float = 1e-5,
+        relax: float = 0.32,
+        tol_mass=None,
+        tol_pressure_update=None,
+    ) -> Tuple[TensorLike, TensorLike]:
         """Main SIMPLE loop."""
+        tol_mass = tol if tol_mass is None else tol_mass
+        tol_pressure_update = (
+            10.0 * tol if tol_pressure_update is None else tol_pressure_update
+        )
         p = bm.zeros(self.NC)
         uf = bm.zeros((self.mesh.number_of_faces(), 2))
         u = bm.zeros(2 * self.NC)
@@ -169,27 +169,30 @@ class NSFVMSimpleModel(ComputationalModel):
         edge_middle_point = self.mesh.entity_barycenter('edge')
         bdedgepoint = edge_middle_point[bd_edge]
         bdedgeu = self.pde.dirichlet_velocity(bdedgepoint)
-        L2_p_corr0 = 100
+        rhie_chow = RhieChowInterpolation(self.mesh)
         for i in range(max_iter):
-            uf = RhieChowInterpolation(self.mesh).Interpolation(u,ap,p)
+            uf = rhie_chow.Interpolation(u,ap,p)
             uf[bd_edge, :] = bdedgeu
-            p_corr = self.pressure_correct(ap, uf, p)
-            L2_p_corr = bm.sqrt(bm.sum(self.cm * (p_corr)**2))
-            delta_L2_p_corr0 = L2_p_corr - L2_p_corr0
-            self.residuals.append(float(L2_p_corr))
-            self.logger.info(f"[Iter {i+1}] L2 norm of the delta pressure correction : {delta_L2_p_corr0}")
-            # if delta_L2_p_corr0 > 0:
-            #     print("L2_p_corr:",L2_p_corr)
-            #     self.logger.info("Converged.")
-            #     break
-            # elif bm.abs(delta_L2_p_corr0) < tol:
-            #     self.logger.info("Converged.")
-            #     break
-            if bm.abs(delta_L2_p_corr0) < tol:
+            p_corr = self.pressure_correct(ap, uf)
+            p_update = relax * p_corr
+            residual = {
+                "mass": collocated_mass_residual(self.mesh, uf),
+                "pressure_update": relative_l2_update(self.mesh, p_update, p),
+                "pressure_correction": cell_l2_norm(self.mesh, p_corr),
+            }
+            self.residuals.append(residual)
+            self.logger.info(
+                f"[Iter {i+1}] mass residual: {residual['mass']:.2e}, "
+                f"pressure update residual: {residual['pressure_update']:.2e}, "
+                f"pressure correction L2: {residual['pressure_correction']:.2e}"
+            )
+            if (
+                residual["mass"] < tol_mass
+                and residual["pressure_update"] < tol_pressure_update
+            ):
                 self.logger.info("Converged.")
                 break
-            p += relax*p_corr
-            L2_p_corr0 = L2_p_corr
+            p += p_update
 
             _, u = self.temporary_velocity(p,uf,u)
 
@@ -207,9 +210,6 @@ class NSFVMSimpleModel(ComputationalModel):
         uerror = bm.sqrt(bm.sum(self.cm * (self.uh - self.uI)**2))
         verror = bm.sqrt(bm.sum(self.cm * (self.vh - self.vI)**2))
         perror = bm.sqrt(bm.sum(self.cm * (self.ph - self.pI)**2))
-        # uerror = bm.max(bm.abs(self.uh - self.uI))
-        # verror = bm.max(bm.abs(self.vh - self.vI))
-        # perror = bm.max(bm.abs(self.ph - self.pI))
         return uerror, verror, perror
 
     def plot(self) -> None:
@@ -234,9 +234,22 @@ class NSFVMSimpleModel(ComputationalModel):
     def plot_residual(self) -> None:
         """Plot residual decay curve."""
         import matplotlib.pyplot as plt
+
+        mass = [residual["mass"] for residual in self.residuals]
+        pressure_update = [
+            residual["pressure_update"] for residual in self.residuals
+        ]
         plt.figure(figsize=(8, 5))
-        plt.semilogy(self.residuals, marker="o", linestyle="-", color="b")
-        plt.title("Pressure Correction Residual vs Iteration")
+        plt.semilogy(mass, marker="o", linestyle="-", color="b", label="mass")
+        plt.semilogy(
+            pressure_update,
+            marker="s",
+            linestyle="-",
+            color="r",
+            label="pressure update",
+        )
+        plt.legend()
+        plt.title("SIMPLE Residuals vs Iteration")
         plt.xlabel("Iteration")
         plt.ylabel("Residual (log scale)")
         plt.grid(True, which="both", ls="--")

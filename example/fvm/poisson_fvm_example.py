@@ -10,14 +10,17 @@ def main():
     parser.add_argument('--pde', default=2, type=int,
                         help='PDE example ID from Poisson PDE manager.')
 
-    parser.add_argument('--nx', default=10, type=int,
+    parser.add_argument('--nx', default=20, type=int,
                         help='Number of cells in x-direction.')
     
-    parser.add_argument('--ny', default=10, type=int,
+    parser.add_argument('--ny', default=20, type=int,
                         help='Number of cells in y-direction.')
 
     parser.add_argument('--space_degree', default=0, type=int,
                         help='Polynomial degree of ScaledMonomialSpace.')
+
+    parser.add_argument('--mesh_type', default='complex_tri', type=str,
+                        help="Mesh variant exposed by the PDE example, e.g. 'uniform_tri' or 'complex_tri'.")
 
     parser.add_argument('--backend',default='numpy', type=str,
                         help="the backend of fealpy, can be 'numpy', 'torch', 'tensorflow' or 'jax'.")
@@ -48,7 +51,7 @@ def main():
     model.solve(max_iter=options["max_iter"], tol=options["tol"])
     l2_error = model.compute_error()
     print(f"L2 error = {l2_error}")
-    model.plot()
+    # model.plot()
     if options["plot"]:
         model.plot()
 

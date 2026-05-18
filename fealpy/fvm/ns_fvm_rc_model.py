@@ -12,11 +12,13 @@ from fealpy.solver import spsolve
 
 from fealpy.fvm import (
     ScalarDiffusionIntegrator,
+    ScalarCrossDiffusionIntegrator,
     ScalarSourceIntegrator,
     GradientReconstruct,
     DirichletBC,
     NeumannBC,
-    ConvectionIntegrator
+    ConvectionIntegrator,
+    RhieChowCoupledOperator,
 )
 
 
@@ -66,7 +68,8 @@ class NSFVMRCModel(ComputationalModel):
         self.logger.info(self.pde)
 
     def set_mesh(self, nx: int = 10, ny: int = 10) -> None:
-        self.mesh = self.pde.init_mesh['uniform_qrad'](nx=nx, ny=ny)
+        self.mesh_type = self.options.get("mesh_type", "uniform_qrad")
+        self.mesh = self.pde.init_mesh[self.mesh_type](nx=nx, ny=ny)
         self.NC = self.mesh.number_of_cells()
         self.h = 1/nx   
 
@@ -75,7 +78,7 @@ class NSFVMRCModel(ComputationalModel):
         self.pspace = ScaledMonomialSpace2d(self.mesh, self.p)
         self.uspace = TensorFunctionSpace(self.pspace, shape=(2, -1))
 
-    def assembly_velocity(self,uf) -> Tuple[TensorLike, TensorLike]:
+    def assembly_velocity(self, uf, u0=None) -> Tuple[TensorLike, TensorLike]:
         """
         Discretize the velocity term
         """
@@ -88,8 +91,23 @@ class NSFVMRCModel(ComputationalModel):
 
         f = LinearForm(self.uspace).add_integrator(
             ScalarSourceIntegrator(self.pde.source, q=2)).assembly()
+        f = DirichletBC(self.mesh, self.pde.dirichlet_velocity).ConvectionApply(f, uf)
+        if u0 is not None:
+            f = f + self.compute_cross_diffusion(u0)
     
         return AB, f
+
+    def compute_cross_diffusion(self, uh: TensorLike) -> TensorLike:
+        """Assemble the explicit non-orthogonal diffusion correction."""
+        lform = LinearForm(self.uspace)
+        U = bm.stack((uh[:self.NC], uh[self.NC:]), axis=1)
+        gradient = GradientReconstruct(self.mesh)
+        grad_u = gradient.AverageGradientreDirichlet(
+            U, self.pde.dirichlet_velocity
+        )
+        grad_f = gradient.reconstruct(grad_u)
+        lform.add_integrator(ScalarCrossDiffusionIntegrator(uh, grad_f))
+        return lform.assembly()
 
     def assembly_pressure(self) -> Tuple[TensorLike, TensorLike]:
         """
@@ -121,28 +139,102 @@ class NSFVMRCModel(ComputationalModel):
         )
         return A1
     
-    def assembly_base_system(self,uf=None) -> Tuple:
+    def assembly_base_system(self, uf=None, u0=None) -> Tuple:
         """
         Apply boundary conditions to the discretized velocity 
         and pressure terms, and assemble them into basic matrix blocks using BlockForm
         """
-        AB, f = self.assembly_velocity(uf)
+        AB, f = self.assembly_velocity(uf, u0)
         M1, M2 = self.assembly_pressure()
         M3 = BlockForm([[M1, M2]]).assembly_sparse_matrix(format='csr')
         dbc = DirichletBC(self.mesh, self.pde.dirichlet_velocity)
         nbc = NeumannBC(self.mesh, self.pde.neumann_pressure)
         AB, f = dbc.DiffusionApply(AB, f)
-        ap = AB.diags().values
-        # dbc2 = DirichletBC(self.mesh, self.pde.pressure_dirichlet)
-        # f[:self.NC] = dbc2.ConvectionApplyX(f[:self.NC])
-        # f[self.NC:] = dbc2.ConvectionApplyX(f[self.NC:])
-        M1 = nbc.ConvectionApplyX(M1, f[:self.NC])
-        M2 = nbc.ConvectionApplyY(M2, f[self.NC:])
+        ap = self._matrix_diagonal(AB)
+        if callable(getattr(self.pde, "pressure_dirichlet", None)):
+            f = f - self._pressure_boundary_force()
+        else:
+            M1 = nbc.ConvectionApplyX(M1, f[:self.NC])
+            M2 = nbc.ConvectionApplyY(M2, f[self.NC:])
         
-        # dbc2.ConvectionApplyX(M1)
         M4 = BlockForm([[M1], [M2]]).assembly_sparse_matrix(format='csr')
 
         return AB, M3, M4, f, ap
+
+    def _pressure_boundary_force(self):
+        bd_face = self.mesh.boundary_face_index()
+        owner = self.mesh.edge_to_cell()[bd_face, 0]
+        face_center = self.mesh.entity_barycenter('face')[bd_face]
+        pressure = self.pde.pressure_dirichlet(face_center)
+        Sf = self.mesh.edge_normal()[bd_face]
+        fx = bm.zeros(self.NC)
+        fy = bm.zeros(self.NC)
+        bm.add_at(fx, owner, pressure * Sf[:, 0])
+        bm.add_at(fy, owner, pressure * Sf[:, 1])
+        return bm.concatenate([fx, fy], axis=0)
+
+    def _matrix_diagonal(self, A):
+        diag_entries = A.diags()
+        diag = bm.zeros(A.shape[0], dtype=diag_entries.values.dtype)
+        bm.add_at(diag, diag_entries.indices, diag_entries.values)
+        return diag
+
+    def _relative_inf_norm(self, delta, reference):
+        denominator = bm.maximum(1.0, bm.max(bm.abs(reference)))
+        return bm.max(bm.abs(delta)) / denominator
+
+    def _pressure_delta_without_mean(self, p_new, p_old):
+        delta = p_new - p_old
+        cell_measure = self.mesh.entity_measure("cell")
+        mean_delta = bm.sum(cell_measure * delta) / bm.sum(cell_measure)
+        return delta - mean_delta
+
+    def _rc_rhs(self, rc_operator, ap, pressure):
+        _, bp = rc_operator.assemble_pressure_block(ap, p_old=pressure)
+        bd_face = self.mesh.boundary_face_index()
+        bd_point = self.mesh.entity_barycenter("edge")[bd_face]
+        bd_velocity = self.pde.dirichlet_velocity(bd_point)
+        return bp + rc_operator.boundary_velocity_rhs(bd_velocity)
+
+    def _aitken_omega(self, delta, state, omega_min, omega_max):
+        previous_delta = state.get("previous_delta")
+        previous_omega = state.get("omega", 1.0)
+        if previous_delta is None:
+            return previous_omega
+
+        delta2 = delta - previous_delta
+        denominator = bm.sum(delta2 * delta2)
+        if float(denominator) <= 1.0e-30:
+            return previous_omega
+
+        numerator = bm.sum(previous_delta * delta2)
+        omega = -previous_omega * numerator / denominator
+        omega = bm.minimum(omega_max, bm.maximum(omega_min, omega))
+        return float(omega)
+
+    def _relax_pressure(
+        self,
+        p_old,
+        p_raw,
+        state,
+        *,
+        relaxation,
+        omega,
+        omega_min,
+        omega_max,
+    ):
+        delta = p_raw - p_old
+        if relaxation == "picard":
+            used_omega = 1.0
+        elif relaxation == "fixed":
+            used_omega = omega
+        elif relaxation == "aitken":
+            used_omega = self._aitken_omega(delta, state, omega_min, omega_max)
+        else:
+            raise ValueError("relaxation must be 'picard', 'fixed', or 'aitken'.")
+
+        p_used = p_old + used_omega * delta
+        return p_used, {"previous_delta": delta, "omega": used_omega}
     
     def assembly_rhie_chow_corrected_system(self, ph0, ap) -> Tuple[TensorLike, TensorLike]:
         """
@@ -177,47 +269,97 @@ class NSFVMRCModel(ComputationalModel):
 
         return M5,rc
 
+    def assembly_rhie_chow_pressure_block(self, ap, p_old=None) -> Tuple[TensorLike, TensorLike]:
+        """
+        Assemble the Rhie-Chow pressure block directly for the coupled system.
 
-    def solve_rhie_chow(self, max_iter: int = 5, tol: float = 1e-7) -> Tuple:
+        Unlike ``assembly_rhie_chow_corrected_system``, this path does not use
+        an unstabilized pressure solution to build the correction.  The compact
+        pressure-pressure block is assembled from the actual momentum diagonal.
+        """
+        return RhieChowCoupledOperator(self.mesh).assemble_pressure_block(ap, p_old)
+
+
+    def solve_rhie_chow(
+        self,
+        max_iter: int = 50,
+        min_iter: int = 2,
+        tol: float = 1e-7,
+        relaxation: str = "picard",
+        omega: float = 1.0,
+        omega_min: float = 0.2,
+        omega_max: float = 1.2,
+        return_diagnostics: bool = False,
+    ) -> Tuple:
         # Sf = self.mesh.edge_normal()
         # Uf = bm.stack([bm.ones_like(Sf[:,0]), bm.zeros_like(Sf[:,0])], axis=1)
         self.uI = self.pde.velocity_u(self.mesh.entity_barycenter("edge"))
         self.vI = self.pde.velocity_v(self.mesh.entity_barycenter("edge"))
         Uf = bm.stack([self.uI, self.vI], axis=1)
+        u0 = bm.zeros(2 * self.NC)
         ph = bm.zeros(self.NC)
-        e2c = self.mesh.edge_to_cell()
+        diagnostics = []
+        relaxation_state = {
+            "previous_delta": None,
+            "omega": omega,
+        }
         for i in range(max_iter):
-            AB, M3, M4, f, ap = self.assembly_base_system(Uf)
+            AB, M3, M4, f, ap = self.assembly_base_system(Uf, u0)
             A1 = self.lagrange_multiplier()
-            ABC = BlockForm([[AB, M4], [M3, None]]).assembly_sparse_matrix(format='csr')
-            S = BlockForm([[ABC, A1.T], [A1, None]]).assembly_sparse_matrix(format='csr')
             b0 = bm.array([self.pde.pressure_integral_target()])
-            b = bm.concatenate([f,bm.zeros(self.NC),b0], axis=0)
-            sol = spsolve(S, b, "mumps")
-            ph0 = sol[2 * self.NC:-1]
-            # uh = sol[:self.NC]
-            # vh = sol[self.NC:2*self.NC]
-            # ph = sol[2*self.NC:-1]
-
-            M5,rc = self.assembly_rhie_chow_corrected_system(ph0, ap)
-            AB2 = BlockForm([[AB,M4],[M3,M5]]).assembly_sparse_matrix(format='csr')
+            rc_operator = RhieChowCoupledOperator(self.mesh)
+            LRC = rc_operator.pressure_stabilization_matrix(ap)
+            rc_rhs_old = self._rc_rhs(rc_operator, ap, ph)
+            bd_face = self.mesh.boundary_face_index()
+            bd_velocity = self.pde.dirichlet_velocity(self.mesh.entity_barycenter('edge')[bd_face])
+            AB2 = BlockForm([[AB, M4], [M3, LRC]]).assembly_sparse_matrix(format='csr')
             S2 = BlockForm([[AB2, A1.T], [A1, None]])
             S2 = S2.assembly_sparse_matrix(format='csr')
-            b2 = bm.concatenate([f,-rc,b0], axis=0)
+            b2 = bm.concatenate([f, rc_rhs_old, b0], axis=0)
             
             sol = spsolve(S2, b2, "mumps")
             uh = sol[:self.NC]
             vh = sol[self.NC:2*self.NC]
-            ph = sol[2*self.NC:-1]
-            uf1 = (uh[e2c[:,0]] + uh[e2c[:,1]])/2
-            vf1 = (vh[e2c[:,0]] + vh[e2c[:,1]])/2
-            Uf1 = bm.stack([uf1,vf1],axis=1)
-            res = bm.max(bm.abs(Uf1[:,0] - Uf[:,0]))
+            ph_raw = sol[2*self.NC:-1]
+            ph_next, relaxation_state = self._relax_pressure(
+                ph,
+                ph_raw,
+                relaxation_state,
+                relaxation=relaxation,
+                omega=omega,
+                omega_min=omega_min,
+                omega_max=omega_max,
+            )
+            velocity = bm.stack([uh, vh], axis=1)
+            Uf1 = rc_operator.face_velocity(velocity, ap, ph_next)
+            Uf1 = bm.set_at(Uf1, bd_face, bd_velocity)
+            pressure_delta = self._pressure_delta_without_mean(ph_next, ph)
+            rc_rhs_new = self._rc_rhs(rc_operator, ap, ph_next)
+            res_u = self._relative_inf_norm(Uf1 - Uf, Uf1)
+            res_p = self._relative_inf_norm(pressure_delta, ph_next)
+            res_b = self._relative_inf_norm(rc_rhs_new - rc_rhs_old, rc_rhs_new)
+            diagnostics.append({
+                "iteration": i + 1,
+                "res_face_velocity": float(res_u),
+                "res_pressure": float(res_p),
+                "res_rc_rhs": float(res_b),
+                "omega": float(relaxation_state["omega"]),
+            })
             Uf = Uf1
-            self.logger.info(f"Iteration {i+1}, Residual: {res:.6e}")
-            if res < tol:
+            ph = ph_next
+            u0 = bm.concatenate([uh, vh], axis=0)
+            self.logger.info(
+                f"Iteration {i+1}, Residuals: "
+                f"Uf={float(res_u):.6e}, p={float(res_p):.6e}, "
+                f"rc_rhs={float(res_b):.6e}"
+            )
+            converged = res_u < tol and res_p < tol and res_b < tol
+            if i + 1 >= min_iter and converged:
                 break
-        self.uh, self.vh, self.ph, self.ph0 = uh, vh, ph, ph0
+        self.uh, self.vh, self.ph = uh, vh, ph
+        self.rhie_chow_diagnostics = diagnostics
+        if return_diagnostics:
+            return self.uh, self.vh, self.ph, diagnostics
         return self.uh, self.vh, self.ph
         
     
@@ -229,17 +371,12 @@ class NSFVMRCModel(ComputationalModel):
         self.uI = self.pde.velocity_u(self.mesh.entity_barycenter("cell"))
         self.vI = self.pde.velocity_v(self.mesh.entity_barycenter("cell"))
         self.pI = self.pde.pressure(self.mesh.entity_barycenter("cell"))
-        uerr = bm.max(bm.abs(self.uh - self.uI))
-        verr = bm.max(bm.abs(self.vh - self.vI))
-        perr = bm.max(bm.abs(self.ph - self.pI))
-        perr2 = bm.max(bm.abs(self.ph0 - self.pI))
-        err = self.ph - self.pI
-        print("err[210]:",err[210])
-        # uerr = bm.sqrt(bm.sum(self.mesh.entity_measure("cell") * (self.uh - self.uI)**2))
-        # verr = bm.sqrt(bm.sum(self.mesh.entity_measure("cell") * (self.vh - self.vI)**2))
-        # perr = bm.sqrt(bm.sum(self.mesh.entity_measure("cell") * (self.ph - self.pI)**2))
-        # perr2 = bm.sqrt(bm.sum(self.mesh.entity_measure("cell") * (self.ph0 - self.pI)**2))
-        self.logger.info(f"Max error (p) = {perr2}")
+        # uerr = bm.max(bm.abs(self.uh - self.uI))
+        # verr = bm.max(bm.abs(self.vh - self.vI))
+        # perr = bm.max(bm.abs(self.ph - self.pI))
+        uerr = bm.sqrt(bm.sum(self.mesh.entity_measure("cell") * (self.uh - self.uI)**2))
+        verr = bm.sqrt(bm.sum(self.mesh.entity_measure("cell") * (self.vh - self.vI)**2))
+        perr = bm.sqrt(bm.sum(self.mesh.entity_measure("cell") * (self.ph - self.pI)**2))
         return uerr, verr, perr
     
 
@@ -255,7 +392,6 @@ class NSFVMRCModel(ComputationalModel):
                 (self.uh - self.uI, "Error u'"),
                 (self.vh - self.vI, "Error v'"),
                 (self.ph - self.pI, " Error p(RC)'"),
-                (self.ph0 - self.pI, " Error p(non-RC)"),
                 ]):
                 ax = fig.add_subplot(2, 3, i+1, projection='3d')
                 ax.plot_trisurf(x, y, data, cmap='viridis')

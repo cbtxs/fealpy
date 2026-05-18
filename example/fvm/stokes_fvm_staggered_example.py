@@ -6,7 +6,7 @@ from fealpy.fvm import StokesFVMStaggeredModel
 def main():
     parser = argparse.ArgumentParser(description="FVM Stokes solver on staggered mesh")
 
-    parser.add_argument('--pde', default=4, type=int,
+    parser.add_argument('--pde', default=1, type=int,
                         help='PDE example ID from Stokes PDE manager.')
     
     parser.add_argument('--nx', default=20, type=int,
@@ -34,7 +34,7 @@ def main():
     print(f"L2 error (u) = {uerror}")
     print(f"L2 error (v) = {verror}")
     print(f"L2 error (p) = {perror}")
-    model.plot()
+    # model.plot()
     if options["plot"]:
         model.plot()
 

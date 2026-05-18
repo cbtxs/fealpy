@@ -94,6 +94,10 @@ class StokesFVMStaggeredSimpleModel(ComputationalModel):
         """
         LagA = self.pmesh.entity_measure('cell')
         pspace = ScaledMonomialSpace2d(self.pmesh, 0)
+        # Mathematical risk:
+        # This is a historical pressure-correction coefficient.  The
+        # edge_length**2/a_p_edge scaling should be re-derived before this
+        # Stokes SIMPLE model is used as a reference implementation.
         p_edge = self.pmesh.entity_measure('edge')
         p_edge2 = bm.einsum('i,i->i', p_edge,p_edge)
         A = BilinearForm(pspace).add_integrator(
@@ -158,12 +162,9 @@ class StokesFVMStaggeredSimpleModel(ComputationalModel):
         self.vI = self.pde.velocity_v(self.vpoints)
         self.pI = self.pde.pressure(self.ppoints)
         
-        # uerror = bm.sqrt(bm.sum(self.ucm * (self.uh - self.uI)**2))
-        # verror = bm.sqrt(bm.sum(self.vcm * (self.vh - self.vI)**2))
-        # perror = bm.sqrt(bm.sum(self.pcm * (self.ph - self.pI)**2))
-        uerror = bm.max(bm.abs(self.uh - self.uI))
-        verror = bm.max(bm.abs(self.vh - self.vI))
-        perror = bm.max(bm.abs(self.ph - self.pI))
+        uerror = bm.sqrt(bm.sum(self.ucm * (self.uh - self.uI)**2))
+        verror = bm.sqrt(bm.sum(self.vcm * (self.vh - self.vI)**2))
+        perror = bm.sqrt(bm.sum(self.pcm * (self.ph - self.pI)**2))
         return uerror, verror, perror
 
     def plot(self) -> None:
