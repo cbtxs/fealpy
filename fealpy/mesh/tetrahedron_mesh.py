@@ -1,4 +1,4 @@
-from typing import Union, Optional
+﻿from typing import Union, Optional
 from math import sqrt
 from ..backend import backend_manager as bm
 from ..typing import TensorLike, Index, _S
@@ -685,8 +685,8 @@ class TetrahedronMesh(SimplexMesh, Plotable):
         l =[bm.sqrt(bm.sum(ni**2, axis=1)) for ni in n]
         n = [ni/li.reshape(-1, 1) for ni, li in zip(n, l)]
         localEdge = self.localEdge
-        angle = [(bm.pi - bm.arccos((n[i]*n[j]).sum(axis=1)))/bm.pi*180 for i,j in localEdge[-1::-1]]
-        return bm.array(angle).T
+        angle = [(bm.pi - bm.arccos((n[i]*n[j]).sum(axis=1)))/bm.pi*180 for i,j in reversed(localEdge)]
+        return bm.stack(angle, axis=1)
 
     def circumcenter(self, index=_S, returnradius=False):
         """

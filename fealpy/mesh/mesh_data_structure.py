@@ -250,7 +250,7 @@ class MeshDS(metaclass=MeshMeta):
             NE = self.number_of_edges()
             cell2edge =self.cell_to_edge()
             NEC = self.number_of_edges_of_cells()
-            indice = bm.stack([cell2edge.flatten(),bm.repeat(range(NC),NEC)],axis=0)
+            indice = bm.stack([cell2edge.flatten(),bm.repeat(bm.arange(NC,**bm.context(cell2edge)),NEC)],axis=0)
             data = bm.ones((NEC*NC), dtype=bm.bool,device=self.device)
             edge2cell = COOTensor(indice,data,spshape=(NE,NC)).tocsr()
             return edge2cell
