@@ -1543,7 +1543,9 @@ class TetrahedronMesh(SimplexMesh, Plotable):
         import meshio
         data = meshio.read(file)
         node = bm.from_numpy(data.points)
+        node = bm.array(node)
         cell = bm.astype(bm.from_numpy(data.cells_dict['tetra']), bm.int64)
+        cell = bm.array(cell)
         mesh = cls(node, cell)
         return mesh
     
