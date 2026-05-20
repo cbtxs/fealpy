@@ -1,9 +1,9 @@
 
+from dataclasses import dataclass
 from typing import Literal
 
 from ...backend import bm
 from ...backend import Tensor, Index
-from ..storage import MeshBlock
 from ..topology.boundary import BoundaryInfo
 from .entity_view import EntityView
 from .mesh import Mesh
@@ -11,39 +11,46 @@ from .mesh import Mesh
 __all__ = ["FEALPyMesh"]
 
 
+@dataclass(slots=True)
 class FEALPyMesh(Mesh):
     """Provides a view of the mesh compatible with FEALPy's API."""
-    def __init__(self, block: MeshBlock, /):
-        super().__init__(block)
-        self.ftype = block.positions.dtype
+    def __post_init__(self):
+        self.ftype = self.block.positions.dtype
 
-        node_block = block.sectors.get("node")
+        node_block = self.block.sectors.get("node")
         if node_block is not None:
             self.itype = node_block.indices.dtype
         else:
             self.itype = bm.int32
 
-        self.device = getattr(block.positions, "device", None)
+        self.device = getattr(self.block.positions, "device", None)
+
+    def entity_view(self, etype: str | int, /) -> EntityView:
+        """Provides a view for the entity with the given dimension.
+
+        Raises ValueError if multiple types of entities with the given dimension are found.
+        Use ``entity_views`` to get views of all entities with the given dimension."""
+        top_dim = self._ensure_top_dim(etype)
+        sectors = list(self.entity_views(etype))
+
+        if len(sectors) > 1:
+            raise ValueError(f"Multiple types of entities with top dimension {top_dim} found: {sectors}")
+
+        return sectors[0]
 
     @property
     def localEdge(self) -> Tensor:
-        top_name = self._get_block_by_top_dim(self.top_dimension()).block.schema_name
-        if top_name != "tet":
-            raise NotImplementedError(f"localEdge is only implemented for tetrahedra, got {top_name!r}")
-        return bm.asarray(
-            [[2, 3], [3, 1], [1, 2], [2, 0], [0, 3], [0, 1]],
-            dtype=self.itype,
-        )
+        cell_sec = self.entity_view(-1)
+        edge_sec = self.entity_view(1)
+        data = cell_sec.schema.local_entity(edge_sec.schema.name)
+        return bm.asarray(data, dtype=self.itype, device=self.device)
 
     @property
     def localFace(self) -> Tensor:
-        top_name = self._get_block_by_top_dim(self.top_dimension()).block.schema_name
-        if top_name != "tet":
-            raise NotImplementedError(f"localFace is only implemented for tetrahedra, got {top_name!r}")
-        return bm.asarray(
-            [[1, 2, 3], [0, 3, 2], [0, 1, 3], [0, 2, 1]],
-            dtype=self.itype,
-        )
+        cell_sec = self.entity_view(-1)
+        face_sec = self.entity_view(-2)
+        data = cell_sec.schema.local_entity(face_sec.schema.name)
+        return bm.asarray(data, dtype=self.itype, device=self.device)
 
     def _etype_to_dim(self, etype: str | int) -> int:
         if isinstance(etype, int):
@@ -59,49 +66,21 @@ class FEALPyMesh(Mesh):
         raise KeyError(f"{etype!r} is not a valid entity name")
 
     def _boundary_info_by_top_dim(self, top_dim: int) -> BoundaryInfo:
-        block = self._get_block_by_top_dim(top_dim)
+        block = self.entity_view(top_dim)
         return block.boundary()
-
-    def _pair_to_edge_index(self, pairs: Tensor, edge: Tensor) -> Tensor:
-        sorted_edge = bm.sort(edge, axis=1)
-        sorted_pairs = bm.sort(pairs, axis=-1)
-
-        nn = self.number_of_nodes()
-        edge_key = sorted_edge[:, 0] * nn + sorted_edge[:, 1]
-        pair_key = sorted_pairs[..., 0] * nn + sorted_pairs[..., 1]
-
-        order = bm.argsort(edge_key)
-        sorted_key = edge_key[order]
-        hit = bm.searchsorted(sorted_key, bm.reshape(pair_key, (-1,)))
-        return bm.reshape(order[hit], pair_key.shape)
-
-    def _get_block_by_top_dim(self, top_dim: int) -> EntityView:
-        if top_dim < 0:
-            top_dim += self.top_dimension() + 1
-
-        for block in self.block.sectors.values():
-            if block.schema.top_dim == top_dim:
-                return EntityView(self.block, block)
-        raise ValueError(f"No block found with top dimension: {top_dim}")
 
     # Meta
 
-    def entity(self, name: str | int | Literal["cell", "face", "edge", "node"], /) -> Tensor:
-        """Provides a view of the entity with the given name."""
-        if isinstance(name, int):
-            top_dim = name
-        elif name == "cell":
-            top_dim = self.top_dimension()
-        elif name == "face":
-            top_dim = self.top_dimension() - 1
-        elif name == "edge":
-            top_dim = 1
-        elif name == "node":
-            return self.block.positions
-        else:
-            raise ValueError(f"Unknown entity name: {name}")
+    def entity(self, etype: str | int, /) -> Tensor:
+        """Provides the indices/positions of the entity with the given dimension.
 
-        return self._get_block_by_top_dim(top_dim).indices
+        Raises ValueError if multiple types of entities with the given dimension are found.
+        Use ``entities`` or ``entity_view`` to get all entities with the given dimension."""
+        top_dim = self._ensure_top_dim(etype)
+
+        if top_dim > 0:
+            return self.entity_view(etype).indices
+        return self.block.positions
 
     @property
     def cell(self) -> Tensor:
@@ -121,17 +100,17 @@ class FEALPyMesh(Mesh):
 
     def entity_barycenter(self, etype: str | int, index: Index | None = None) -> Tensor:
         top_dim = self._etype_to_dim(etype)
-        block = self._get_block_by_top_dim(top_dim)
+        block = self.entity_view(top_dim)
         return block.barycenter(index=index)
 
     def number_of_cells(self) -> int:
-        return self._get_block_by_top_dim(self.top_dimension()).size()
+        return self.entity_view(self.top_dimension()).size()
 
     def number_of_faces(self) -> int:
-        return self._get_block_by_top_dim(self.top_dimension() - 1).size()
+        return self.entity_view(self.top_dimension() - 1).size()
 
     def number_of_edges(self) -> int:
-        return self._get_block_by_top_dim(1).size()
+        return self.entity_view(1).size()
 
     def number_of_nodes(self) -> int:
         return self.block.positions.shape[0]
@@ -172,32 +151,21 @@ class FEALPyMesh(Mesh):
 
     def cell_to_face(self) -> Tensor:
         """Returns the mapping from cells to faces."""
-        cell_block = self._get_block_by_top_dim(self.top_dimension())
-        face_block = self._get_block_by_top_dim(self.top_dimension() - 1)
-        return cell_block.to(face_block).tgt_indices
+        cell_sec = self.entity_view(-1)
+        face_sec = self.entity_view(-2)
+        return cell_sec.to(face_sec).tgt_indices
 
     def cell_to_edge(self) -> Tensor:
         """Returns the mapping from cells to edges."""
-        cell = self.entity("cell")
-        edge = self.entity("edge")
-        top_name = self._get_block_by_top_dim(self.top_dimension()).block.schema_name
-
-        if top_name != "tet":
-            cell_block = self._get_block_by_top_dim(self.top_dimension())
-            edge_block = self._get_block_by_top_dim(1)
-            return cell_block.to(edge_block).tgt_indices
-
-        local_edge = self.localEdge
-        local_pairs = cell[:, local_edge]
-        return self._pair_to_edge_index(local_pairs, edge)
+        cell_sec = self.entity_view(-1)
+        edge_sec = self.entity_view(1)
+        return cell_sec.to(edge_sec).tgt_indices
 
     def face_to_edge(self) -> Tensor:
         """Returns the mapping from faces to edges."""
-        face = self.entity("face")
-        edge = self.entity("edge")
-        local_edge = bm.asarray([[1, 2], [2, 0], [0, 1]], dtype=self.itype)
-        local_pairs = face[:, local_edge]
-        return self._pair_to_edge_index(local_pairs, edge)
+        face_sec = self.entity_view(-2)
+        edge_sec = self.entity_view(1)
+        return face_sec.to(edge_sec).tgt_indices
 
     def boundary_cell_flag(self) -> Tensor:
         return self._boundary_info_by_top_dim(self.top_dimension()).mask
@@ -225,46 +193,49 @@ class FEALPyMesh(Mesh):
 
     def cell_to_edge_sign(self) -> Tensor:
         """Returns the sign of edges for each cell."""
-        cell = self.entity("cell")
-        edge = self.entity("edge")
+        cell_sec = self.entity_view(-1)
+        edge_sec = self.entity_view(1)
         c2e = self.cell_to_edge()
-        local_edge = self.localEdge
 
-        local_pair = cell[:, local_edge]
-        global_pair = edge[c2e]
+        local_pair = cell_sec.indices[:, self.localEdge]
+        global_pair = edge_sec.indices[c2e]
+
         return bm.all(local_pair == global_pair, axis=-1)
 
     def face_to_edge_sign(self) -> Tensor:
         """Returns the sign of edges for each face."""
-        face = self.entity("face")
-        edge = self.entity("edge")
+        face_sec = self.entity_view(-2)
+        edge_sec = self.entity_view(1)
         f2e = self.face_to_edge()
-        sign = bm.zeros((face.shape[0], 3), dtype=bm.bool)
-        n = [1, 2, 0]
+        sign = bm.zeros((face_sec.indices.shape[0], 3), dtype=bm.bool)
+        local_f2e = face_sec.schema.local_entity("edge")
+        n = [item[0] for item in local_f2e]
+
         for i in range(3):
-            sign[:, i] = face[:, n[i]] == edge[f2e[:, i], 0]
+            sign[:, i] = face_sec.indices[:, n[i]] == edge_sec.indices[f2e[:, i], 0]
+
         return sign
 
-    def cell_to_face_permutation(self, *, locFace: Tensor | None = None) -> Tensor:
-        """Returns the permutation of faces for each cell."""
-        cell = self.entity("cell")
-        face = self.entity("face")
-        c2f = self.cell_to_face()
+    # def cell_to_face_permutation(self, *, locFace: Tensor | None = None) -> Tensor:
+    #     """Returns the permutation of faces for each cell."""
+    #     cell = self.entity("cell")
+    #     face = self.entity("face")
+    #     c2f = self.cell_to_face()
 
-        if locFace is None:
-            locFace = self.localFace
-        else:
-            locFace = bm.asarray(locFace, dtype=self.itype)
+    #     if locFace is None:
+    #         locFace = self.localFace
+    #     else:
+    #         locFace = bm.asarray(locFace, dtype=self.itype)
 
-        nc = cell.shape[0]
-        c2f_glo = face[bm.reshape(c2f, (-1,))]
-        c2f_loc = bm.reshape(cell[:, locFace], (-1, 3))
+    #     nc = cell.shape[0]
+    #     c2f_glo = face[bm.reshape(c2f, (-1,))]
+    #     c2f_loc = bm.reshape(cell[:, locFace], (-1, 3))
 
-        c2f_glo = bm.argsort(c2f_glo, axis=1)
-        c2f_loc = bm.argsort(c2f_loc, axis=1)
+    #     c2f_glo = bm.argsort(c2f_glo, axis=1)
+    #     c2f_loc = bm.argsort(c2f_loc, axis=1)
 
-        order = c2f_loc[bm.arange(nc * locFace.shape[0])[:, None], c2f_glo]
-        return bm.reshape(order, (nc, locFace.shape[0], 3))
+    #     order = c2f_loc[bm.arange(nc * locFace.shape[0])[:, None], c2f_glo]
+    #     return bm.reshape(order, (nc, locFace.shape[0], 3))
 
     # Geometry
 
@@ -300,29 +271,29 @@ class FEALPyMesh(Mesh):
         if top_dim == 0:
             return bm.zeros((1,), dtype=self.ftype)
 
-        block = self._get_block_by_top_dim(top_dim)
+        block = self.entity_view(top_dim)
         return block.measure(index=index)
 
     def edge_tangent(self, *, index: Index | None = None) -> Tensor:
         """Returns the tangent vector of edges."""
-        block = self._get_block_by_top_dim(1)
+        block = self.entity_view(1)
         return block.tangent(index=index)
 
     def edge_unit_tangent(self, *, index: Index | None = None) -> Tensor:
         """Returns the unit tangent vector of edges."""
-        block = self._get_block_by_top_dim(1)
+        block = self.entity_view(1)
         tangent = block.tangent(index=index)
         norm = bm.linalg.vector_norm(tangent, axis=1, keepdims=True)
         return tangent / norm
 
     def face_normal(self, *, index: Index | None = None) -> Tensor:
         """Returns the normal vector of faces."""
-        block = self._get_block_by_top_dim(self.top_dimension() - 1)
+        block = self.entity_view(self.top_dimension() - 1)
         return block.normal(index=index)
 
     def face_unit_normal(self, *, index: Index | None = None) -> Tensor:
         """Returns the unit normal vector of faces."""
-        block = self._get_block_by_top_dim(self.top_dimension() - 1)
+        block = self.entity_view(self.top_dimension() - 1)
         normal = block.normal(index=index)
         norm = bm.linalg.vector_norm(normal, axis=1, keepdims=True)
         return normal / norm
@@ -336,11 +307,11 @@ class FEALPyMesh(Mesh):
             TD = self.top_dimension()
 
         if TD == self.top_dimension():
-            block = self._get_block_by_top_dim(self.top_dimension())
+            block = self.entity_view(self.top_dimension())
         elif TD == self.top_dimension() - 1:
-            block = self._get_block_by_top_dim(self.top_dimension() - 1)
+            block = self.entity_view(self.top_dimension() - 1)
         elif TD == 1:
-            block = self._get_block_by_top_dim(1)
+            block = self.entity_view(1)
         else:
             raise ValueError(f"Unsupported top dimension: {TD}")
 
