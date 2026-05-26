@@ -18,8 +18,9 @@ from fealpy.fvm import (
     DirichletBC,
     NeumannBC,
     ConvectionIntegrator,
-    RhieChowCoupledOperator,
+    NonOrthogonalGeometry,
 )
+from .rhie_chow import RhieChowCoupledOperator
 
 
 class NSFVMRCModel(ComputationalModel):
@@ -77,6 +78,18 @@ class NSFVMRCModel(ComputationalModel):
         self.p = degree
         self.pspace = ScaledMonomialSpace2d(self.mesh, self.p)
         self.uspace = TensorFunctionSpace(self.pspace, shape=(2, -1))
+        self.pressure_gradient = GradientReconstruct(self.mesh)
+        self.velocity_gradient = GradientReconstruct(
+            self.mesh,
+            method="green_gauss",
+            gd=self.pde.dirichlet_velocity,
+            bc_type="dirichlet",
+        )
+        self.nonorthogonal_geometry = NonOrthogonalGeometry(self.mesh)
+        self.velocity_dirichlet_bc = DirichletBC(
+            self.mesh, self.pde.dirichlet_velocity
+        )
+        self.rc_operator = RhieChowCoupledOperator(self.mesh)
 
     def assembly_velocity(self, uf, u0=None) -> Tuple[TensorLike, TensorLike]:
         """
@@ -91,7 +104,7 @@ class NSFVMRCModel(ComputationalModel):
 
         f = LinearForm(self.uspace).add_integrator(
             ScalarSourceIntegrator(self.pde.source, q=2)).assembly()
-        f = DirichletBC(self.mesh, self.pde.dirichlet_velocity).ConvectionApply(f, uf)
+        f = self.velocity_dirichlet_bc.ConvectionApply(f, uf)
         if u0 is not None:
             f = f + self.compute_cross_diffusion(u0)
     
@@ -101,12 +114,16 @@ class NSFVMRCModel(ComputationalModel):
         """Assemble the explicit non-orthogonal diffusion correction."""
         lform = LinearForm(self.uspace)
         U = bm.stack((uh[:self.NC], uh[self.NC:]), axis=1)
-        gradient = GradientReconstruct(self.mesh)
-        grad_u = gradient.AverageGradientreDirichlet(
-            U, self.pde.dirichlet_velocity
+        grad_u = self.velocity_gradient.cell_gradient(U)
+        grad_f = self.velocity_gradient.face_gradient(grad_u)
+        lform.add_integrator(
+            ScalarCrossDiffusionIntegrator(
+                uh,
+                grad_f,
+                geometry=self.nonorthogonal_geometry,
+                boundary_policy="all",
+            )
         )
-        grad_f = gradient.reconstruct(grad_u)
-        lform.add_integrator(ScalarCrossDiffusionIntegrator(uh, grad_f))
         return lform.assembly()
 
     def assembly_pressure(self) -> Tuple[TensorLike, TensorLike]:
@@ -147,9 +164,8 @@ class NSFVMRCModel(ComputationalModel):
         AB, f = self.assembly_velocity(uf, u0)
         M1, M2 = self.assembly_pressure()
         M3 = BlockForm([[M1, M2]]).assembly_sparse_matrix(format='csr')
-        dbc = DirichletBC(self.mesh, self.pde.dirichlet_velocity)
         nbc = NeumannBC(self.mesh, self.pde.neumann_pressure)
-        AB, f = dbc.DiffusionApply(AB, f)
+        AB, f = self.velocity_dirichlet_bc.DiffusionApply(AB, f)
         ap = self._matrix_diagonal(AB)
         if callable(getattr(self.pde, "pressure_dirichlet", None)):
             f = f - self._pressure_boundary_force()
@@ -167,16 +183,16 @@ class NSFVMRCModel(ComputationalModel):
         face_center = self.mesh.entity_barycenter('face')[bd_face]
         pressure = self.pde.pressure_dirichlet(face_center)
         Sf = self.mesh.edge_normal()[bd_face]
-        fx = bm.zeros(self.NC)
-        fy = bm.zeros(self.NC)
-        bm.add_at(fx, owner, pressure * Sf[:, 0])
-        bm.add_at(fy, owner, pressure * Sf[:, 1])
+        fx = bm.zeros(self.NC, dtype=pressure.dtype)
+        fy = bm.zeros(self.NC, dtype=pressure.dtype)
+        fx = bm.index_add(fx, owner, pressure * Sf[:, 0], axis=0)
+        fy = bm.index_add(fy, owner, pressure * Sf[:, 1], axis=0)
         return bm.concatenate([fx, fy], axis=0)
 
     def _matrix_diagonal(self, A):
         diag_entries = A.diags()
         diag = bm.zeros(A.shape[0], dtype=diag_entries.values.dtype)
-        bm.add_at(diag, diag_entries.indices, diag_entries.values)
+        diag = bm.index_add(diag, diag_entries.indices, diag_entries.values, axis=0)
         return diag
 
     def _relative_inf_norm(self, delta, reference):
@@ -247,23 +263,21 @@ class NSFVMRCModel(ComputationalModel):
         Sf = self.mesh.edge_normal()
         ap_edge = (ap[e2c[:, 0]] + ap[e2c[:, 1]]) / 2
         # grad_f1 = (ph0[e2c[:, 1]] - ph0[e2c[:, 0]]) / self.h
-        # grad_p = GradientReconstruct(self.mesh).AverageGradientreNeumann(ph0, self.pde.neumann_pressure)
-        grad_p = GradientReconstruct(self.mesh).LSQ(ph0)
-        grad_f2 = GradientReconstruct(self.mesh).reconstruct(grad_p)
-        # grad_f2 = GradientReconstruct(self.mesh).reconstruct2(ph0, grad_p)
+        grad_p = self.pressure_gradient.cell_gradient(ph0)
+        grad_f2 = self.pressure_gradient.face_gradient(grad_p)
 
         x = self.mesh.boundary_face_index()
-        mask = bm.ones(grad_f2.shape[0], dtype=bool)
-        mask[x] = False
+        mask = bm.ones(grad_f2.shape[0], dtype=bm.bool)
+        mask = bm.set_at(mask, x, False)
         # r1 = bm.einsum('i,i->i', ap_edge, grad_f1)
         r2 = bm.einsum('i,ij->ij', ap_edge, grad_f2)
         c = bm.einsum('ij,ij->i', Sf, r2)
-        rc = bm.zeros(NC)
-        bm.add.at(rc, e2c[mask, 0], c[mask])
-        bm.add.at(rc, e2c[mask, 1], -c[mask])
+        rc = bm.zeros(NC, dtype=c.dtype)
+        rc = bm.index_add(rc, e2c[mask, 0], c[mask], axis=0)
+        rc = bm.index_add(rc, e2c[mask, 1], c[mask], axis=0, alpha=-1)
         bdu = self.pde.dirichlet_velocity(self.mesh.entity_barycenter('edge')[x])
         d = bm.einsum('ij,ij->i', bdu, Sf[x])
-        bm.add.at(rc, e2c[x, 0], d)
+        rc = bm.index_add(rc, e2c[x, 0], d, axis=0)
         M5 = BilinearForm(self.pspace).add_integrator(
             ScalarDiffusionIntegrator(q=2, coef=ap_edge)).assembly()
 
@@ -277,7 +291,7 @@ class NSFVMRCModel(ComputationalModel):
         an unstabilized pressure solution to build the correction.  The compact
         pressure-pressure block is assembled from the actual momentum diagonal.
         """
-        return RhieChowCoupledOperator(self.mesh).assemble_pressure_block(ap, p_old)
+        return self.rc_operator.assemble_pressure_block(ap, p_old)
 
 
     def solve_rhie_chow(
@@ -307,7 +321,7 @@ class NSFVMRCModel(ComputationalModel):
             AB, M3, M4, f, ap = self.assembly_base_system(Uf, u0)
             A1 = self.lagrange_multiplier()
             b0 = bm.array([self.pde.pressure_integral_target()])
-            rc_operator = RhieChowCoupledOperator(self.mesh)
+            rc_operator = self.rc_operator
             LRC = rc_operator.pressure_stabilization_matrix(ap)
             rc_rhs_old = self._rc_rhs(rc_operator, ap, ph)
             bd_face = self.mesh.boundary_face_index()

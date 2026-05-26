@@ -1,11 +1,22 @@
+"""Rhie-Chow interpolation utilities for collocated finite-volume solvers."""
+
 from fealpy.backend import backend_manager as bm
 from fealpy.sparse import COOTensor
 
+from .backend_utils import as_backend_array
+
 
 class RhieChowInterpolation:
-    """
-    Rhie-Chow interpolation to prevent pressure-velocity decoupling
-    in collocated grids for incompressible flow simulations.
+    """Build pressure-stabilized face velocities on collocated grids.
+
+    The interpolation starts from cell-centred velocity interpolation and adds
+    the standard Rhie-Chow pressure-gradient difference.  The optional
+    ``face_response_coefficient`` lets a SIMPLE/PISO model pass the same face
+    pressure response used by its pressure-correction equation, keeping the
+    pressure equation and face-velocity update algebraically consistent.
+
+    This class is a pressure-velocity coupling operator; it does not assemble
+    the momentum equation or choose pressure relaxation parameters.
     """
 
     def __init__(self, mesh):
@@ -23,51 +34,62 @@ class RhieChowInterpolation:
         self.gradient_reconstruct = GradientReconstruct(mesh)
         self.e, self.d = VectorDecomposition(mesh).centroid_vector_calculation()
 
-    def Ucell2edge(self,u,ap):
-        ap = ap[:self.NC][:,None]
-        dp = self.cm[:,None]/ap
+    def Ucell2edge(self, u, ap, face_response_coefficient=None):
+        """Interpolate cell velocity and pressure response to faces."""
         u = bm.stack([u[:self.NC],u[self.NC:]],axis=-1)
         e2c = self.edge_to_cell
         # x = ap[e2c[:,0]]*u[e2c[:,0]]+ap[e2c[:,1]]*u[e2c[:,1]]
         # y = ap[e2c[:,0]]+ap[e2c[:,1]]
         # uf = x/y
         uf = (u[e2c[:,0]]+u[e2c[:,1]])/2
-        df = (dp[e2c[:,1]]+dp[e2c[:,0]])/2
+        if face_response_coefficient is None:
+            ap = ap[:self.NC][:,None]
+            dp = self.cm[:,None]/ap
+            df = (dp[e2c[:,1]]+dp[e2c[:,0]])/2
+        else:
+            df = as_backend_array(face_response_coefficient, dtype=uf.dtype)[:, None]
         return uf,df
 
     def GradientDifference(self, p):
-        """
-        Gradient difference calculation
+        """Return the Rhie-Chow pressure-gradient difference.
+
+        This is the difference between the cell-jump pressure gradient along
+        the owner-neighbour line and the interpolated reconstructed gradient.
         """
         e, d = self.e, self.d
         partial_p = (p[self.edge_to_cell[:,1]] - p[self.edge_to_cell[:,0]])/d
         e_cf = e / d[:, None]
-        grad_p = self.gradient_reconstruct.LSQ(p)
-        overline_grad_p_f = self.gradient_reconstruct.reconstruct(grad_p)
+        grad_p = self.gradient_reconstruct.cell_gradient(p)
+        overline_grad_p_f = self.gradient_reconstruct.face_gradient(grad_p)
         GradientDifference = (partial_p - bm.einsum('ij,ij->i', overline_grad_p_f, e_cf))[:, None]*e_cf
         return GradientDifference
 
-    def Interpolation(self,u,ap,p):
-        """
-        Perform Rhie-Chow interpolation
-        """
-        uf, df = self.Ucell2edge(u,ap)
+    def Interpolation(self, u, ap, p, face_response_coefficient=None):
+        """Return pressure-stabilized vector face velocity."""
+        uf, df = self.Ucell2edge(u, ap, face_response_coefficient)
         grad_diff = self.GradientDifference(p)
         return uf - df*grad_diff
 
 
 class RhieChowCoupledOperator:
-    """
-    Rhie-Chow pressure operator for collocated coupled solvers.
+    """Experimental Rhie-Chow pressure operator for coupled RC solvers.
 
     This class assembles the compact pressure-pressure block produced by
     substituting Rhie-Chow face interpolation into the continuity equation.
     It is intended for coupled systems of the form ``[[A, G], [B, LRC]]``.
+
+    It is not the stable SIMPLE/PISO face-velocity interpolation API.  The
+    production collocated SIMPLE path uses :class:`RhieChowInterpolation`.
+    This class remains local support for the less mature RC model experiments.
     """
 
     def __init__(self, mesh, rho=1.0):
+        from .gradient_reconstruct import GradientReconstruct
+
         self.mesh = mesh
         self.rho = rho
+        self.gradient_reconstruct = GradientReconstruct(mesh)
+        self._cell_lsq_gradient_matrix_cache = None
 
     def pressure_stabilization_matrix(self, ap):
         """
@@ -102,20 +124,17 @@ class RhieChowCoupledOperator:
         if p_old is None:
             return bm.zeros(NC)
 
-        mesh = self.mesh
-        from fealpy.fvm import GradientReconstruct
-
         owner, neighbour, is_internal, d_pf, _, beta = (
             self._internal_pressure_flux_geometry(ap)
         )
-        grad_p = GradientReconstruct(mesh).LSQ(p_old)
-        grad_f = GradientReconstruct(mesh).reconstruct(grad_p)[is_internal]
+        grad_p = self.gradient_reconstruct.cell_gradient(p_old)
+        grad_f = self.gradient_reconstruct.face_gradient(grad_p)[is_internal]
         d_dot_grad = bm.einsum("ij,ij->i", d_pf, grad_f)
         face_rhs = -self.rho * beta * d_dot_grad
 
-        rhs = bm.zeros(NC)
-        bm.add_at(rhs, owner, face_rhs)
-        bm.add_at(rhs, neighbour, -face_rhs)
+        rhs = bm.zeros(NC, dtype=face_rhs.dtype)
+        rhs = bm.index_add(rhs, owner, face_rhs, axis=0)
+        rhs = bm.index_add(rhs, neighbour, face_rhs, axis=0, alpha=-1)
         return rhs
 
     def explicit_pressure_matrix(self, ap):
@@ -164,7 +183,7 @@ class RhieChowCoupledOperator:
             spshape=(NC, n_internal),
         ).coalesce().tocsr()
 
-        return scatter @ face_gradient @ self._lsq_gradient_matrix()
+        return scatter @ face_gradient @ self._cell_lsq_gradient_matrix()
 
     def assemble_pressure_block(self, ap, p_old=None):
         """Return ``(LRC, bp)`` for the coupled continuity equation."""
@@ -173,20 +192,35 @@ class RhieChowCoupledOperator:
             self.explicit_pressure_rhs(ap, p_old),
         )
 
-    def _lsq_gradient_matrix(self):
-        """Return the sparse matrix for the cell LSQ gradient operator."""
+    def _cell_lsq_gradient_matrix(self):
+        """Return the private cell-LSQ gradient matrix used by the RC block.
+
+        This is the matrix form of the unweighted two-layer LSQ gradient used
+        to linearize ``explicit_pressure_rhs(ap, p)``.  It intentionally has no
+        boundary-condition handling and should not be treated as the general
+        gradient reconstruction API.  If a public gradient-matrix operator is
+        needed later, it should be implemented beside ``GradientReconstruct``
+        with the same variant, weight, and boundary-condition controls.
+        """
+        if self._cell_lsq_gradient_matrix_cache is not None:
+            return self._cell_lsq_gradient_matrix_cache
+
         mesh = self.mesh
         NC = mesh.number_of_cells()
         c2c = mesh.cell_to_cell()
         N = bm.concatenate((c2c[c2c].reshape(NC, -1), c2c), axis=1)
         N_sorted = bm.sort(N, axis=1)
         dup_mask = bm.zeros_like(N_sorted, dtype=bool)
-        dup_mask[:, 1:] = N_sorted[:, 1:] == N_sorted[:, :-1]
-        row_broadcast = bm.broadcast_to(
-            bm.arange(N.shape[0])[:, None], N_sorted.shape
+        dup_mask = bm.set_at(
+            dup_mask,
+            (slice(None), slice(1, None)),
+            N_sorted[:, 1:] == N_sorted[:, :-1],
         )
-        N_unique = N_sorted.copy()
-        N_unique[dup_mask] = row_broadcast[dup_mask]
+        row_broadcast = bm.broadcast_to(
+            bm.arange(N.shape[0], dtype=N_sorted.dtype)[:, None], N_sorted.shape
+        )
+        N_unique = bm.copy(N_sorted)
+        N_unique = bm.set_at(N_unique, dup_mask, row_broadcast[dup_mask])
         N = bm.sort(N_unique, axis=1)
 
         cell_centers = mesh.entity_barycenter("cell")
@@ -217,11 +251,12 @@ class RhieChowCoupledOperator:
             -bm.sum(wx, axis=1),
             -bm.sum(wy, axis=1),
         ])
-        return COOTensor(
+        self._cell_lsq_gradient_matrix_cache = COOTensor(
             bm.stack([rows, cols], axis=0),
             values,
             spshape=(2 * NC, NC),
         ).coalesce().tocsr()
+        return self._cell_lsq_gradient_matrix_cache
 
     def face_velocity(self, velocity, ap, pressure):
         """
@@ -240,7 +275,7 @@ class RhieChowCoupledOperator:
         mesh = self.mesh
         NC = mesh.number_of_cells()
         edge_to_cell = mesh.edge_to_cell()[:, :2]
-        velocity = bm.array(velocity)
+        velocity = as_backend_array(velocity)
         if len(velocity.shape) == 1:
             velocity = bm.stack([velocity[:NC], velocity[NC:2 * NC]], axis=1)
 
@@ -253,16 +288,14 @@ class RhieChowCoupledOperator:
             self._internal_pressure_flux_geometry(ap)
         )
 
-        from fealpy.fvm import GradientReconstruct
-
-        grad_p = GradientReconstruct(mesh).LSQ(pressure)
-        interp_grad = GradientReconstruct(mesh).reconstruct(grad_p)[is_internal]
+        grad_p = self.gradient_reconstruct.cell_gradient(pressure)
+        interp_grad = self.gradient_reconstruct.face_gradient(grad_p)[is_internal]
         jump = pressure[neighbour] - pressure[owner]
         d_dot_grad = bm.einsum("ij,ij->i", d_pf, interp_grad)
         correction_flux = -beta * (jump - d_dot_grad)
         Sf_dot_Sf = bm.einsum("ij,ij->i", Sf, Sf)
         normal_correction = (correction_flux / Sf_dot_Sf)[:, None] * Sf
-        vf[is_internal] = vf[is_internal] + normal_correction
+        vf = bm.set_at(vf, is_internal, vf[is_internal] + normal_correction)
         return vf
 
     def boundary_velocity_rhs(self, boundary_velocity):
@@ -279,8 +312,8 @@ class RhieChowCoupledOperator:
         owner = mesh.edge_to_cell()[bd_face, 0]
         Sf = mesh.edge_normal()[bd_face]
         flux = bm.einsum("ij,ij->i", boundary_velocity, Sf)
-        rhs = bm.zeros(NC)
-        bm.add_at(rhs, owner, -self.rho * flux)
+        rhs = bm.zeros(NC, dtype=flux.dtype)
+        rhs = bm.index_add(rhs, owner, flux, axis=0, alpha=-self.rho)
         return rhs
 
     def _internal_pressure_flux_geometry(self, ap):
@@ -314,7 +347,7 @@ class RhieChowCoupledOperator:
         mesh = self.mesh
         NC = mesh.number_of_cells()
         cell_measure = mesh.entity_measure("cell")
-        ap = bm.array(ap)
+        ap = as_backend_array(ap, dtype=cell_measure.dtype)
         if ap.shape[0] == 2 * NC:
             ap_u = ap[:NC]
             ap_v = ap[NC:2 * NC]

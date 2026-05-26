@@ -1,7 +1,6 @@
 from .scalar_diffusion_integrator import ScalarDiffusionIntegrator
 from .scalar_cross_diffusion_integrator import ScalarCrossDiffusionIntegrator
 from .scalar_source_integrator import ScalarSourceIntegrator
-from .div_integrator import DivIntegrator
 from .convection_integrator import ConvectionIntegrator
 
 from .gradient_reconstruct import GradientReconstruct
@@ -11,7 +10,7 @@ from .dirichlet_bc import DirichletBC
 from .neumann_bc import NeumannBC
 from .vector_decomposition import VectorDecomposition
 from .nonorthogonal_geometry import NonOrthogonalGeometry
-from .rhie_chow import RhieChowCoupledOperator, RhieChowInterpolation
+from .rhie_chow import RhieChowInterpolation
 from .simple_residual import (
     cell_l2_norm,
     collocated_mass_residual,
@@ -19,6 +18,13 @@ from .simple_residual import (
     relative_l2_update,
     staggered_mass_residual,
 )
+from .pressure_correction_control import (
+    PressureRelaxationConfig,
+    PressureRelaxationController,
+    format_pressure_correction_log,
+    pressure_correction_converged,
+)
+from .fvm_linear_solver import FVMLinearSolver, FVMLinearSolverConfig
 
 from .poisson_fvm_model import PoissonFVMModel
 

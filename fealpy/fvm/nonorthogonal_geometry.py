@@ -55,16 +55,6 @@ class NonOrthogonalGeometry:
         """Return the unit face normal ``n_f = S_f / |S_f|``."""
         return self.face_area_vector() / self.face_area_norm()[:, None]
 
-    def legacy_tangential_vector(self) -> TensorLike:
-        """Return the historical FEALPy tangential correction vector.
-
-        This preserves the old cross-diffusion behavior for regression and
-        comparison.  New non-orthogonal correction experiments should prefer a
-        named decomposition such as ``openfoam_correction_vector`` so its
-        geometric meaning is explicit.
-        """
-        return VectorDecomposition(self.mesh).tangential_vector_calculation()
-
     def openfoam_delta_coeff(self) -> TensorLike:
         """Return the bounded orthogonal coefficient ``delta_f``.
 
@@ -91,6 +81,12 @@ class NonOrthogonalGeometry:
         face-flux correction.  This keeps the matrix contribution tied to the
         orthogonal cell jump while moving the skew/non-orthogonal part to the
         right-hand side.
+
+        This method returns the raw geometric vector on every FEALPy face.
+        OpenFOAM's ``nonOrthCorrectionVectors`` additionally sets non-coupled
+        boundary patch vectors to zero.  Callers that need exact OpenFOAM-style
+        corrected-Laplacian semantics must apply that boundary policy outside
+        this geometry helper.
         """
         delta = self.cell_center_vector()
         correction = self.unit_normal() - delta * self.openfoam_delta_coeff()[:, None]

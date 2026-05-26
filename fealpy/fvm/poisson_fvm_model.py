@@ -48,7 +48,7 @@ class PoissonFVMModel(ComputationalModel):
         self.set_mesh(options["nx"], options["ny"])
         self.set_space(options["space_degree"])
         self.nonorthogonal_correction_method = options.get(
-            "nonorthogonal_correction_method", "legacy"
+            "nonorthogonal_correction_method", "openfoam_stabilized"
         )
         self.nonorthogonal_limit_coeff = options.get(
             "nonorthogonal_limit_coeff", 0.5
@@ -85,6 +85,8 @@ class PoissonFVMModel(ComputationalModel):
     def set_space(self, degree: int = 0) -> None:
         self.p = degree
         self.space = ScaledMonomialSpace2d(self.mesh, self.p)
+        self.gradient = GradientReconstruct(self.mesh)
+        self.nonorthogonal_geometry = NonOrthogonalGeometry(self.mesh)
     
     def assemble_base_system(self) -> tuple:
         """
@@ -115,16 +117,14 @@ class PoissonFVMModel(ComputationalModel):
             ndarray: Right-hand side vector from cross-diffusion.
         """
         lform = LinearForm(self.space)
-        # grad_u = GradientReconstruct(self.mesh).AverageGradientreDirichlet(uh,self.pde.dirichlet)  # (NC, 2)
-        grad_u = GradientReconstruct(self.mesh).LSQ(uh)
-        grad_f = GradientReconstruct(self.mesh).reconstruct(grad_u)  # (NE, 2)
-        # grad_f = GradientReconstruct(self.mesh).reconstruct2(uh,grad_u)  # (NE, 2)
+        grad_u = self.gradient.cell_gradient(uh)
+        grad_f = self.gradient.face_gradient(grad_u)
         lform.add_integrator(
             ScalarCrossDiffusionIntegrator(
                 uh,
                 grad_f,
                 coef=1,
-                geometry=NonOrthogonalGeometry(self.mesh),
+                geometry=self.nonorthogonal_geometry,
                 correction_method=self.nonorthogonal_correction_method,
                 limit_coeff=self.nonorthogonal_limit_coeff,
             )

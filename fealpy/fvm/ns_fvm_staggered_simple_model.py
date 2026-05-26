@@ -1,4 +1,4 @@
-from typing import Union, Tuple
+from typing import Optional, Union, Tuple
 
 from fealpy.typing import TensorLike
 from fealpy.backend import backend_manager as bm
@@ -61,6 +61,8 @@ class NSFVMStaggeredSimpleModel(ComputationalModel):
         self.ppoints = self.pmesh.entity_barycenter("cell")
         self.upoints = self.umesh.entity_barycenter("cell")
         self.vpoints = self.vmesh.entity_barycenter("cell")
+        self.u_gradient = GradientReconstruct(self.umesh)
+        self.v_gradient = GradientReconstruct(self.vmesh)
 
     def compute_temporary_velocity_u(self, p_u, uf) -> Tuple[TensorLike, TensorLike]:
         """Solve for temporary velocity u* using the momentum equation."""
@@ -72,7 +74,7 @@ class NSFVMStaggeredSimpleModel(ComputationalModel):
         A = bform.assembly()
 
         f = LinearForm(uspace).add_integrator(ScalarSourceIntegrator(self.pde.source_u, q=2)).assembly()
-        grad_p = GradientReconstruct(self.umesh).LSQ(p_u)
+        grad_p = self.u_gradient.cell_gradient(p_u)
         f -= bm.einsum('i,i->i', grad_p[:, 0], self.ucm)
         dbc = DirichletBC(self.umesh, self.pde.dirichlet_velocity_u,
                           threshold=lambda x: (bm.abs(x) < 1e-10) | (bm.abs(x - 1) < 1e-10))
@@ -91,7 +93,7 @@ class NSFVMStaggeredSimpleModel(ComputationalModel):
         A = bform.assembly()
 
         f = LinearForm(vspace).add_integrator(ScalarSourceIntegrator(self.pde.source_v, q=2)).assembly()
-        grad_p = GradientReconstruct(self.vmesh).LSQ(p_v)
+        grad_p = self.v_gradient.cell_gradient(p_v)
         f -= bm.einsum('i,i->i', grad_p[:, 1], self.vcm)
         dbc = DirichletBC(self.vmesh, self.pde.dirichlet_velocity_v,
                           threshold=lambda y: (bm.abs(y) < 1e-10) | (bm.abs(y - 1) < 1e-10))
@@ -116,8 +118,14 @@ class NSFVMStaggeredSimpleModel(ComputationalModel):
             ScalarDiffusionIntegrator(q=2,coef=p_edge / a_p_edge)
         ).assembly()  
         LagA = self.pmesh.entity_measure('cell')
-        A1 = COOTensor(bm.array([bm.zeros(len(LagA), dtype=bm.int32),
-                             bm.arange(len(LagA), dtype=bm.int32)]), LagA, spshape=(1, len(LagA)))
+        gauge_index = bm.stack(
+            [
+                bm.zeros(len(LagA), dtype=bm.int32),
+                bm.arange(len(LagA), dtype=bm.int32),
+            ],
+            axis=0,
+        )
+        A1 = COOTensor(gauge_index, LagA, spshape=(1, len(LagA)))
         A = BlockForm([[A, A1.T], [A1, None]])
         A = A.assembly_sparse_matrix(format='csr')
         b0 = bm.array([0])
@@ -126,6 +134,104 @@ class NSFVMStaggeredSimpleModel(ComputationalModel):
         p_correct = sol[:-1]   
         return p_correct
 
+    def _adapt_pressure_relaxation(
+        self,
+        residuals,
+        current_relax: float,
+        deterioration_count: int,
+        *,
+        small_update_count: int = 0,
+        cooldown: int = 0,
+        relax_min: float,
+        relax_max: float,
+        growth_factor: float,
+        patience: int,
+        severe_growth_factor: Optional[float] = None,
+        reduction_factor: float = 0.5,
+        increase_patience: int = 3,
+        increase_factor: float = 1.25,
+        small_update: Optional[float] = None,
+        cooldown_steps: int = 3,
+        mass_growth_factor: float = 1.05,
+        residual_key: str = "pressure_correction",
+        update_key: str = "pressure_update",
+        mass_key: str = "mass",
+    ) -> Tuple[float, int, int, int, str]:
+        """Adapt pressure relaxation without changing the staggered discretization."""
+        if len(residuals) < 2:
+            return current_relax, 0, 0, 0, "keep"
+
+        current = float(residuals[-1][residual_key])
+        previous = float(residuals[-2][residual_key])
+
+        def reduce_relaxation():
+            new_relax = max(reduction_factor * current_relax, relax_min)
+            if new_relax >= current_relax:
+                return current_relax, 0, 0, 0, "keep"
+            return new_relax, 0, 0, cooldown_steps, "reduce"
+
+        if (
+            severe_growth_factor is not None
+            and current > severe_growth_factor * previous
+        ):
+            return reduce_relaxation()
+
+        if cooldown > 0:
+            return current_relax, 0, small_update_count, cooldown - 1, "cooldown"
+
+        if current > growth_factor * previous:
+            deterioration_count += 1
+        else:
+            deterioration_count = 0
+
+        if deterioration_count >= patience:
+            return reduce_relaxation()
+
+        can_increase = (
+            small_update is not None
+            and current_relax < relax_max
+            and update_key in residuals[-1]
+            and residuals[-1][update_key] < small_update
+            and current <= growth_factor * previous
+        )
+        if can_increase and mass_key in residuals[-1] and mass_key in residuals[-2]:
+            mass = float(residuals[-1][mass_key])
+            previous_mass = float(residuals[-2][mass_key])
+            can_increase = mass <= mass_growth_factor * previous_mass
+
+        if can_increase:
+            small_update_count += 1
+        else:
+            small_update_count = 0
+
+        if small_update_count < increase_patience:
+            return current_relax, deterioration_count, small_update_count, 0, "keep"
+
+        new_relax = min(increase_factor * current_relax, relax_max)
+        if new_relax <= current_relax:
+            return current_relax, deterioration_count, 0, 0, "keep"
+        return new_relax, 0, 0, cooldown_steps, "increase"
+
+    def _simple_iteration_log_message(
+        self,
+        *,
+        simple_iteration: int,
+        nonorthogonal_iterations: int,
+        pressure_criterion: float,
+        pressure_relax: float,
+        mass_residual: float,
+        pressure_correction: float,
+    ) -> str:
+        """Format the main SIMPLE iteration diagnostic line."""
+        return (
+            f"[SIMPLE {simple_iteration}] "
+            f"nonorthogonal iterations: {nonorthogonal_iterations}, "
+            f"pressure criterion: {pressure_criterion:.2e}, "
+            f"pressure relax: {pressure_relax:.2e}, "
+            f"mass residual: {mass_residual:.2e}, "
+            f"pressure correction L2: {pressure_correction:.2e}"
+        )
+
     def solve(
         self,
         max_iter: int = 200,
@@ -133,26 +239,68 @@ class NSFVMStaggeredSimpleModel(ComputationalModel):
         relax: float = 0.32,
         tol_mass=None,
         tol_pressure_update=None,
+        adaptive_pressure_relax: bool = True,
+        relax_min: float = 1.0e-4,
+        relax_growth_factor: float = 1.05,
+        relax_severe_growth_factor: Optional[float] = 2.0,
+        relax_patience: int = 3,
+        relax_reduction_factor: float = 0.5,
+        relax_increase_patience: int = 3,
+        relax_increase_factor: float = 1.25,
+        relax_small_update: Optional[float] = 1.0e-3,
+        relax_cooldown_steps: int = 3,
     ) -> Tuple[TensorLike, TensorLike, TensorLike]:
         """
-        Solve the Stokes equation using the SIMPLE algorithm.
+        Solve the Navier-Stokes equation using the SIMPLE algorithm.
         """
+        if relax <= 0:
+            raise ValueError("relax must be positive.")
+        if relax_min <= 0:
+            raise ValueError("relax_min must be positive.")
+        if relax_growth_factor <= 1.0:
+            raise ValueError("relax_growth_factor must be greater than 1.")
+        if (
+            relax_severe_growth_factor is not None
+            and relax_severe_growth_factor <= 1.0
+        ):
+            raise ValueError("relax_severe_growth_factor must be greater than 1.")
+        if relax_patience < 1:
+            raise ValueError("relax_patience must be positive.")
+        if not 0.0 < relax_reduction_factor < 1.0:
+            raise ValueError("relax_reduction_factor must be in (0, 1).")
+        if relax_increase_patience < 1:
+            raise ValueError("relax_increase_patience must be positive.")
+        if relax_increase_factor <= 1.0:
+            raise ValueError("relax_increase_factor must be greater than 1.")
+        if relax_small_update is not None and relax_small_update <= 0.0:
+            raise ValueError("relax_small_update must be positive.")
+        if relax_cooldown_steps < 0:
+            raise ValueError("relax_cooldown_steps must be non-negative.")
+
         tol_mass = tol if tol_mass is None else tol_mass
         tol_pressure_update = (
             10.0 * tol if tol_pressure_update is None else tol_pressure_update
         )
-        p = bm.zeros(self.ppoints.shape[0])
+        pressure_relax = relax
+        relax_deterioration_count = 0
+        relax_small_update_count = 0
+        relax_cooldown = 0
+        field_dtype = self.pcm.dtype
+        p = bm.zeros(self.ppoints.shape[0], dtype=field_dtype)
         UNE = self.umesh.number_of_edges()
-        uf = bm.zeros(UNE)
-        vf = bm.zeros(UNE)
+        VNE = self.vmesh.number_of_edges()
+        uf = bm.zeros(UNE, dtype=field_dtype)
+        vf = bm.zeros(VNE, dtype=field_dtype)
         self.residuals = []
 
-        vedge2uedge = self.staggered_mesh.get_dof_mapping_vedge2uedge()
-        vf_umesh = vf[vedge2uedge]
+        vf_umesh = self.staggered_mesh.map_v_to_u_edges(
+            vf, self.pde.dirichlet_velocity
+        )
         Uf = bm.stack([uf, vf_umesh], axis=1)
 
-        uedge2vedge = self.staggered_mesh.get_dof_mapping_uedge2vedge()
-        uf_vmesh = uf[uedge2vedge]
+        uf_vmesh = self.staggered_mesh.map_u_to_v_edges(
+            uf, self.pde.dirichlet_velocity
+        )
         Vf = bm.stack([uf_vmesh, vf], axis=1)
         ue2c = self.umesh.edge_to_cell()
         ve2c = self.vmesh.edge_to_cell()
@@ -165,18 +313,62 @@ class NSFVMStaggeredSimpleModel(ComputationalModel):
             edge_vel, a_p_edge = self.staggered_mesh.map_velocity_uvcell_to_pedge(uh, vh, a_p_u, a_p_v)
             self.div_rhs = self.div.StagReconstruct(edge_vel)
             p_corr = self.correct_pressure_compute(-self.div_rhs, a_p_edge)
-            p_update = relax * p_corr
+            p_update = pressure_relax * p_corr
             residual = {
                 "mass": staggered_mass_residual(self.pmesh, edge_vel),
                 "pressure_update": relative_l2_update(self.pmesh, p_update, p),
                 "pressure_correction": cell_l2_norm(self.pmesh, p_corr),
             }
             self.residuals.append(residual)
+            relax_action = "keep"
+            if adaptive_pressure_relax:
+                (
+                    pressure_relax,
+                    relax_deterioration_count,
+                    relax_small_update_count,
+                    relax_cooldown,
+                    relax_action,
+                ) = self._adapt_pressure_relaxation(
+                    self.residuals,
+                    current_relax=pressure_relax,
+                    deterioration_count=relax_deterioration_count,
+                    small_update_count=relax_small_update_count,
+                    cooldown=relax_cooldown,
+                    relax_min=relax_min,
+                    relax_max=relax,
+                    growth_factor=relax_growth_factor,
+                    severe_growth_factor=relax_severe_growth_factor,
+                    patience=relax_patience,
+                    reduction_factor=relax_reduction_factor,
+                    increase_patience=relax_increase_patience,
+                    increase_factor=relax_increase_factor,
+                    small_update=relax_small_update,
+                    cooldown_steps=relax_cooldown_steps,
+                )
+                if relax_action in {"reduce", "increase"}:
+                    p_update = pressure_relax * p_corr
+                    residual["pressure_update"] = relative_l2_update(
+                        self.pmesh, p_update, p
+                    )
+            residual["pressure_relax"] = pressure_relax
+            residual["pressure_relax_reduced"] = relax_action == "reduce"
+            residual["pressure_relax_action"] = relax_action
+            residual["nonorthogonal_iterations"] = 0
             self.logger.info(
-                f"[Iter {i+1}] mass residual: {residual['mass']:.2e}, "
-                f"pressure update residual: {residual['pressure_update']:.2e}, "
-                f"pressure correction L2: {residual['pressure_correction']:.2e}"
+                self._simple_iteration_log_message(
+                    simple_iteration=i + 1,
+                    nonorthogonal_iterations=residual["nonorthogonal_iterations"],
+                    pressure_criterion=residual["pressure_update"],
+                    pressure_relax=pressure_relax,
+                    mass_residual=residual["mass"],
+                    pressure_correction=residual["pressure_correction"],
+                )
             )
+            if relax_action in {"reduce", "increase"}:
+                self.logger.info(
+                    f"[Iter {i+1}] pressure relaxation {relax_action}d to "
+                    f"{pressure_relax:.2e}"
+                )
             if (
                 residual["mass"] < tol_mass
                 and residual["pressure_update"] < tol_pressure_update
@@ -195,9 +387,13 @@ class NSFVMStaggeredSimpleModel(ComputationalModel):
             vh += v_corr
             uf1 = (uh[ue2c[:,0]] + uh[ue2c[:,1]])/2
             vf1 = (vh[ve2c[:,0]] + vh[ve2c[:,1]])/2
-            vf_umesh = vf1[vedge2uedge]
+            vf_umesh = self.staggered_mesh.map_v_to_u_edges(
+                vf1, self.pde.dirichlet_velocity
+            )
             Uf = bm.stack([uf1, vf_umesh], axis=1)
-            uf_vmesh = uf1[uedge2vedge]
+            uf_vmesh = self.staggered_mesh.map_u_to_v_edges(
+                uf1, self.pde.dirichlet_velocity
+            )
             Vf = bm.stack([uf_vmesh, vf1], axis=1)
 
         

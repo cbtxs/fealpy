@@ -77,6 +77,8 @@ class NSFVMStaggeredPISOModel(ComputationalModel):
         self.vcell2pedge = self.staggered_mesh.get_dof_mapping_vcell2pedge()
         self.vedge2uedge = self.staggered_mesh.get_dof_mapping_vedge2uedge()
         self.uedge2vedge = self.staggered_mesh.get_dof_mapping_uedge2vedge()
+        self.u_gradient = GradientReconstruct(self.umesh)
+        self.v_gradient = GradientReconstruct(self.vmesh)
 
     def initial_solution(self) -> Tuple[TensorLike, TensorLike, TensorLike]:
         t0 = self.duration[0]
@@ -118,7 +120,7 @@ class NSFVMStaggeredPISOModel(ComputationalModel):
             ScalarSourceIntegrator(source, q=2)
         ).assembly()
 
-        grad_p = GradientReconstruct(self.umesh).LSQ(p_u)
+        grad_p = self.u_gradient.cell_gradient(p_u)
         pressure_term = bm.einsum("i,i->i", grad_p[:, 0], self.ucm)
         old_mass = bm.einsum("i,i->i", u0, self.ucm)
 
@@ -168,7 +170,7 @@ class NSFVMStaggeredPISOModel(ComputationalModel):
             ScalarSourceIntegrator(source, q=2)
         ).assembly()
 
-        grad_p = GradientReconstruct(self.vmesh).LSQ(p_v)
+        grad_p = self.v_gradient.cell_gradient(p_v)
         pressure_term = bm.einsum("i,i->i", grad_p[:, 1], self.vcm)
         old_mass = bm.einsum("i,i->i", v0, self.vcm)
 
@@ -229,8 +231,8 @@ class NSFVMStaggeredPISOModel(ComputationalModel):
         u_pcorr, v_pcorr = self.staggered_mesh.map_pressure_pcell_to_uvedge(
             p_corr
         )
-        ugrad_p = GradientReconstruct(self.umesh).LSQ(u_pcorr)
-        vgrad_p = GradientReconstruct(self.vmesh).LSQ(v_pcorr)
+        ugrad_p = self.u_gradient.cell_gradient(u_pcorr)
+        vgrad_p = self.v_gradient.cell_gradient(v_pcorr)
         u_new = u - self.ucm / uap * ugrad_p[:, 0]
         v_new = v - self.vcm / vap * vgrad_p[:, 1]
         return u_new, v_new

@@ -62,6 +62,7 @@ class NSFVMPISOModel(ComputationalModel):
         self.p = degree
         self.space = ScaledMonomialSpace2d(self.mesh, self.p)
         self.velocity_space = TensorFunctionSpace(self.space, shape=(2, -1))
+        self.pressure_gradient = GradientReconstruct(self.mesh)
         self.rhie_chow = RhieChowInterpolation(self.mesh)
 
     def initial_solution(self) -> Tuple[TensorLike, TensorLike, TensorLike]:
@@ -92,7 +93,7 @@ class NSFVMPISOModel(ComputationalModel):
             ScalarSourceIntegrator(src, q=self.p + 2)
         ).assembly()
 
-        grad_p = GradientReconstruct(self.mesh).LSQ(p0)
+        grad_p = self.pressure_gradient.cell_gradient(p0)
         p1 = bm.einsum("i,i->i", grad_p[:, 0], self.cm)
         p2 = bm.einsum("i,i->i", grad_p[:, 1], self.cm)
         p_grad_integrator = bm.concatenate((p1, p2))
@@ -209,7 +210,7 @@ class NSFVMPISOModel(ComputationalModel):
 
     def velocity_pressure_correction(self, u_flat, pressure_rate, a_p):
         """Apply the cell velocity correction ``U <- U - rAU grad(q)``."""
-        grad_p = GradientReconstruct(self.mesh).LSQ(pressure_rate)
+        grad_p = self.pressure_gradient.cell_gradient(pressure_rate)
         u_cell = bm.stack([u_flat[:self.NC], u_flat[self.NC:]], axis=-1)
         u_cell = u_cell - (self.cm/a_p[:self.NC])[:, None] * grad_p
         return u_cell.flatten(order="F")

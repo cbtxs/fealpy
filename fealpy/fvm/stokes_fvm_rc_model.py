@@ -18,8 +18,9 @@ from fealpy.fvm import (
     DirichletBC,
     NeumannBC,
     ConvectionIntegrator,
-    RhieChowCoupledOperator,
+    NonOrthogonalGeometry,
 )
+from .rhie_chow import RhieChowCoupledOperator
 
 
 class StokesFVMRCModel(ComputationalModel):
@@ -76,6 +77,17 @@ class StokesFVMRCModel(ComputationalModel):
         self.p = degree
         self.pspace = ScaledMonomialSpace2d(self.mesh, self.p)
         self.uspace = TensorFunctionSpace(self.pspace, shape=(2, -1))
+        self.velocity_gradient = GradientReconstruct(
+            self.mesh,
+            method="green_gauss",
+            gd=self.pde.dirichlet_velocity,
+            bc_type="dirichlet",
+        )
+        self.nonorthogonal_geometry = NonOrthogonalGeometry(self.mesh)
+        self.velocity_dirichlet_bc = DirichletBC(
+            self.mesh, self.pde.dirichlet_velocity
+        )
+        self.rc_operator = RhieChowCoupledOperator(self.mesh)
 
     def assembly_velocity(self, u0=None) -> Tuple[TensorLike, TensorLike]:
         """
@@ -95,12 +107,16 @@ class StokesFVMRCModel(ComputationalModel):
         """Assemble the explicit non-orthogonal diffusion correction."""
         lform = LinearForm(self.uspace)
         U = bm.stack((uh[:self.NC], uh[self.NC:]), axis=1)
-        gradient = GradientReconstruct(self.mesh)
-        grad_u = gradient.AverageGradientreDirichlet(
-            U, self.pde.dirichlet_velocity
+        grad_u = self.velocity_gradient.cell_gradient(U)
+        grad_f = self.velocity_gradient.face_gradient(grad_u)
+        lform.add_integrator(
+            ScalarCrossDiffusionIntegrator(
+                uh,
+                grad_f,
+                geometry=self.nonorthogonal_geometry,
+                boundary_policy="all",
+            )
         )
-        grad_f = gradient.reconstruct(grad_u)
-        lform.add_integrator(ScalarCrossDiffusionIntegrator(uh, grad_f))
         return lform.assembly()
 
     def assembly_pressure(self) -> Tuple[TensorLike, TensorLike]:
@@ -141,10 +157,9 @@ class StokesFVMRCModel(ComputationalModel):
         AB, f = self.assembly_velocity(u0)
         M1, M2 = self.assembly_pressure()
         M3 = BlockForm([[M1, M2]]).assembly_sparse_matrix(format='csr')
-        dbc = DirichletBC(self.mesh, self.pde.dirichlet_velocity)
         # nbc = NeumannBC(self.mesh, self.pde.neumann_pressure)
         nbc = NeumannBC(self.mesh)
-        AB, f = dbc.DiffusionApply(AB, f)
+        AB, f = self.velocity_dirichlet_bc.DiffusionApply(AB, f)
         ap = self._matrix_diagonal(AB)
 
         M1 = nbc.ConvectionApplyX(M1, f[:self.NC])
@@ -157,7 +172,7 @@ class StokesFVMRCModel(ComputationalModel):
     def _matrix_diagonal(self, A):
         diag_entries = A.diags()
         diag = bm.zeros(A.shape[0], dtype=diag_entries.values.dtype)
-        bm.add_at(diag, diag_entries.indices, diag_entries.values)
+        diag = bm.index_add(diag, diag_entries.indices, diag_entries.values, axis=0)
         return diag
 
     def _rc_boundary_rhs(self, rc_operator):
@@ -197,7 +212,7 @@ class StokesFVMRCModel(ComputationalModel):
             AB, M3, M4, f, ap = self.assembly_base_system(u0)
             A1 = self.lagrange_multiplier()
             b0 = bm.array([self.pde.pressure_integral_target()])
-            rc_operator = RhieChowCoupledOperator(self.mesh)
+            rc_operator = self.rc_operator
             LRC = rc_operator.pressure_stabilization_matrix(ap)
             explicit_pressure = rc_operator.explicit_pressure_matrix(ap)
             pressure_block = LRC - explicit_pressure
