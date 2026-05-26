@@ -15,7 +15,7 @@
 2. **拓扑存储层（MeshBlock / EntitySector）**：保存离散事实，不承载算法。
 3. **计算视图层（Mesh / EntityView）**：提供调用入口，不在本任务中增加算法实现。
 
-当前任务的工作边界是：**只把算法迁移进 Entity Schema**，不修改 view / storage / topology 的结构。
+当前任务的工作边界是：**只把算法迁移进 Entity Schema，并补充缺失算法**，不修改 view / storage / topology 的结构。
 
 ## 二、任务边界与协作分工提醒
 

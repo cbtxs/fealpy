@@ -11,6 +11,9 @@ class TetrahedronSchema(ShapedEntitySchema):
     local_faces = {
         'tri': [[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]]
     }
+    ccw = {
+        'tri': [[0, 1, 2], [0, 3, 1], [0, 2, 3], [1, 3, 2]]
+    }
 
     @classmethod
     def barycenter(cls, ctx: EntityContext, index: Index | None) -> Tensor:
@@ -31,12 +34,12 @@ class TetrahedronSchema(ShapedEntitySchema):
         volume = cls.measure(ctx, index)
 
         for i in range(4):
-            j, k, m = ctx.sector.schema.local_faces["tri"][i]
+            j, k, m = cls.ccw["tri"][i]
             vjk = node[tet[:, k], :] - node[tet[:, j], :]
             vjm = node[tet[:, m], :] - node[tet[:, j], :]
             Dlambda[:, i, :] = bm.linalg.cross(vjm, vjk) / (6*volume[:, None])
 
-        return Dlambda
+        return Dlambda[:, [3, 2, 1, 0], :]
 
     @classmethod
     def measure(cls, ctx: EntityContext, index: Index | None) -> Tensor:
