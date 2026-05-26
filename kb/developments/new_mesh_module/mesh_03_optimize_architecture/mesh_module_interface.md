@@ -21,16 +21,16 @@
 
 ### 几何计算方法
 
-| 方法名             | 参数名              | 返回类型               | 通途                                          |
-| --------------- | ---------------- | ------------------ | ------------------------------------------- |
-| `barycenter`    | ctx, index       | Tensor             | 计算该种形状实体的重心。                                |
-| `barycentric`   | ctx, index, func | (Tensor) -> Tensor | 把一个 Cartesian 函数转化为该种形状实体上的 Barycentric 函数。 |
-| `geo_dimension` | ctx              | int                | 获取几何维数。                                     |
-| `grad_lambda`   | ctx, index       | Tensor             | 重心坐标对笛卡尔坐标的梯度。                              |
-| `integral`      | ctx, index, func | Tensor             | 在该种形状实体上进行数值积分。                             |
-| `measure`       | ctx, index       | Tensor             | 计算该种形状实体的测度。                                |
-| `normal`        | ctx, index       | Tensor             | 计算该种形状实体的法向。                                |
-| `tangent`       | ctx, index       | Tensor             | 计算该种形状实体的切向。                                |
+| 方法名                  | 参数名              | 返回类型   | 通途             |
+| -------------------- | ---------------- | ------ | -------------- |
+| `barycenter`         | ctx, index       | Tensor | 计算该种形状实体的重心。   |
+| `bc_to_point`        | ctx, bcs,  index | Tensor | 把重心坐标转化为笛卡尔坐标。 |
+| `geo_dimension`      | ctx              | int    | 获取几何维数。        |
+| `grad_lambda`        | ctx, index       | Tensor | 重心坐标对笛卡尔坐标的梯度。 |
+| `quadrature_formula` | q, qtype         | 积分公式   | 在该种形状实体上的积分公式。 |
+| `measure`            | ctx, index       | Tensor | 计算该种形状实体的测度。   |
+| `normal`             | ctx, index       | Tensor | 计算该种形状实体的法向。   |
+| `tangent`            | ctx, index       | Tensor | 计算该种形状实体的切向。   |
 
 ## 二、实体视图的实例方法
 
