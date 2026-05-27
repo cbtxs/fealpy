@@ -4,9 +4,11 @@ from fealpy.fvm import NSFVMRCModel
 
 
 def main():
-    parser = argparse.ArgumentParser(description="FVM Stokes solver on staggered mesh")
+    parser = argparse.ArgumentParser(
+        description="Rhie-Chow FVM Navier-Stokes solver"
+    )
 
-    parser.add_argument('--pde', default=6, type=int,
+    parser.add_argument('--pde', default=1, type=int,
                         help='PDE example ID from Stokes PDE manager.')
     
     parser.add_argument('--nx', default=20, type=int,
@@ -14,6 +16,9 @@ def main():
     
     parser.add_argument('--ny', default=20, type=int,
                         help='Number of cells in y-direction.')
+
+    parser.add_argument('--mesh_type', default='uniform_qrad', type=str,
+                        help="Mesh variant exposed by the PDE example.")
     
     parser.add_argument('--backend', default='numpy', type=str,
                         help="Backend: numpy, torch, tensorflow, or jax.")
@@ -34,7 +39,6 @@ def main():
     print(f"L2 error (u) = {uerror}")
     print(f"L2 error (v) = {verror}")
     print(f"L2 error (p) = {perror}")
-    model.plot()
     if options["plot"]:
         model.plot()
 

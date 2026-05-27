@@ -1,3 +1,5 @@
+"""Finite-volume convection integrator for face-velocity fluxes."""
+
 from typing import Optional
 
 from fealpy.backend import backend_manager as bm
@@ -10,6 +12,14 @@ from fealpy.functionspace.space import FunctionSpace as _FS
 from fealpy.fem.integrator import LinearInt, OpInt, FaceInt, enable_cache
 
 class ConvectionIntegrator(LinearInt, OpInt, FaceInt):
+    """Assemble a central face interpolation convection operator.
+
+    ``coef`` is interpreted as the face velocity field.  The face mass flux is
+    ``coef_f · S_f`` and multiplies the owner-neighbour central interpolation
+    stencil.  Upwinding, limiters, and nonlinear iteration control are outside
+    this low-level integrator.
+    """
+
     def __init__(self, coef: Optional[CoefLike]=None, q: Optional[int]=None, *,
                  index: Index=_S,
                  batched: bool=False,
@@ -30,7 +40,7 @@ class ConvectionIntegrator(LinearInt, OpInt, FaceInt):
         index = self.index
         mesh = getattr(space, 'mesh', None)
         if not isinstance(mesh, HomogeneousMesh):
-            raise RuntimeError("The ScalarMassIntegrator only support spaces on"
+            raise RuntimeError("The ConvectionIntegrator only supports spaces on "
                                f"homogeneous meshes, but {type(mesh).__name__} is"
                                "not a subclass of HomoMesh.")
         n = mesh.face_unit_normal(index=index)
@@ -45,17 +55,16 @@ class ConvectionIntegrator(LinearInt, OpInt, FaceInt):
     @variantmethod
     def assembly(self, space: _FS) -> TensorLike:
         coef = self.coef
-        mesh = getattr(space, 'mesh', None)
-        Sf, index, bcs, phi = self.fetch(space)
+        Sf, _, _, phi = self.fetch(space)
         D = phi.shape[-1]
-        # val = process_coef_func(coef, bcs=bcs, mesh=mesh, etype='cell', index=index)
         eye_D = bm.eye(D, dtype=space.ftype, device=bm.get_device(space))
-        direction_matrix = bm.array([[0.5, 0.5], [-0.5, -0.5]])
+        direction_matrix = bm.array(
+            [[0.5, 0.5], [-0.5, -0.5]], dtype=space.ftype
+        )
         base_matrix = bm.einsum('ij,pq->ipjq', eye_D, direction_matrix).reshape(2*D, 2*D)
         if coef is None:
             coef = bm.stack([bm.ones_like(Sf[:,0]), bm.zeros_like(Sf[:,0])], axis=1)
         integrator  = bm.einsum('ij,ij->i', Sf, coef)
         result = bm.einsum("i,jk->ijk", integrator, base_matrix)  # (NE, 2, 2)
-        
+
         return result
-    

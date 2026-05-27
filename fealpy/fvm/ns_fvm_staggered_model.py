@@ -78,8 +78,9 @@ class NSFVMStaggeredModel(ComputationalModel):
         """Assemble the diffusion and convection matrix A on the u-mesh"""
         bform = BilinearForm(self.uspace).add_integrator(
             ScalarDiffusionIntegrator(q=2))
-        vedge2uedge = self.staggered_mesh.get_dof_mapping_vedge2uedge()
-        vf = vf[vedge2uedge.astype(int)]
+        vf = self.staggered_mesh.map_v_to_u_edges(
+            vf, self.pde.dirichlet_velocity
+        )
         Uf = bm.stack([uf, vf], axis=1)
         bform.add_integrator(ConvectionIntegrator(q=2,coef=Uf))
         Au = bform.assembly()
@@ -95,8 +96,9 @@ class NSFVMStaggeredModel(ComputationalModel):
         """Assemble the diffusion and convection matrix B on the v-mesh"""
         bform = BilinearForm(self.vspace).add_integrator(
             ScalarDiffusionIntegrator(q=2))
-        uedge2vedge = self.staggered_mesh.get_dof_mapping_uedge2vedge()
-        uf = uf[uedge2vedge.astype(int)]
+        uf = self.staggered_mesh.map_u_to_v_edges(
+            uf, self.pde.dirichlet_velocity
+        )
         Uf = bm.stack([uf, vf], axis=1)
         bform.add_integrator(ConvectionIntegrator(q=2,coef=Uf))
         Av = bform.assembly()
@@ -187,8 +189,9 @@ class NSFVMStaggeredModel(ComputationalModel):
 
     def solve(self, max_iter: int = 100, tol: float = 1e-6) -> Tuple:
         UNE = self.umesh.number_of_edges()
+        VNE = self.vmesh.number_of_edges()
         uf = bm.ones(UNE)
-        vf = bm.ones(UNE)
+        vf = bm.ones(VNE)
         ue2c = self.umesh.edge_to_cell()
         ve2c = self.vmesh.edge_to_cell()
         for i in range(max_iter):
@@ -213,16 +216,16 @@ class NSFVMStaggeredModel(ComputationalModel):
         self.vI = self.pde.velocity_v(self.vmesh.entity_barycenter("cell"))
         self.pI = self.pde.pressure(self.pmesh.entity_barycenter("cell"))
 
-        # uerror = bm.sqrt(bm.sum(self.umesh.entity_measure("cell") * (self.uh - self.uI)**2))
-        # verror = bm.sqrt(bm.sum(self.vmesh.entity_measure("cell") * (self.vh - self.vI)**2))
-        # perror = bm.sqrt(bm.sum(self.pmesh.entity_measure("cell") * (self.ph - self.pI)**2))
+        uerror = bm.sqrt(bm.sum(self.umesh.entity_measure("cell") * (self.uh - self.uI)**2))
+        verror = bm.sqrt(bm.sum(self.vmesh.entity_measure("cell") * (self.vh - self.vI)**2))
+        perror = bm.sqrt(bm.sum(self.pmesh.entity_measure("cell") * (self.ph - self.pI)**2))
         # err = self.ph - self.pI
         # print("err[210]:",err[210])
-        uerr = bm.max(bm.abs(self.uh - self.uI))
-        verr = bm.max(bm.abs(self.vh - self.vI))
-        perr = bm.max(bm.abs(self.ph - self.pI))
+        # uerr = bm.max(bm.abs(self.uh - self.uI))
+        # verr = bm.max(bm.abs(self.vh - self.vI))
+        # perr = bm.max(bm.abs(self.ph - self.pI))
         # return uerror, verror, perror
-        return uerr, verr, perr
+        return uerror, verror, perror
 
     def plot(self) -> None:
         import matplotlib.pyplot as plt

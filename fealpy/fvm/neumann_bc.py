@@ -1,22 +1,33 @@
+"""Finite-volume Neumann boundary-condition application helpers."""
+
 from fealpy.sparse import spdiags
 from fealpy.backend import backend_manager as bm
 
+from .backend_utils import as_backend_array, cast_like
+
 
 class NeumannBC:
-    
+    """Apply prescribed normal flux data to FVM algebraic systems.
+
+    The main reusable path is ``DiffusionApply(f)``, which adds the integrated
+    boundary flux contribution to owner cells.  The threshold matrix path is a
+    legacy value-pinning helper kept for compatibility with existing solver
+    experiments; it should not be interpreted as the mathematical Neumann flux
+    operator.
+    """
+
     def __init__(self, mesh, gd=None, threshold=None):
-        
+        """Store normal-flux data for later boundary-face integration."""
         self.mesh = mesh
         self.gd = gd
         self.threshold = threshold
 
     def ThresholdApply(self, A, f, uh=None):
-        """
-        Apply Dirichlet boundary conditions to selected boundary cells based on a threshold.
+        """Pin selected boundary-cell values by a threshold.
 
-        This method modifies the system matrix `A` and right-hand side vector `f` by applying 
-        Dirichlet boundary conditions to cells selected by the threshold function. It supports 
-        selective boundary condition application based on coordinate criteria.
+        This is a compatibility helper with the same algebraic structure as a
+        value Dirichlet application.  Use ``DiffusionApply`` for the finite-
+        volume Neumann flux contribution.
 
         Args:
             A (sparse matrix): System matrix to be modified.
@@ -40,20 +51,20 @@ class NeumannBC:
                 # Try applying condition to x-coordinate only
                 x = bd_node[:, 0]
                 bd_idx = self.threshold(x)
-                bd_idx = bm.array(bd_idx, dtype=bm.bool)
+                bd_idx = as_backend_array(bd_idx, dtype=bm.bool)
                 if not bm.any(bd_idx):  # Check if bd_idx is all False
                     y = bd_node[:, 1]
                     bd_idx = self.threshold(y)
-                    bd_idx = bm.array(bd_idx, dtype=bm.bool)
+                    bd_idx = as_backend_array(bd_idx, dtype=bm.bool)
             except Exception:
                 # Fall back to applying condition to full node coordinates
                 bd_idx = self.threshold(bd_node)
-                bd_idx = bm.array(bd_idx, dtype=bm.bool)
+                bd_idx = as_backend_array(bd_idx, dtype=bm.bool)
         else:
             raise ValueError("self.threshold must be a callable (e.g., lambda x: (x==0.5)|(x==2.5) or a function).")
         index = total_bd_idx[bd_idx]
-        bdFlag_u = bm.zeros(NC)
-        bdFlag_u[index] = 1
+        bdFlag_u = bm.zeros(NC, dtype=getattr(f, "dtype", None))
+        bdFlag_u = bm.set_at(bdFlag_u, index, 1)
         D0 = spdiags(1 - bdFlag_u, 0, A.shape[0], A.shape[0])  # Keeps interior equations
         D1 = spdiags(bdFlag_u, 0, A.shape[0], A.shape[0])      # Identity on boundary nodes
         # Apply boundary conditions to the matrix
@@ -69,55 +80,60 @@ class NeumannBC:
         A = D0.matmul(A.matmul(D0)) + D1
         return A, f
     
-    def DiffusionApply(self,f):
-        
+    def DiffusionApply(self, f):
+        """Add integrated Neumann fluxes to owner-cell RHS entries.
+
+        ``gd(points)`` is interpreted as the outward normal derivative or flux
+        density on boundary face centers.  The finite-volume contribution is
+        the face integral ``gd * |f|`` scattered to the boundary owner cells.
+        """
+        if self.gd is None:
+            raise ValueError("NeumannBC.DiffusionApply requires flux data gd.")
         bdedge = self.mesh.boundary_face_index()
         points = self.mesh.entity_barycenter('face')[bdedge, :]
         neumann = self.gd(points)
         e2c = self.mesh.edge_to_cell()
-        bm.add_at(f, e2c[bdedge,1], neumann*self.mesh.entity_measure('face')[bdedge])        
+        bd_integrator = neumann * self.mesh.entity_measure('face')[bdedge]
+        bd_integrator = cast_like(bd_integrator, f)
+        f = bm.index_add(f, e2c[bdedge, 0], bd_integrator, axis=0)
         return f
 
-    def ConvectionApplyX(self,A,b):
+    def ConvectionApplyX(self, A, b):
+        """Legacy x-component boundary matrix helper for RC experiments.
+
+        This is not a general Neumann flux operator.  It only adds the x-normal
+        boundary contribution to a pressure-velocity coupling matrix used by the
+        older coupled RC model path.
+        """
 
         NC = self.mesh.number_of_cells()
-        bdIdx = bm.zeros(NC)
         Sf = self.mesh.edge_normal()
+        bdIdx = bm.zeros(NC, dtype=Sf.dtype)
         bdedge = self.mesh.boundary_face_index()
         e2c = self.mesh.edge_to_cell()
         bde2c = e2c[bdedge, 0]
-        bm.add_at(bdIdx, bde2c, Sf[bdedge, 0])
+        bdIdx = bm.index_add(bdIdx, bde2c, Sf[bdedge, 0], axis=0)
         A_0 = spdiags(bdIdx, 0, A.shape[0], A.shape[1])
         A = A + A_0
 
-        # cell_measure = self.mesh.entity_measure('cell')
-        # face_measure = self.mesh.entity_measure('face')
-        # LNE = self.mesh.number_of_vertices_of_cells()
-        # d = 2*cell_measure[e2c[bdedge, 0]]/(LNE*face_measure[bdedge])
-        # gf = self.gd(self.mesh.entity_barycenter('face')[bdedge, :])
-        # bm.add_at(b, bde2c, -gf * d * Sf[bdedge, 0])
-        
         return A
 
-    def ConvectionApplyY(self,A,b):
+    def ConvectionApplyY(self, A, b):
+        """Legacy y-component boundary matrix helper for RC experiments.
+
+        This is not a general Neumann flux operator.  It only adds the y-normal
+        boundary contribution to a pressure-velocity coupling matrix used by the
+        older coupled RC model path.
+        """
 
         NC = self.mesh.number_of_cells()
-        bdIdx = bm.zeros(NC)
         Sf = self.mesh.edge_normal()
+        bdIdx = bm.zeros(NC, dtype=Sf.dtype)
         bdedge = self.mesh.boundary_face_index()
         e2c = self.mesh.edge_to_cell()
         bde2c = e2c[bdedge, 0]
-        bm.add_at(bdIdx, bde2c, Sf[bdedge, 1])
+        bdIdx = bm.index_add(bdIdx, bde2c, Sf[bdedge, 1], axis=0)
         A_0 = spdiags(bdIdx, 0, A.shape[0], A.shape[1])
         A = A + A_0
 
-        # cell_measure = self.mesh.entity_measure('cell')
-        # face_measure = self.mesh.entity_measure('face')
-        # LNE = self.mesh.number_of_vertices_of_cells()
-        # d = 2*cell_measure[e2c[bdedge, 0]]/(LNE*face_measure[bdedge])
-        # gf = self.gd(self.mesh.entity_barycenter('face')[bdedge, :])
-        # bm.add_at(b, bde2c, -gf * d * Sf[bdedge, 1])
-        
         return A
-
-    
