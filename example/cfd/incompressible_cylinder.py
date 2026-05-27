@@ -6,20 +6,20 @@ import argparse
 # 解析参数
 options ={
     'backend': 'numpy',
-    'pde': 4,
+    'pde': 2,
     'rho': 1.0,
     'mu': 0.001,
     'T0': 0.0,
-    'T1': 0.05,
-    'nt': 50,
+    'T1': 6,
+    'nt': 24000,
     'init_mesh': 'tri',
     'box': [0, 2.5, 0, 0.41],
-    'center': (0.5, 0.2),
+    'center': (0.2, 0.2),
     'cyl_axis': [0.0, 0.0, 1.0],
     'thickness': 10,
     'radius': 0.05,
-    'n_circle': 10,
-    'lc': 0.05,
+    'n_circle': 200,
+    'lc': 0.02,
     'Lz': 0.41,
     'n_layer': 10,
     'method': 'IPCS',
@@ -105,7 +105,10 @@ def benchmark(uh, ph, uh0):
     cd = -20 * cd
     cl = -20 * cl
     delta_p = ph(bcs = bcs0, index = index0) - ph(bcs = bcs1, index = index1)
-    return cd, cl, delta_p
+    print("cd", cd)
+    print("cl", cl)
+    print("delta_p", delta_p)
+    return cd, cl, delta_p.item()
 
 
 
@@ -136,12 +139,16 @@ for i in range(model.timeline.NL-1):
     
     u1,p1 = model.run['one_step'](u0, p0, maxstep, tol)
     
-    # cd[i], cl[i], delta_p[i] = benchmark(u1, p1, u0)
-    # print(f"Drag coefficient: {cd[i]}, \nLift coefficient: {cl[i]}, \nPressure difference: {delta_p[i]}")
+    cd[i], cl[i], delta_p[i] = benchmark(u1, p1, u0)
+    print(f"Drag coefficient: {cd[i]}, \nLift coefficient: {cl[i]}, \nPressure difference: {delta_p[i]}")
     u0[:] = u1
     p0[:] = p1
 
-    if i < 5000 :
+    # if i < 5000 :
+    #     mesh.nodedata['ph'] = p1
+    #     mesh.nodedata['uh'] = u1.reshape(model.mesh.GD,-1).T
+    #     mesh.to_vtk(f'cylinder{str(mesh.GD)}d_{str(i+1).zfill(10)}.vtu')
+    if i % 100 == 0:
         mesh.nodedata['ph'] = p1
         mesh.nodedata['uh'] = u1.reshape(model.mesh.GD,-1).T
         mesh.to_vtk(f'cylinder{str(mesh.GD)}d_{str(i+1).zfill(10)}.vtu')
@@ -153,32 +160,32 @@ for i in range(model.timeline.NL-1):
 # cd = model.cd
 # cl = model.cl
 # delta_p = model.delta_p
-# x = bm.linspace(0.0, 6.0, model.timeline.NL)
+x = bm.linspace(0.0, 6.0, model.timeline.NL)
 # model.__str__()
 
-# import matplotlib.pyplot as plt
+import matplotlib.pyplot as plt
 
-# plt.figure(figsize=(10, 6))
-# plt.plot(x[16000:], cd[15999:], marker=None, linestyle='-', color='black')
-# plt.xscale('linear')
-# plt.yscale('linear')
-# plt.xlabel('Time', fontsize=14)
-# plt.ylabel('Drag coefficient', fontsize=14)
-# plt.show()
+plt.figure(figsize=(10, 6))
+plt.plot(x[16000:], cd[15999:], marker=None, linestyle='-', color='black')
+plt.xscale('linear')
+plt.yscale('linear')
+plt.xlabel('Time', fontsize=14)
+plt.ylabel('Drag coefficient', fontsize=14)
+plt.show()
 
 
-# plt.figure(figsize=(10, 6))
-# plt.plot(x[16000:], cl[15999:], marker=None, linestyle='-', color='black')
-# plt.xscale('linear')
-# plt.yscale('linear')
-# plt.xlabel('Time', fontsize=14)
-# plt.ylabel('Lift coefficient', fontsize=14)
-# plt.show()
+plt.figure(figsize=(10, 6))
+plt.plot(x[16000:], cl[15999:], marker=None, linestyle='-', color='black')
+plt.xscale('linear')
+plt.yscale('linear')
+plt.xlabel('Time', fontsize=14)
+plt.ylabel('Lift coefficient', fontsize=14)
+plt.show()
 
-# plt.figure(figsize=(10, 6))
-# plt.plot(x[16000:], delta_p[15999:], marker=None, linestyle='-', color='black')
-# plt.xscale('linear')
-# plt.yscale('linear')
-# plt.xlabel('Time', fontsize=14)
-# plt.ylabel('Pressure difference', fontsize=14)
-# plt.show()
+plt.figure(figsize=(10, 6))
+plt.plot(x[16000:], delta_p[15999:], marker=None, linestyle='-', color='black')
+plt.xscale('linear')
+plt.yscale('linear')
+plt.xlabel('Time', fontsize=14)
+plt.ylabel('Pressure difference', fontsize=14)
+plt.show()
