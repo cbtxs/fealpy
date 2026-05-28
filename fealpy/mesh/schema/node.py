@@ -2,7 +2,29 @@ from ...backend import bm
 from ...backend import Index, Tensor
 from .entity_schema import EntityContext, ShapedEntitySchema
 
-__all__ = ["NodeSchema"]
+__all__ = ["NodeSchema", "PointQuadrature"]
+
+
+class PointQuadrature:
+    def __init__(self, *, dtype=None):
+        dtype = bm.float64 if dtype is None else dtype
+        self.quadpts = (bm.asarray([[1.0]], dtype=dtype),)
+        self.weights = bm.asarray([1.0], dtype=dtype)
+
+    def number_of_quadrature_points(self) -> int:
+        return int(self.weights.shape[0])
+
+    def get_quadrature_points_and_weights(self) -> tuple[tuple[Tensor, ...], Tensor]:
+        return self.quadpts, self.weights
+
+    def get_quadrature_point_and_weight(self, i: int) -> tuple[tuple[Tensor, ...], Tensor]:
+        return tuple(qp[i:i + 1] for qp in self.quadpts), self.weights[i]
+
+    def __len__(self) -> int:
+        return self.number_of_quadrature_points()
+
+    def __getitem__(self, i: int) -> tuple[tuple[Tensor, ...], Tensor]:
+        return self.get_quadrature_point_and_weight(i)
 
 
 class NodeSchema(ShapedEntitySchema):
@@ -29,6 +51,9 @@ class NodeSchema(ShapedEntitySchema):
             raise ValueError(f"node barycentric coordinates expect one tensor, got {len(bcs)}")
         if bcs[0].shape[-1] != 1:
             raise ValueError(f"node barycentric coordinates expect last dimension 1, got {bcs[0].shape[-1]}")
+        expected = bm.ones(bcs[0].shape, dtype=bcs[0].dtype)
+        if not bm.allclose(bcs[0], expected):
+            raise ValueError("node barycentric coordinates must be identically 1")
         return bm.einsum("...j,cjd->c...d", bcs[0], points[:, None, :])
 
     @classmethod
@@ -40,6 +65,12 @@ class NodeSchema(ShapedEntitySchema):
         node = cls._indices(ctx, index)
         gd = cls.geo_dimension(ctx)
         return bm.zeros((node.shape[0], 1, gd), dtype=ctx.block.positions.dtype)
+    
+    @classmethod
+    def quadrature_formula(cls, q: int, qtype=None) -> PointQuadrature:
+        if q < 1:
+            raise ValueError(f"node quadrature order must be positive, got {q}")
+        return PointQuadrature()
 
     @classmethod
     def measure(cls, ctx: EntityContext, index: Index | None) -> Tensor:

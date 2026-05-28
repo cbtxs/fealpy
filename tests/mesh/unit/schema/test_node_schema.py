@@ -121,6 +121,29 @@ class TestNodeSchema:
             "0D entity measure is 1 for each node under new schema semantics",
         )
 
+    def test_quadrature_formula_via_schema_behind_user_view(self):
+        """
+        [积分公式验证]：点实体的 0 维求积公式只有一个重心坐标点 [1]，权重为 1。
+        当前 EntityView 尚未包装 quadrature_formula，因此通过 node_view.schema 验证。
+        """
+        _, node_view = _build_node_view()
+
+        qf = node_view.schema.quadrature_formula(1, qtype=None)
+        bcs, weights = qf.get_quadrature_points_and_weights()
+
+        assert isinstance(bcs, tuple), "Handoff requires bcs to be a tuple of tensors"
+        assert len(qf) == 1, "Point quadrature has exactly one quadrature point"
+        _assert_equal(
+            bcs[0],
+            bm.asarray([[1.0]], dtype=bm.float64),
+            "Point quadrature barycentric coordinate must be [1]",
+        )
+        _assert_equal(
+            weights,
+            bm.asarray([1.0], dtype=bm.float64),
+            "Point quadrature weight must be 1",
+        )
+
     def test_grad_lambda_through_user_view(self):
         """
         [几何算法验证]：点上唯一重心坐标恒为 1，因此梯度为 0。
@@ -198,6 +221,18 @@ class TestNodeSchema:
             expected,
             "Node barycentric coordinate [1] must map back to the node coordinates",
         )
+
+    def test_bc_to_point_rejects_invalid_node_barycentric_value(self):
+        """
+        [接口合同验证]：点实体的重心坐标必须恒为 [1]，非法值不能被映射为物理点。
+        """
+        _, node_view = _build_node_view()
+        ctx = node_view.context()
+        invalid_bcs = (bm.asarray([[0.5]], dtype=bm.float64),)
+
+        with pytest.raises(ValueError):
+            node_view.schema.bc_to_point(ctx, invalid_bcs, None)
+
 
     def test_multi_index_via_schema_behind_user_view(self):
         """
