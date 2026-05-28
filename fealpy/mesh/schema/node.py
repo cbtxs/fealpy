@@ -67,7 +67,7 @@ class NodeSchema(ShapedEntitySchema):
         return bm.zeros((node.shape[0], 1, gd), dtype=ctx.block.positions.dtype)
     
     @classmethod
-    def quadrature_formula(cls, q: int, qtype=None) -> PointQuadrature:
+    def quadrature_formula(cls, q: int = None, qtype=None) -> PointQuadrature:
         if q < 1:
             raise ValueError(f"node quadrature order must be positive, got {q}")
         return PointQuadrature()
