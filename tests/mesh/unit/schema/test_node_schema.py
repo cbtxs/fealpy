@@ -1,5 +1,9 @@
+# 文件位置: tests/mesh/unit/schema/test_node_schema.py
+
 from pathlib import Path
 import sys
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[4]
 if str(ROOT) not in sys.path:
@@ -15,48 +19,33 @@ def _as_list(value):
     return bm.to_numpy(value).tolist()
 
 
-def _pass(name, basis, actual):
-    print(f"[PASS] {name}")
-    print(f"       basis: {basis}")
-    print(f"       actual: {actual}")
+def _assert_allclose(actual, expected, message):
+    assert bm.allclose(actual, expected), (
+        f"{message}\n"
+        f"actual: {_as_list(actual)}\n"
+        f"expected: {_as_list(expected)}"
+    )
 
 
-def _assert_allclose(name, actual, expected, basis):
-    if not bm.allclose(actual, expected):
-        raise AssertionError(
-            f"{name} failed\n"
-            f"basis: {basis}\n"
-            f"actual: {_as_list(actual)}\n"
-            f"expected: {_as_list(expected)}"
-        )
-    _pass(name, basis, _as_list(actual))
-
-
-def _assert_equal(name, actual, expected, basis):
+def _assert_equal(actual, expected, message):
     actual_list = _as_list(actual)
     expected_list = _as_list(expected)
-    if actual_list != expected_list:
-        raise AssertionError(
-            f"{name} failed\n"
-            f"basis: {basis}\n"
-            f"actual: {actual_list}\n"
-            f"expected: {expected_list}"
-        )
-    _pass(name, basis, actual_list)
+    assert actual_list == expected_list, (
+        f"{message}\n"
+        f"actual: {actual_list}\n"
+        f"expected: {expected_list}"
+    )
 
 
-def _assert_shape(name, actual, expected_shape, basis):
-    if actual.shape != expected_shape:
-        raise AssertionError(
-            f"{name} failed\n"
-            f"basis: {basis}\n"
-            f"actual shape: {actual.shape}\n"
-            f"expected shape: {expected_shape}"
-        )
-    _pass(name, basis, actual.shape)
+def _assert_shape(actual, expected_shape, message):
+    assert actual.shape == expected_shape, (
+        f"{message}\n"
+        f"actual shape: {actual.shape}\n"
+        f"expected shape: {expected_shape}"
+    )
 
 
-def _build_user_mesh():
+def _build_node_view():
     positions = bm.asarray(
         [
             [0.0, 0.0, 0.0],
@@ -71,151 +60,162 @@ def _build_user_mesh():
     )
     block = MeshBlock(positions=positions)
     block.add_sector(node_sector, root=True)
-    return Mesh(block)
+    mesh = Mesh(block)
+    return mesh, mesh.sector("node")
 
 
-def check_node_schema_with_user_view():
-    mesh = _build_user_mesh()
-    node_view = mesh.sector("node")
-    ctx = node_view.context()
-    nnode = node_view.size()
-    gd = mesh.geo_dimension()
-    top_dim = node_view.top_dimension()
+class TestNodeSchema:
+    """
+    NodeSchema 单元测试。
 
-    print("NodeSchema validation through Mesh.sector('node')")
-    print(f"positions = {_as_list(mesh.block.positions)}")
-    print(f"node_view.indices = {_as_list(node_view.indices)}")
-    print(f"N = {nnode}, GD = {gd}, T = {top_dim}")
-    print()
+    测试通过用户入口 Mesh.sector("node") 获得 EntityView，再验证
+    NodeSchema 的核心算法是否符合 mesh_05_algorithm_migration 的接口合同。
+    """
 
-    if node_view.schema is not NodeSchema:
-        raise AssertionError("mesh.sector('node') did not resolve to NodeSchema")
-    _pass(
-        "schema dispatch",
-        "user obtains node algorithms through Mesh.sector('node'), whose schema must be NodeSchema",
-        node_view.schema.__name__,
-    )
+    def test_schema_dispatch_and_metadata(self):
+        """
+        [结构验证]：用户从 Mesh.sector("node") 获取的实体视图必须分派到 NodeSchema。
+        同时验证 node 的拓扑维数、几何维数和 ccw 元数据。
+        """
+        mesh, node_view = _build_node_view()
 
-    if NodeSchema.ccw != {}:
-        raise AssertionError(f"ccw failed: actual={NodeSchema.ccw}, expected={{}}")
-    _pass(
-        "ccw metadata",
-        "handoff requires every schema to expose ccw; node has no sub-entities, so it is empty",
-        NodeSchema.ccw,
-    )
-
-    if node_view.geo_dimension() != gd:
-        raise AssertionError(f"geo_dimension failed: actual={node_view.geo_dimension()}, expected={gd}")
-    _pass(
-        "geo_dimension",
-        "EntityView.geo_dimension() delegates to schema; expected positions.shape[1]",
-        node_view.geo_dimension(),
-    )
-
-    expected_barycenter = bm.asarray(
-        [
-            [0.0, 0.0, 0.0],
-            [4.0, 5.0, 6.0],
-        ],
-        dtype=bm.float64,
-    )
-    _assert_allclose(
-        "barycenter",
-        node_view.barycenter(),
-        expected_barycenter,
-        "a 0D node entity is its own barycenter; user view should return positions[node_view.indices]",
-    )
-
-    _assert_allclose(
-        "measure",
-        node_view.measure(),
-        bm.ones((nnode,), dtype=bm.float64),
-        "0D entity measure is 1 for each node under new schema semantics",
-    )
-
-    grad = node_view.grad_lambda()
-    _assert_shape(
-        "grad_lambda shape",
-        grad,
-        (nnode, 1, gd),
-        "node has one barycentric coordinate and GD cartesian directions",
-    )
-    _assert_allclose(
-        "grad_lambda value",
-        grad,
-        bm.zeros((nnode, 1, gd), dtype=bm.float64),
-        "the only node barycentric coordinate is constant 1, so its gradient is 0",
-    )
-
-    normal = node_view.normal()
-    _assert_shape(
-        "normal shape",
-        normal,
-        (nnode, gd - top_dim, gd),
-        "handoff rule: normal return shape is [entity_count, G - T, G]",
-    )
-    _assert_allclose(
-        "normal value",
-        normal,
-        bm.broadcast_to(bm.eye(gd, dtype=bm.float64), (nnode, gd, gd)),
-        "for a node T=0, the normal space is the full ambient space represented by standard basis vectors",
-    )
-
-    tangent = node_view.tangent()
-    _assert_shape(
-        "tangent shape",
-        tangent,
-        (nnode, top_dim, gd),
-        "handoff rule: tangent return shape is [entity_count, T, G]; node has T=0",
-    )
-
-    bcs = (bm.asarray([[1.0], [1.0]], dtype=bm.float64),)
-    point = node_view.schema.bc_to_point(ctx, bcs, None)
-    _assert_shape(
-        "bc_to_point shape",
-        point,
-        (nnode, 2, gd),
-        "bc_to_point is not currently wrapped by EntityView, so this verifies the schema method behind node_view",
-    )
-    expected_point = bm.asarray(
-        [
-            [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
-            [[4.0, 5.0, 6.0], [4.0, 5.0, 6.0]],
-        ],
-        dtype=bm.float64,
-    )
-    _assert_allclose(
-        "bc_to_point value",
-        point,
-        expected_point,
-        "node barycentric coordinate is [1], so physical points equal the node coordinates",
-    )
-
-    _assert_equal(
-        "multi_index",
-        node_view.schema.multi_index((3,)),
-        bm.asarray([[3]], dtype=bm.int32),
-        "handoff requires p to be a tuple; node is the one-vertex simplex degeneration, so degree p has one index [p]",
-    )
-
-    try:
-        node_view.schema.multi_index(3)
-    except TypeError:
-        _pass(
-            "multi_index rejects scalar p",
-            "handoff says p must be a tuple of one or more integers",
-            "TypeError",
+        assert node_view.schema is NodeSchema, (
+            "User entry Mesh.sector('node') should dispatch node algorithms to NodeSchema"
         )
-    else:
-        raise AssertionError("multi_index should reject scalar p; handoff requires tuple input")
+        assert node_view.size() == 2, "Node sector contains exactly the two selected node entities"
+        assert node_view.top_dimension() == 0, "NodeSchema is a 0D entity schema"
+        assert NodeSchema.ccw == {}, "Node has no sub-entities, so ccw must be an empty dict"
+        assert node_view.geo_dimension() == mesh.geo_dimension() == 3, (
+            "Node geometric dimension must equal positions.shape[1]"
+        )
 
-    print()
-    print("All NodeSchema user-view checks passed.")
+    def test_barycenter_through_user_view(self):
+        """
+        [几何算法验证]：点实体的重心就是点坐标本身。
+        用户入口 node_view.barycenter() 应返回 positions[node_view.indices]。
+        """
+        _, node_view = _build_node_view()
 
+        expected = bm.asarray(
+            [
+                [0.0, 0.0, 0.0],
+                [4.0, 5.0, 6.0],
+            ],
+            dtype=bm.float64,
+        )
+        _assert_allclose(
+            node_view.barycenter(),
+            expected,
+            "A 0D node entity is its own barycenter; expected positions[node_view.indices]",
+        )
 
-def main():
-    check_node_schema_with_user_view()
+    def test_measure_through_user_view(self):
+        """
+        [几何算法验证]：新 schema 语义下，0 维实体测度为 1。
+        """
+        _, node_view = _build_node_view()
 
+        _assert_allclose(
+            node_view.measure(),
+            bm.ones((node_view.size(),), dtype=bm.float64),
+            "0D entity measure is 1 for each node under new schema semantics",
+        )
 
-if __name__ == "__main__":
-    main()
+    def test_grad_lambda_through_user_view(self):
+        """
+        [几何算法验证]：点上唯一重心坐标恒为 1，因此梯度为 0。
+        返回形状应为 (N, 1, GD)。
+        """
+        _, node_view = _build_node_view()
+        gd = node_view.geo_dimension()
+
+        grad = node_view.grad_lambda()
+        _assert_shape(
+            grad,
+            (node_view.size(), 1, gd),
+            "Node has one barycentric coordinate and GD cartesian directions",
+        )
+        _assert_allclose(
+            grad,
+            bm.zeros((node_view.size(), 1, gd), dtype=bm.float64),
+            "The only node barycentric coordinate is constant 1, so its gradient is 0",
+        )
+
+    def test_normal_and_tangent_through_user_view(self):
+        """
+        [维度语义验证]：按照 handoff 约定，法向数量为 G - T，切向数量为 T。
+        对 node 而言 T=0，因此 normal 形状为 (N, GD, GD)，tangent 形状为 (N, 0, GD)。
+        """
+        _, node_view = _build_node_view()
+        nnode = node_view.size()
+        gd = node_view.geo_dimension()
+        top_dim = node_view.top_dimension()
+
+        normal = node_view.normal()
+        _assert_shape(
+            normal,
+            (nnode, gd - top_dim, gd),
+            "Handoff rule: normal return shape is [entity_count, G - T, G]",
+        )
+        _assert_allclose(
+            normal,
+            bm.broadcast_to(bm.eye(gd, dtype=bm.float64), (nnode, gd, gd)),
+            "For a node T=0, the normal space is the full ambient space standard basis",
+        )
+
+        tangent = node_view.tangent()
+        _assert_shape(
+            tangent,
+            (nnode, top_dim, gd),
+            "Handoff rule: tangent return shape is [entity_count, T, G]; node has T=0",
+        )
+
+    def test_bc_to_point_via_schema_behind_user_view(self):
+        """
+        [几何算法验证]：点的合法重心坐标只能是 [1]。
+        当前 EntityView 尚未包装 bc_to_point，因此通过 node_view.schema 验证背后的 schema 方法。
+        """
+        _, node_view = _build_node_view()
+        ctx = node_view.context()
+
+        bcs = (bm.asarray([[1.0], [1.0]], dtype=bm.float64),)
+        points = node_view.schema.bc_to_point(ctx, bcs, None)
+        expected = bm.asarray(
+            [
+                [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+                [[4.0, 5.0, 6.0], [4.0, 5.0, 6.0]],
+            ],
+            dtype=bm.float64,
+        )
+
+        _assert_shape(
+            points,
+            (node_view.size(), 2, node_view.geo_dimension()),
+            "bc_to_point maps two barycentric samples for each node entity",
+        )
+        _assert_allclose(
+            points,
+            expected,
+            "Node barycentric coordinate [1] must map back to the node coordinates",
+        )
+
+    def test_multi_index_via_schema_behind_user_view(self):
+        """
+        [多重指标验证]：node 是一个顶点的退化单纯形，次数 p 只有一个指标 [p]。
+        """
+        _, node_view = _build_node_view()
+
+        _assert_equal(
+            node_view.schema.multi_index((3,)),
+            bm.asarray([[3]], dtype=bm.int32),
+            "Node is the one-vertex simplex degeneration; degree p has exactly one index [p]",
+        )
+
+    def test_multi_index_rejects_scalar_p(self):
+        """
+        [接口合同验证]：handoff 要求 multi_index 的 p 参数必须是整数元组。
+        """
+        _, node_view = _build_node_view()
+
+        with pytest.raises(TypeError):
+            node_view.schema.multi_index(3)
