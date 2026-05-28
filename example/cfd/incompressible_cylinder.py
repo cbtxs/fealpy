@@ -13,7 +13,7 @@ options ={
     'T1': 6,
     'nt': 24000,
     'init_mesh': 'tri',
-    'box': [0, 2.5, 0, 0.41],
+    'box': [0, 2.2, 0, 0.41],
     'center': (0.2, 0.2),
     'cyl_axis': [0.0, 0.0, 1.0],
     'thickness': 10,
