@@ -8,8 +8,8 @@ __all__ = ["QuadrilateralSchema"]
 class QuadrilateralSchema(ShapedEntitySchema):
     name = "quad"
     top_dim = 2
-    local_faces = {'edge': [[0, 1], [1, 2], [2, 3], [3, 0]]}
-    ccw = {'edge': [[0, 1], [1, 2], [2, 3], [3, 0]]}
+    local_faces = {'edge':[[0, 1], [2, 3], [0, 2], [1, 3]]}
+    ccw = {'edge': [[0, 1], [1, 3], [3, 2], [2, 0]]}
 
     @classmethod
     def multi_index(cls, p: tuple[int, ...]) -> Tensor:
@@ -53,7 +53,7 @@ class QuadrilateralSchema(ShapedEntitySchema):
         if not isinstance(bcs, tuple) or len(bcs) != 2:
             raise TypeError("quadrilateral bc_to_point expects a tuple of two tensors")
         quad = ctx.sector.indices if index is None else ctx.sector.indices[index]
-        points = ctx.block.positions[quad[:, [0, 3, 1, 2]]]
+        points = ctx.block.positions[quad[:, [0, 2, 1, 3]]]
         bc0 = bcs[0].reshape(-1, 2)
         bc1 = bcs[1].reshape(-1, 2)
         bc = bm.einsum("im,jn->ijmn", bc0, bc1).reshape(-1, 4)
@@ -71,7 +71,7 @@ class QuadrilateralSchema(ShapedEntitySchema):
     @classmethod
     def grad_lambda(cls, ctx: EntityContext, index: Index | None) -> Tensor:
         quad = ctx.sector.indices if index is None else ctx.sector.indices[index]
-        points = ctx.block.positions[quad]
+        points = ctx.block.positions[quad[:, [0, 1, 3, 2]]]
         vr = 0.5 * ((points[:, 1, :] - points[:, 0, :]) + (points[:, 2, :] - points[:, 3, :]))
         vs = 0.5 * ((points[:, 3, :] - points[:, 0, :]) + (points[:, 2, :] - points[:, 1, :]))
         jac = bm.stack([vr, vs], axis=-1)
@@ -85,7 +85,7 @@ class QuadrilateralSchema(ShapedEntitySchema):
     @classmethod
     def measure(cls, ctx: EntityContext, index: Index | None) -> Tensor:
         quad = ctx.sector.indices if index is None else ctx.sector.indices[index]
-        points = ctx.block.positions[quad]
+        points = ctx.block.positions[quad[:, [0, 1, 3, 2]]]
         v0 = points[:, 1, :] - points[:, 0, :]
         v1 = points[:, 2, :] - points[:, 0, :]
         v2 = points[:, 3, :] - points[:, 0, :]
@@ -102,17 +102,20 @@ class QuadrilateralSchema(ShapedEntitySchema):
     @classmethod
     def normal(cls, ctx: EntityContext, index: Index | None) -> Tensor:
         quad = ctx.sector.indices if index is None else ctx.sector.indices[index]
-        points = ctx.block.positions[quad]
+        points = ctx.block.positions[quad[:, [0, 1, 3, 2]]]
         v0 = points[:, 1, :] - points[:, 0, :]
         v1 = points[:, 2, :] - points[:, 0, :]
         v2 = points[:, 3, :] - points[:, 0, :]
+        if points.shape[-1] == 2:
+            cross01 = v0[:, 0] * v1[:, 1] - v0[:, 1] * v1[:, 0]
+            cross12 = v1[:, 0] * v2[:, 1] - v1[:, 1] * v2[:, 0]
+            return cross01 + cross12
         return bm.cross(v0, v1) + bm.cross(v1, v2)
 
     @classmethod
     def tangent(cls, ctx: EntityContext, index: Index | None) -> Tensor:
         quad = ctx.sector.indices if index is None else ctx.sector.indices[index]
-        points = ctx.block.positions[quad]
+        points = ctx.block.positions[quad[:, [0, 1, 3, 2]]]
         vr = 0.5 * ((points[:, 1, :] - points[:, 0, :]) + (points[:, 2, :] - points[:, 3, :]))
         vs = 0.5 * ((points[:, 3, :] - points[:, 0, :]) + (points[:, 2, :] - points[:, 1, :]))
         return bm.stack([vr, vs], axis=1)
-

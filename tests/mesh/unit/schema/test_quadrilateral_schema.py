@@ -17,9 +17,8 @@ def test_quadrilateral_schema_ccw():
     # Test class attributes: name/top_dim/local_faces/ccw.
     assert QuadrilateralSchema.name == "quad"
     assert QuadrilateralSchema.top_dim == 2
-    assert QuadrilateralSchema.local_faces == {"edge": [[0, 1], [1, 2], [2, 3], [3, 0]]}
-    assert QuadrilateralSchema.ccw == {"edge": [[0, 1], [1, 2], [2, 3], [3, 0]]}
-
+    assert QuadrilateralSchema.local_faces == {'edge':[[0, 1], [2, 3], [0, 2], [1, 3]]}
+    assert QuadrilateralSchema.ccw == {'edge': [[0, 1], [1, 3], [3, 2], [2, 0]]}
 
 def test_quadrilateral_schema_barycenter_and_measure_2d():
     # Test 2D methods: barycenter/measure/normal/grad_lambda/tangent/bc_to_point.
@@ -27,12 +26,12 @@ def test_quadrilateral_schema_barycenter_and_measure_2d():
         positions=[
             [0.0, 0.0],
             [2.0, 0.0],
-            [2.0, 1.0],
             [0.0, 1.0],
+            [2.0, 1.0],
             [0.0, 0.0],
             [1.0, 0.0],
-            [1.5, 1.0],
-            [0.0, 1.0]],
+            [0.0, 1.0],
+            [1.5, 1.0]],
         quads=[
             [0, 1, 2, 3],
             [4, 5, 6, 7]])
@@ -57,12 +56,12 @@ def test_quadrilateral_schema_measure_3d_and_index():
         positions=[
             [0.0, 0.0, 0.0],
             [1.0, 0.0, 0.0],
-            [1.0, 1.0, 1.0],
             [0.0, 1.0, 1.0],
+            [1.0, 1.0, 1.0],
             [0.0, 0.0, 0.0],
             [2.0, 0.0, 0.0],
-            [2.0, 1.0, 0.0],
-            [0.0, 1.0, 0.0]],
+            [0.0, 1.0, 0.0],
+            [2.0, 1.0, 0.0]],
         quads=[
             [0, 1, 2, 3],
             [4, 5, 6, 7]])
