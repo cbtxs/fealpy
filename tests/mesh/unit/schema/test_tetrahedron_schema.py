@@ -106,6 +106,26 @@ class TestTetrahedronSchema:
         assert len(edge_faces) == 6
         assert len(TetrahedronSchema.ccw["tri"]) == 4
 
+    def test_schema_only_defines_handoff_methods(self):
+        allowed_methods = {
+            "barycenter",
+            "bc_to_point",
+            "geo_dimension",
+            "grad_lambda",
+            "multi_index",
+            "measure",
+            "normal",
+            "quadrature_formula",
+            "tangent",
+        }
+        defined_methods = {
+            name
+            for name, value in TetrahedronSchema.__dict__.items()
+            if isinstance(value, classmethod)
+        }
+
+        assert defined_methods == allowed_methods
+
     def test_multi_index_via_schema_behind_user_view(self):
         _, tet_view = _build_single_tet_view()
 
@@ -130,7 +150,6 @@ class TestTetrahedronSchema:
             bm.full((10,), 2, dtype=mi2.dtype),
             "Every degree 2 tetrahedron multi-index row must sum to 2",
         )
-        assert tet_view.schema.num_multi_index((2,)) == 10
 
     def test_multi_index_rejects_invalid_order_argument(self):
         _, tet_view = _build_single_tet_view()
@@ -140,25 +159,6 @@ class TestTetrahedronSchema:
 
         with pytest.raises(ValueError):
             tet_view.schema.multi_index((-1,))
-
-    def test_multi_index_sort_returns_lexicographic_order(self):
-        _, tet_view = _build_single_tet_view()
-
-        multi_index = bm.asarray(
-            [
-                [0, 2, 0, 0],
-                [0, 1, 1, 0],
-                [1, 0, 0, 1],
-                [0, 1, 0, 1],
-            ],
-            dtype=bm.int32,
-        )
-
-        _assert_equal(
-            tet_view.schema.multi_index_sort(multi_index),
-            bm.asarray([3, 1, 0, 2], dtype=bm.int64),
-            "Tetrahedron multi-index rows should be sorted lexicographically",
-        )
 
     def test_barycenter_and_measure_through_user_view(self):
         _, tet_view = _build_single_tet_view()
@@ -220,19 +220,6 @@ class TestTetrahedronSchema:
             bm.sum(grad, axis=1),
             bm.zeros((1, 3), dtype=bm.float64),
             "Barycentric gradient sum must vanish",
-        )
-
-    def test_jacobi_matrix_via_schema_behind_user_view(self):
-        _, tet_view = _build_single_tet_view()
-        jac = tet_view.schema.jacobi_matrix(tet_view.context(), None)
-
-        _assert_shape(jac, (1, 3, 3), "Tetrahedron Jacobian shape should be (N, G, T)")
-        _assert_allclose(
-            jac,
-            bm.asarray([[[1.0, 0.0, 0.0],
-                         [0.0, 1.0, 0.0],
-                         [0.0, 0.0, 1.0]]], dtype=bm.float64),
-            "Right tetrahedron Jacobian should be identity",
         )
 
     def test_normal_and_tangent_through_user_view(self):
