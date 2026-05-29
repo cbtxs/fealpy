@@ -99,6 +99,16 @@ class PyramidSchema(ShapedEntitySchema):
         return bm.einsum("cqdk,cqkl,qil->cqid", J, metric_inv, ref_grad)
 
     @classmethod
+    def quadrature_formula(cls, q: int, qtype: str | None = "legendre"):
+        if qtype not in (None, "legendre"):
+            raise ValueError(f"unsupported pyramid quadrature type: {qtype!r}")
+        from fealpy.quadrature import GaussLegendreQuadrature, TensorProductQuadrature
+
+        qf_uv = GaussLegendreQuadrature(q)
+        qf_w = GaussLegendreQuadrature(max(q, 2))
+        return TensorProductQuadrature((qf_uv, qf_uv, qf_w))
+
+    @classmethod
     def barycenter(cls, ctx: EntityContext, index: Index | None) -> Tensor:
         pyramid = ctx.sector.indices if index is None else ctx.sector.indices[index]
         points = ctx.block.positions[pyramid]
