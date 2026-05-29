@@ -11,14 +11,23 @@ def main():
     parser.add_argument("--pde", default=3, type=int,
                         help="Navier-Stokes PDE example ID")
 
-    parser.add_argument("--nx", default=20, type=int,
+    parser.add_argument("--nx", default=40, type=int,
                         help="Grid divisions in x")
 
-    parser.add_argument("--ny", default=20, type=int,
+    parser.add_argument("--ny", default=40, type=int,
                         help="Grid divisions in y")
 
-    parser.add_argument("--nt", default=20, type=int,
+    parser.add_argument("--mesh_type", default="uniform_quad", type=str,
+                        help="Mesh type, e.g. uniform_quad or uniform_tri")
+
+    parser.add_argument("--nt", default=160, type=int,
                         help="Number of time steps")
+
+    parser.add_argument("--momentum_nonorthogonal_max_iter", default=None, type=int,
+                        help="Max explicit non-orthogonal corrections for momentum diffusion")
+
+    parser.add_argument("--pressure_nonorthogonal_max_iter", default=None, type=int,
+                        help="Max explicit non-orthogonal corrections for pressure correction")
 
     parser.add_argument("--duration", nargs=2, default=(0.0, 1.0), type=float,
                         help="Start and end time")

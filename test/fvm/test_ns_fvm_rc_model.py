@@ -32,7 +32,7 @@ def test_pressure_delta_without_mean_removes_constant_shift():
 def test_rc_rhs_is_repeatable_for_same_pressure(monkeypatch):
     bm.set_backend("numpy")
     import fealpy.fvm.ns_fvm_rc_model as rc_model
-    from fealpy.fvm import RhieChowCoupledOperator
+    from fealpy.fvm.rhie_chow import RhieChowCoupledOperator
 
     monkeypatch.setattr(
         rc_model,

@@ -7,7 +7,6 @@ from fealpy.fvm import (
     NSFVMSimpleModel,
     RhieChowInterpolation,
     ScalarCrossDiffusionIntegrator,
-    StokesFVMSimpleModel,
 )
 
 
@@ -27,7 +26,6 @@ def linear_velocity(points):
 def test_simple_solver_pressure_gradient_integrator_is_exact_for_linear_pressure():
     cases = [
         (NSFVMSimpleModel, {"pde": 6, "nx": 4, "ny": 4, "space_degree": 0}),
-        (StokesFVMSimpleModel, {"pde": 1, "nx": 4, "ny": 4, "space_degree": 0}),
     ]
 
     for model_cls, options in cases:
@@ -137,16 +135,32 @@ def _boundary_all_cross_diffusion(model, uh):
     return np.asarray(lform.assembly())
 
 
-def test_simple_cross_diffusion_keeps_boundary_correction_for_current_bc_layer():
+def _cell_velocity_for_model(model, points):
+    if hasattr(model.pde, "velocity_0"):
+        return model.pde.velocity_0(points, getattr(model, "duration", (0.0,))[0])
+    return model.pde.velocity(points)
+
+
+def test_collocated_cross_diffusion_keeps_boundary_correction_for_current_bc_layer():
     cases = [
         (NSFVMSimpleModel, {"pde": 6, "nx": 4, "ny": 4, "space_degree": 0}),
-        (StokesFVMSimpleModel, {"pde": 1, "nx": 4, "ny": 4, "space_degree": 0}),
+        (
+            NSFVMPISOModel,
+            {
+                "pde": 3,
+                "nx": 4,
+                "ny": 4,
+                "nt": 1,
+                "duration": (0.0, 1.0),
+                "space_degree": 0,
+            },
+        ),
     ]
 
     for model_cls, options in cases:
         model = model_cls({**options, "pbar_log": False})
         points = model.mesh.entity_barycenter("cell")
-        velocity = model.pde.velocity(points)
+        velocity = _cell_velocity_for_model(model, points)
         uh = np.asarray(velocity).flatten(order="F")
 
         actual = np.asarray(model.compute_cross_diffusion(uh))
@@ -158,7 +172,6 @@ def test_simple_cross_diffusion_keeps_boundary_correction_for_current_bc_layer()
 def test_exact_pressure_lsq_gradient_decreases_on_solver_pde_meshes():
     cases = [
         (NSFVMSimpleModel, {"pde": 6, "space_degree": 0}),
-        (StokesFVMSimpleModel, {"pde": 1, "space_degree": 0}),
     ]
 
     for model_cls, base_options in cases:

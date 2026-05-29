@@ -6,6 +6,7 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "fealpy" / "fvm" / "ns_fvm_piso_model.py"
+SIMPLE_SOURCE = ROOT / "fealpy" / "fvm" / "ns_fvm_simple_model.py"
 EXAMPLE = ROOT / "example" / "fvm" / "ns_fvm_piso_example.py"
 
 
@@ -66,7 +67,7 @@ def test_piso_solver_is_computational_model_not_script():
     assert "def main" not in source
 
 
-def test_only_standard_incremental_piso_route_remains():
+def test_only_standard_pressure_state_piso_route_remains():
     source = SOURCE.read_text()
 
     assert "PRESSURE_ROUTES" not in source
@@ -76,10 +77,25 @@ def test_only_standard_incremental_piso_route_remains():
     assert '"face-flux"' not in source
     assert '"physical-pressure"' not in source
     assert '"consistent"' not in source
+    assert "adaptive_pressure_control" not in source
+    assert "pressure_relax" not in source
+
+
+def test_collocated_solvers_use_shared_internal_operators():
+    from fealpy.fvm import NSFVMPISOModel, NSFVMSimpleModel
+    from fealpy.fvm.collocated_ns_fvm_utils import CollocatedNSFVMOperators
+
+    assert issubclass(NSFVMPISOModel, CollocatedNSFVMOperators)
+    assert issubclass(NSFVMSimpleModel, CollocatedNSFVMOperators)
+
+    piso_source = SOURCE.read_text()
+    simple_source = SIMPLE_SOURCE.read_text()
+    assert "from .collocated_ns_fvm_utils import CollocatedNSFVMOperators" in piso_source
+    assert "from .collocated_ns_fvm_utils import CollocatedNSFVMOperators" in simple_source
 
 
 def test_model_exposes_piso_components_and_no_route_dispatch():
-    model = _class("NSFVMPISOModel")
+    from fealpy.fvm import NSFVMPISOModel
 
     for name in [
         "set_pde",
@@ -92,18 +108,21 @@ def test_model_exposes_piso_components_and_no_route_dispatch():
         "pressure_correction_flux",
         "rhie_chow_face_velocity",
         "velocity_pressure_correction",
-        "apply_pressure_rate_correction",
+        "pressure_correction_step",
+        "pressure_free_velocity",
         "solve",
         "compute_error",
         "plot",
     ]:
-        _method(model, name)
+        assert hasattr(NSFVMPISOModel, name)
 
+    model = _class("NSFVMPISOModel")
     solve = _method(model, "solve")
     calls = _calls_in_node(solve)
-    assert "solve_pressure_correction" in calls
-    assert "pressure_correction_flux" in calls
-    assert "apply_pressure_rate_correction" in calls
+    assert "pressure_correction_step" in calls
+    assert "operator_splitting_velocity_correction" in calls
+    assert "rhie_chow_face_velocity" in calls
+    assert "apply_pressure_rate_correction" not in calls
     assert "apply_pressure_correction" not in calls
     assert "solve_physical_pressure" not in calls
     assert "build_hbya" not in calls

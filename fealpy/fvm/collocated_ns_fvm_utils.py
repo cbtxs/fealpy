@@ -1,0 +1,367 @@
+"""Shared internal helpers for collocated Navier-Stokes FVM solvers."""
+
+from typing import Optional, Union
+
+from fealpy.typing import TensorLike
+from fealpy.backend import backend_manager as bm
+from fealpy.model import PDEModelManager
+from fealpy.functionspace import ScaledMonomialSpace2d, TensorFunctionSpace
+from fealpy.fem import BilinearForm, LinearForm, BlockForm
+from fealpy.sparse import COOTensor
+
+from .scalar_diffusion_integrator import ScalarDiffusionIntegrator
+from .scalar_cross_diffusion_integrator import ScalarCrossDiffusionIntegrator
+from .gradient_reconstruct import GradientReconstruct
+from .div_reconstruct import DivergenceReconstruct
+from .dirichlet_bc import DirichletBC
+from .nonorthogonal_geometry import NonOrthogonalGeometry
+from .fvm_linear_solver import FVMLinearSolver, FVMLinearSolverConfig
+
+
+class CollocatedNSFVMOperators:
+    """Internal mixin for common collocated Navier-Stokes FVM algebra."""
+
+    @staticmethod
+    def _resolve_navier_stokes_pde(pde: Union[int, object]):
+        return (
+            PDEModelManager("navier_stokes").get_example(pde)
+            if isinstance(pde, int)
+            else pde
+        )
+
+    @staticmethod
+    def _normalized_mesh_type(mesh_type: str) -> str:
+        if mesh_type == "uniform_qrad":
+            return "uniform_quad"
+        return mesh_type
+
+    @staticmethod
+    def _option_int(options, name: str, default: int) -> int:
+        value = options.get(name, default)
+        return default if value is None else int(value)
+
+    def _init_navier_stokes_mesh(
+        self,
+        options,
+        *,
+        default_mesh_type: str,
+        normalize_mesh_type: bool = False,
+    ):
+        mesh_type = options.get("mesh_type") or getattr(
+            self.pde, "default_mesh_type", default_mesh_type
+        )
+        if normalize_mesh_type:
+            mesh_type = self._normalized_mesh_type(mesh_type)
+
+        mesh_refine = int(options.get("mesh_refine", 0))
+        if mesh_refine < 0:
+            raise ValueError("mesh_refine must be non-negative.")
+
+        if getattr(self.pde, "supports_geometric_refine", False):
+            return self.pde.init_mesh[mesh_type](mesh_refine=mesh_refine)
+
+        mesh_options = {}
+        if "nx" in options:
+            mesh_options["nx"] = int(options["nx"])
+        if "ny" in options:
+            mesh_options["ny"] = int(options["ny"])
+        mesh = self.pde.init_mesh[mesh_type](**mesh_options)
+        if mesh_refine == 0:
+            return mesh
+
+        if hasattr(mesh, "uniform_refine"):
+            mesh.uniform_refine(mesh_refine)
+            return mesh
+
+        raise ValueError("mesh does not provide uniform_refine().")
+
+    def _init_collocated_discretization(
+        self,
+        degree: int,
+        velocity_dirichlet,
+        *,
+        with_divergence: bool = False,
+        with_velocity_dirichlet_bc: bool = False,
+    ) -> None:
+        self.p = degree
+        self.space = ScaledMonomialSpace2d(self.mesh, degree)
+        self.velocity_space = TensorFunctionSpace(self.space, shape=(2, -1))
+        self.points = self.mesh.entity_barycenter("cell")
+        self.epoints = self.mesh.entity_barycenter("edge")
+
+        self.pressure_gradient = GradientReconstruct(self.mesh)
+        self.velocity_gradient = GradientReconstruct(
+            self.mesh,
+            gd=velocity_dirichlet,
+            bc_type="dirichlet",
+        )
+        self.nonorthogonal_geometry = NonOrthogonalGeometry(self.mesh)
+        self.velocity_dirichlet = velocity_dirichlet
+        if with_divergence:
+            self.divergence = DivergenceReconstruct(self.mesh)
+        if with_velocity_dirichlet_bc:
+            self.velocity_dirichlet_bc = DirichletBC(self.mesh, velocity_dirichlet)
+
+        self.e2c = self.mesh.edge_to_cell()
+        self.edge_measure = self.mesh.entity_measure("edge")
+        self.last_nonorthogonal_iterations = 0
+        self.last_momentum_nonorthogonal_iterations = 0
+        self.last_pressure_nonorthogonal_iterations = 0
+
+    def _init_linear_solver(self, options):
+        linear_solver = options.get("linear_solver")
+        if linear_solver is not None and hasattr(linear_solver, "solve"):
+            return linear_solver
+
+        config = options.get("linear_solver_config")
+        if isinstance(config, dict):
+            config = FVMLinearSolverConfig(**config)
+        if config is not None:
+            return FVMLinearSolver(config)
+
+        try:
+            device = str(bm.get_device(self.cm))
+        except Exception:
+            device = "cpu"
+        config = FVMLinearSolverConfig(
+            backend=bm.backend_name,
+            device=device,
+            solver=linear_solver or "auto",
+        )
+        return FVMLinearSolver(config)
+
+    def _cell_velocity(self, velocity: TensorLike) -> TensorLike:
+        if velocity.ndim == 1:
+            return bm.stack([velocity[:self.NC], velocity[self.NC:]], axis=-1)
+        return velocity
+
+    @staticmethod
+    def _flatten_velocity(cell_velocity: TensorLike) -> TensorLike:
+        return cell_velocity.flatten(order="F")
+
+    def compute_cross_diffusion(self, velocity: TensorLike) -> TensorLike:
+        """Assemble the explicit non-orthogonal momentum diffusion correction."""
+        cell_velocity = self._cell_velocity(velocity)
+        flat_velocity = (
+            velocity if velocity.ndim == 1 else self._flatten_velocity(velocity)
+        )
+        grad_u = self.velocity_gradient.cell_gradient(cell_velocity)
+        grad_f = self.velocity_gradient.face_gradient(grad_u)
+        return LinearForm(self.velocity_space).add_integrator(
+            ScalarCrossDiffusionIntegrator(
+                flat_velocity,
+                grad_f,
+                geometry=self.nonorthogonal_geometry,
+                boundary_policy="all",
+            )
+        ).assembly()
+
+    def _correct_momentum_nonorthogonal_diffusion(
+        self,
+        matrix,
+        rhs,
+        velocity,
+        previous_velocity,
+        *,
+        max_iter: int,
+        tol: float,
+        iteration_attr: str,
+    ):
+        if max_iter == 0:
+            setattr(self, iteration_attr, 0)
+            return velocity
+
+        previous_velocity = (
+            self._flatten_velocity(previous_velocity)
+            if previous_velocity.ndim == 2
+            else previous_velocity
+        )
+        cross = self.compute_cross_diffusion(previous_velocity)
+        corrected_velocity = velocity
+        setattr(self, iteration_attr, 0)
+        for iteration in range(1, max_iter + 1):
+            next_velocity = self.linear_solver.solve(matrix, rhs + cross)
+            setattr(self, iteration_attr, iteration)
+            if bm.max(bm.abs(next_velocity - corrected_velocity)) < tol:
+                return next_velocity
+            corrected_velocity = next_velocity
+            cross = self.compute_cross_diffusion(corrected_velocity)
+        return corrected_velocity
+
+    def _boundary_face_velocity(self):
+        bd_edge = self.mesh.boundary_face_index()
+        edge_middle_point = self.mesh.entity_barycenter("edge")
+        return bd_edge, self.velocity_dirichlet(edge_middle_point[bd_edge])
+
+    def face_interpolation_owner_weight(self):
+        """Return owner-side linear interpolation weights for faces."""
+        e2c = self.e2c[:, :2]
+        owner = e2c[:, 0]
+        neighbour = e2c[:, 1]
+        owner_dist = bm.linalg.norm(self.epoints - self.points[owner], axis=-1)
+        neighbour_dist = bm.linalg.norm(
+            self.points[neighbour] - self.epoints, axis=-1
+        )
+        total_dist = owner_dist + neighbour_dist
+        weight = bm.where(total_dist > 0.0, neighbour_dist / total_dist, 0.5)
+        return bm.where(owner != neighbour, weight, 1.0)
+
+    def face_interpolate_cell_scalar(self, cell_values):
+        """Linearly interpolate a cell scalar to faces using face geometry."""
+        e2c = self.e2c[:, :2]
+        owner_weight = self.face_interpolation_owner_weight()
+        return (
+            owner_weight * cell_values[e2c[:, 0]]
+            + (1.0 - owner_weight) * cell_values[e2c[:, 1]]
+        )
+
+    def face_interpolate_cell_vector(self, cell_vectors):
+        """Linearly interpolate a cell vector to faces using face geometry."""
+        cell_vectors = self._cell_velocity(cell_vectors)
+        e2c = self.e2c[:, :2]
+        owner_weight = self.face_interpolation_owner_weight()
+        return (
+            owner_weight[:, None] * cell_vectors[e2c[:, 0]]
+            + (1.0 - owner_weight)[:, None] * cell_vectors[e2c[:, 1]]
+        )
+
+    def face_flux(self, face_velocity):
+        """Return the signed surface flux ``phi_f = u_f dot S_f``."""
+        return bm.einsum("ij,ij->i", face_velocity, self.mesh.edge_normal())
+
+    def divergence_from_flux(self, phi):
+        """Scatter signed face fluxes to the cell flux imbalance."""
+        e2c = self.e2c[:, :2]
+        is_internal = e2c[:, 0] != e2c[:, 1]
+        result = bm.zeros(self.NC, dtype=phi.dtype)
+        result = bm.index_add(result, e2c[:, 0], phi, axis=0)
+        result = bm.index_add(
+            result,
+            e2c[is_internal, 1],
+            phi[is_internal],
+            axis=0,
+            alpha=-1,
+        )
+        return result
+
+    def _scatter_face_flux(self, face_flux: TensorLike) -> TensorLike:
+        """Scatter owner-oriented face fluxes to cell divergence values."""
+        return self.divergence_from_flux(face_flux)
+
+    def _pressure_correction_cross_flux(
+        self,
+        pressure: TensorLike,
+        response_coef: TensorLike,
+    ) -> TensorLike:
+        """Return the explicit non-orthogonal pressure-correction face flux."""
+        grad_p = self.pressure_gradient.cell_gradient(pressure)
+        grad_f = self.pressure_gradient.face_gradient(grad_p)
+        correction_vector = self.nonorthogonal_geometry.openfoam_correction_vector()
+        cross_flux = response_coef * bm.einsum("ij,ij->i", correction_vector, grad_f)
+        is_boundary = self.e2c[:, 0] == self.e2c[:, 1]
+        return bm.where(is_boundary, 0.0, cross_flux)
+
+    def _assemble_pressure_gauge_matrix(self, coef, q: int):
+        A = BilinearForm(self.space).add_integrator(
+            ScalarDiffusionIntegrator(q=q, coef=coef)
+        ).assembly()
+        gauge_index = bm.stack(
+            [
+                bm.zeros(self.NC, dtype=bm.int32),
+                bm.arange(self.NC, dtype=bm.int32),
+            ],
+            axis=0,
+        )
+        A1 = COOTensor(gauge_index, self.cm, spshape=(1, self.NC))
+        A = BlockForm([[A, A1.T], [A1, None]])
+        return A.assembly_sparse_matrix(format="csr")
+
+    def _solve_pressure_correction_with_cross_rhs(
+        self,
+        rhs,
+        coef,
+        *,
+        q: int,
+        nonorthogonal_max_iter: int,
+        nonorthogonal_tol: float,
+        cross_flux,
+    ):
+        if nonorthogonal_max_iter < 0:
+            raise ValueError("nonorthogonal_max_iter must be non-negative.")
+        if nonorthogonal_tol <= 0.0:
+            raise ValueError("nonorthogonal_tol must be positive.")
+
+        A = self._assemble_pressure_gauge_matrix(coef, q=q)
+        b0 = bm.array([0])
+
+        def solve_with_cross_rhs(cross):
+            b = bm.concatenate([rhs + cross, b0], axis=0)
+            return self.linear_solver.solve(A, b)[:-1]
+
+        cross_rhs = bm.zeros_like(rhs)
+        if nonorthogonal_max_iter == 0:
+            self.last_pressure_nonorthogonal_iterations = 0
+            return solve_with_cross_rhs(cross_rhs)
+
+        pressure = bm.zeros(self.NC, dtype=rhs.dtype)
+        self.last_pressure_nonorthogonal_iterations = 0
+        for iteration in range(1, nonorthogonal_max_iter + 1):
+            next_pressure = solve_with_cross_rhs(cross_rhs)
+            next_cross_rhs = self.divergence_from_flux(
+                cross_flux(next_pressure, coef)
+            )
+            self.last_pressure_nonorthogonal_iterations = iteration
+            if bm.max(bm.abs(next_cross_rhs - cross_rhs)) < nonorthogonal_tol:
+                return next_pressure
+            pressure = next_pressure
+            cross_rhs = next_cross_rhs
+        return pressure
+
+    def enforce_face_flux(self, face_velocity, target_flux):
+        """Adjust only the normal component of a vector face velocity."""
+        Sf = self.mesh.edge_normal()
+        current_flux = self.face_flux(face_velocity)
+        Sf_dot_Sf = bm.einsum("ij,ij->i", Sf, Sf)
+        return face_velocity + ((target_flux - current_flux) / Sf_dot_Sf)[:, None] * Sf
+
+    def apply_face_velocity_dirichlet(self, face_velocity, boundary_velocity=None):
+        """Apply externally supplied velocity Dirichlet data on boundary faces."""
+        if boundary_velocity is None:
+            return face_velocity
+
+        face_velocity = bm.array(face_velocity)
+        bd_edge = self.mesh.boundary_face_index()
+        boundary_velocity = bm.array(boundary_velocity)
+        if boundary_velocity.shape[0] == self.mesh.number_of_faces():
+            boundary_velocity = boundary_velocity[bd_edge]
+        face_velocity[bd_edge] = boundary_velocity
+        return face_velocity
+
+    def apply_boundary_flux_constraint(self, flux, boundary_velocity=None):
+        """Set boundary scalar fluxes to the prescribed boundary velocity flux."""
+        if boundary_velocity is None:
+            return flux
+
+        constrained = bm.array(flux)
+        bd_edge = self.mesh.boundary_face_index()
+        boundary_velocity = bm.array(boundary_velocity)
+        if boundary_velocity.shape[0] == self.mesh.number_of_faces():
+            boundary_velocity = boundary_velocity[bd_edge]
+        target_flux = bm.einsum(
+            "ij,ij->i", boundary_velocity, self.mesh.edge_normal()[bd_edge]
+        )
+        return bm.set_at(constrained, bd_edge, target_flux)
+
+    def velocity_pressure_correction(self, u_flat, pressure_increment, a_p):
+        """Apply the pressure-gradient velocity correction."""
+        grad_p = self.pressure_gradient.cell_gradient(pressure_increment)
+        u_cell = self._cell_velocity(u_flat)
+        u_cell = u_cell - (self.cm / a_p[:self.NC])[:, None] * grad_p
+        return self._flatten_velocity(u_cell)
+
+    def pressure_free_velocity(self, u_flat, pressure, a_p):
+        """Remove the current pressure-gradient contribution from velocity."""
+        grad_p = self.pressure_gradient.cell_gradient(pressure)
+        u_cell = self._cell_velocity(u_flat)
+        u_cell = u_cell + (self.cm / a_p[:self.NC])[:, None] * grad_p
+        return self._flatten_velocity(u_cell)

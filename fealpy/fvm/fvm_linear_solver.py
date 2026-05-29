@@ -47,6 +47,8 @@ class FVMLinearSolver:
 
         if solver_name == "cupy":
             return self._solve_with_cupy(A, b, matrix_type)
+        if solver_name == "scipy":
+            return spsolve(A.copy(), b, solver_name)
 
         return spsolve(A, b, solver_name)
 

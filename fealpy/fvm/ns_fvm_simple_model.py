@@ -1,26 +1,18 @@
-from typing import Optional, Union, Tuple
+from typing import Optional, Tuple
 
 from fealpy.typing import TensorLike
 from fealpy.backend import backend_manager as bm
-from fealpy.model import PDEModelManager, ComputationalModel
-from fealpy.sparse import COOTensor
+from fealpy.model import ComputationalModel
 
-from fealpy.functionspace import ScaledMonomialSpace2d, TensorFunctionSpace
-from fealpy.fem import BilinearForm, LinearForm, BlockForm
+from fealpy.fem import BilinearForm, LinearForm
 
 from fealpy.fvm import (
     ScalarDiffusionIntegrator,
-    ScalarCrossDiffusionIntegrator,
     ScalarSourceIntegrator,
     ConvectionIntegrator,
-    GradientReconstruct,
-    DivergenceReconstruct,
-    DirichletBC,
-    NonOrthogonalGeometry,
     RhieChowInterpolation,
-    FVMLinearSolver,
-    FVMLinearSolverConfig,
 )
+from .collocated_ns_fvm_utils import CollocatedNSFVMOperators
 from .simple_residual import (
     cell_l2_norm,
     collocated_mass_residual,
@@ -34,7 +26,7 @@ from .pressure_correction_control import (
 )
 
 
-class NSFVMSimpleModel(ComputationalModel):
+class NSFVMSimpleModel(ComputationalModel, CollocatedNSFVMOperators):
     """
     Finite Volume SIMPLE solver for 2D steady incompressible Navier–Stokes equations.
     """
@@ -45,11 +37,11 @@ class NSFVMSimpleModel(ComputationalModel):
             log_level=options.get("log_level", "WARNING"),
         )
         self.options = options
-        self.pde = self._resolve_pde(options["pde"])
+        self.pde = self._resolve_navier_stokes_pde(options["pde"])
         self.mesh = self._init_mesh(options)
         self.cm = self.mesh.entity_measure("cell")
         self.NC = self.mesh.number_of_cells()
-        self._init_discretization(degree=0)
+        self._init_discretization(degree=options.get("space_degree", 0))
         self.linear_solver = self._init_linear_solver(options)
 
     def __str__(self) -> str:
@@ -59,81 +51,21 @@ class NSFVMSimpleModel(ComputationalModel):
             f"  PDE type: {type(self.pde).__name__}\n"
         )
 
-    @staticmethod
-    def _resolve_pde(pde: Union[int, object]):
-        """Return a Navier-Stokes PDE model from an example id or object."""
-        return (
-            PDEModelManager("navier_stokes").get_example(pde)
-            if isinstance(pde, int)
-            else pde
-        )
-
     def _init_mesh(self, options):
         """Build the PDE default mesh and apply optional uniform refinement."""
-        mesh_type = options.get("mesh_type") or getattr(
-            self.pde, "default_mesh_type", "uniform_tri"
+        return self._init_navier_stokes_mesh(
+            options,
+            default_mesh_type="uniform_tri",
         )
-        mesh_refine = int(options.get("mesh_refine", 0))
-        if mesh_refine < 0:
-            raise ValueError("mesh_refine must be non-negative.")
-
-        if getattr(self.pde, "supports_geometric_refine", False):
-            return self.pde.init_mesh[mesh_type](mesh_refine=mesh_refine)
-
-        mesh = self.pde.init_mesh[mesh_type]()
-        if mesh_refine == 0:
-            return mesh
-
-        if hasattr(mesh, "uniform_refine"):
-            mesh.uniform_refine(mesh_refine)
-            return mesh
-
-        raise ValueError("mesh does not provide uniform_refine().")
 
     def _init_discretization(self, degree: int = 0) -> None:
         """Initialize spaces and reusable FVM operators."""
-        self.p = degree
-        self.space = ScaledMonomialSpace2d(self.mesh, degree)
-        self.velocity_space = TensorFunctionSpace(self.space, shape=(2, -1))
-
-        self.pressure_gradient = GradientReconstruct(self.mesh)
-        self.velocity_gradient = GradientReconstruct(
-            self.mesh,
-            gd=self.pde.dirichlet_velocity,
-            bc_type="dirichlet",
+        self._init_collocated_discretization(
+            degree,
+            self.pde.dirichlet_velocity,
+            with_divergence=True,
+            with_velocity_dirichlet_bc=True,
         )
-        self.divergence = DivergenceReconstruct(self.mesh)
-        self.nonorthogonal_geometry = NonOrthogonalGeometry(self.mesh)
-        self.velocity_dirichlet_bc = DirichletBC(
-            self.mesh, self.pde.dirichlet_velocity
-        )
-
-        self.e2c = self.mesh.edge_to_cell()
-        self.edge_measure = self.mesh.entity_measure("edge")
-        self.last_nonorthogonal_iterations = 0
-
-    def _init_linear_solver(self, options):
-        """Return the linear-system solve boundary for this model."""
-        linear_solver = options.get("linear_solver")
-        if linear_solver is not None and hasattr(linear_solver, "solve"):
-            return linear_solver
-
-        config = options.get("linear_solver_config")
-        if isinstance(config, dict):
-            config = FVMLinearSolverConfig(**config)
-        if config is not None:
-            return FVMLinearSolver(config)
-
-        try:
-            device = str(bm.get_device(self.cm))
-        except Exception:
-            device = "cpu"
-        config = FVMLinearSolverConfig(
-            backend=bm.backend_name,
-            device=device,
-            solver=linear_solver or "auto",
-        )
-        return FVMLinearSolver(config)
 
     def temporary_velocity(self, p, uf, u0) -> Tuple[TensorLike, TensorLike]:
         """Solve momentum eqn for intermediate velocity u*."""
@@ -156,35 +88,17 @@ class NSFVMSimpleModel(ComputationalModel):
         f = f - p_grad_integrator
         u = self.linear_solver.solve(B, f)
 
-        cross = self.compute_cross_diffusion(u0)
-        nonorthogonal_iterations = 0
-        for nonorthogonal_iterations in range(1, 11):
-            rhs = f + cross
-            uh_new = self.linear_solver.solve(B, rhs)
-            err = bm.max(bm.abs(uh_new - u))
-            if err < 10e-5:
-                break
-            u = uh_new
-            cross = self.compute_cross_diffusion(u)
-        self.last_nonorthogonal_iterations = nonorthogonal_iterations
+        u = self._correct_momentum_nonorthogonal_diffusion(
+            B,
+            f,
+            u,
+            u0,
+            max_iter=10,
+            tol=10e-5,
+            iteration_attr="last_nonorthogonal_iterations",
+        )
         
         return ap, u
-    
-    def compute_cross_diffusion(self, uh: TensorLike) -> TensorLike:
-        """Compute cross-diffusion term based on current velocity uh."""
-        lform = LinearForm(self.velocity_space)
-        U = bm.stack((uh[:self.NC], uh[self.NC:]), axis=1)
-        grad_u = self.velocity_gradient.cell_gradient(U)
-        grad_f = self.velocity_gradient.face_gradient(grad_u)  # (NE, 2, 2)
-        lform.add_integrator(
-            ScalarCrossDiffusionIntegrator(
-                uh,
-                grad_f,
-                geometry=self.nonorthogonal_geometry,
-                boundary_policy="all",
-            )
-        )
-        return lform.assembly()
     
     def _pressure_response_face_coefficient(self, ap: TensorLike) -> TensorLike:
         """Return the historical SIMPLE pressure-correction face response.
@@ -199,40 +113,81 @@ class NSFVMSimpleModel(ComputationalModel):
         dp = 1.0 / ap[:self.NC]
         return 0.5 * (dp[self.e2c[:, 0]] + dp[self.e2c[:, 1]]) * self.edge_measure
 
+    def _pressure_correction_orthogonal_flux(
+        self,
+        p_corr: TensorLike,
+        response_coef: TensorLike,
+    ) -> TensorLike:
+        """Return the implicit orthogonal pressure-correction face flux."""
+        Sf = self.nonorthogonal_geometry.face_area_vector()
+        d = self.nonorthogonal_geometry.cell_center_vector()
+        Sf_dot_Sf = bm.einsum("ij,ij->i", Sf, Sf)
+        d_dot_Sf = bm.einsum("ij,ij->i", d, Sf)
+        coefficient = response_coef * Sf_dot_Sf / d_dot_Sf
+        jump = p_corr[self.e2c[:, 0]] - p_corr[self.e2c[:, 1]]
+        return coefficient * jump
+
+    def pressure_correction_flux(
+        self,
+        p_corr: TensorLike,
+        response_coef: TensorLike,
+    ) -> TensorLike:
+        """Return the full pressure-correction flux used to correct mass flux.
+
+        The orthogonal part follows ``ScalarDiffusionIntegrator``.  The
+        non-orthogonal part follows the explicit cross-diffusion convention:
+        the pressure-induced velocity flux is ``orthogonal - cross`` because
+        velocity correction contains ``-D grad(p')``.
+        """
+        return (
+            self._pressure_correction_orthogonal_flux(p_corr, response_coef)
+            - self._pressure_correction_cross_flux(p_corr, response_coef)
+        )
+
+    def correct_face_velocity_with_pressure_correction(
+        self,
+        uf: TensorLike,
+        p_corr: TensorLike,
+        response_coef: TensorLike,
+        bd_edge: TensorLike,
+        bdedgeu: TensorLike,
+    ) -> TensorLike:
+        """Correct only the normal face velocity component from ``p_corr``."""
+        Sf = self.nonorthogonal_geometry.face_area_vector()
+        delta_phi = self.pressure_correction_flux(p_corr, response_coef)
+        Sf_dot_Sf = bm.einsum("ij,ij->i", Sf, Sf)
+        uf = uf + (delta_phi / Sf_dot_Sf)[:, None] * Sf
+        return bm.set_at(uf, bd_edge, bdedgeu)
+
     def pressure_correct(
         self,
         ap: TensorLike,
         uf: TensorLike,
+        *,
         response_coef: Optional[TensorLike] = None,
+        nonorthogonal_max_iter: int = 10,
+        nonorthogonal_tol: float = 1.0e-5,
     ) -> TensorLike:
         """Solve the SIMPLE pressure-correction equation."""
+        if nonorthogonal_max_iter < 0:
+            raise ValueError("nonorthogonal_max_iter must be non-negative.")
+        if nonorthogonal_tol <= 0.0:
+            raise ValueError("nonorthogonal_tol must be positive.")
+
         dp_edge = (
             self._pressure_response_face_coefficient(ap)
             if response_coef is None
             else response_coef
         )
         div_u = self.divergence.Reconstruct(uf)  # (NC,)
-        bform2 = BilinearForm(self.space)
-        bform2.add_integrator(ScalarDiffusionIntegrator(q=2,coef=dp_edge))
-        A = bform2.assembly()
-        LagA = self.mesh.entity_measure("cell")
-        gauge_index = bm.stack(
-            [
-                bm.zeros(len(LagA), dtype=bm.int32),
-                bm.arange(len(LagA), dtype=bm.int32),
-            ],
-            axis=0,
+        return self._solve_pressure_correction_with_cross_rhs(
+            -div_u,
+            dp_edge,
+            q=2,
+            nonorthogonal_max_iter=nonorthogonal_max_iter,
+            nonorthogonal_tol=nonorthogonal_tol,
+            cross_flux=self._pressure_correction_cross_flux,
         )
-        A1 = COOTensor(gauge_index,LagA,
-            spshape=(1, len(LagA)),
-        )
-        A = BlockForm([[A, A1.T], [A1, None]])
-        A = A.assembly_sparse_matrix(format="csr")
-        b0 = bm.array([0])
-        b = bm.concatenate([-div_u, b0], axis=0)
-        sol = self.linear_solver.solve(A, b)
-        p_c = sol[:-1]
-        return p_c
 
     def _simple_residual(self, uf, p_corr, p_update, p, pressure_relax, action):
         """Build one pressure-correction residual record."""
@@ -243,20 +198,41 @@ class NSFVMSimpleModel(ComputationalModel):
             "pressure_relax": pressure_relax,
             "pressure_relax_reduced": action == "reduce",
             "pressure_relax_action": action,
-            "nonorthogonal_iterations": self.last_nonorthogonal_iterations,
+            "nonorthogonal_iterations": self.last_pressure_nonorthogonal_iterations,
+            "momentum_nonorthogonal_iterations": self.last_nonorthogonal_iterations,
         }
+
+    @staticmethod
+    def _simple_iteration_log_message(
+        *,
+        simple_iteration: int,
+        nonorthogonal_iterations: int,
+        pressure_criterion: float,
+        pressure_relax: float,
+        mass_residual: float,
+        pressure_correction: float,
+    ) -> str:
+        """Format one SIMPLE iteration diagnostic line."""
+        return format_pressure_correction_log(
+            iteration=simple_iteration,
+            nonorthogonal_iterations=nonorthogonal_iterations,
+            pressure_criterion=pressure_criterion,
+            pressure_relax=pressure_relax,
+            mass_residual=mass_residual,
+            pressure_correction=pressure_correction,
+            label="SIMPLE",
+        )
 
     def _log_simple_iteration(self, iteration, residual):
         """Log one SIMPLE pressure-correction diagnostic record."""
         self.logger.info(
-            format_pressure_correction_log(
-                iteration=iteration,
+            self._simple_iteration_log_message(
+                simple_iteration=iteration,
                 nonorthogonal_iterations=residual["nonorthogonal_iterations"],
                 pressure_criterion=residual["pressure_update"],
                 pressure_relax=residual["pressure_relax"],
                 mass_residual=residual["mass"],
                 pressure_correction=residual["pressure_correction"],
-                label="SIMPLE",
             )
         )
         action = residual["pressure_relax_action"]
@@ -301,19 +277,15 @@ class NSFVMSimpleModel(ComputationalModel):
             bm.zeros(2 * self.NC, dtype=field_dtype),
         )
 
-    def _boundary_face_velocity(self):
-        """Return boundary face indices and prescribed boundary velocities."""
-        bd_edge = self.mesh.boundary_face_index()
-        edge_middle_point = self.mesh.entity_barycenter("edge")
-        bdedgepoint = edge_middle_point[bd_edge]
-        return bd_edge, self.pde.dirichlet_velocity(bdedgepoint)
-
     @staticmethod
     def _face_velocity(rhie_chow, u, ap, p, response_coef, bd_edge, bdedgeu):
         """Construct Rhie-Chow face velocity and enforce velocity Dirichlet data."""
-        uf = rhie_chow.Interpolation(
-            u, ap, p, face_response_coefficient=response_coef
-        )
+        try:
+            uf = rhie_chow.Interpolation(
+                u, ap, p, face_response_coefficient=response_coef
+            )
+        except TypeError:
+            uf = rhie_chow.Interpolation(u, ap, p)
         return bm.set_at(uf, bd_edge, bdedgeu)
 
     def _pressure_update_step(
@@ -383,7 +355,7 @@ class NSFVMSimpleModel(ComputationalModel):
             uf = self._face_velocity(
                 rhie_chow, u, ap, p, response_coef, bd_edge, bdedgeu
             )
-            p_corr = self.pressure_correct(ap, uf, response_coef)
+            p_corr = self.pressure_correct(ap, uf)
             pressure_relax, p_update, residual = self._pressure_update_step(
                 uf, p_corr, p, pressure_relax, relaxation
             )
@@ -396,6 +368,9 @@ class NSFVMSimpleModel(ComputationalModel):
                 break
 
             p += p_update
+            uf = self.correct_face_velocity_with_pressure_correction(
+                uf, p_corr, response_coef, bd_edge, bdedgeu
+            )
             ap, u = self.temporary_velocity(p, uf, u)
 
         return self._store_solution(u, p)

@@ -82,11 +82,10 @@ def test_simple_momentum_rhs_includes_dirichlet_boundary_convection(monkeypatch)
     def first_momentum_rhs(uf):
         captured = []
 
-        def fake_spsolve(A, b, solver=None):
-            captured.append(b.copy())
-            return bm.zeros(A.shape[0])
-
-        monkeypatch.setattr(simple_model, "spsolve", fake_spsolve)
+        class CaptureSolver:
+            def solve(self, A, b, *args, **kwargs):
+                captured.append(b.copy())
+                return bm.zeros(A.shape[0])
 
         model = simple_model.NSFVMSimpleModel(
             {
@@ -96,6 +95,7 @@ def test_simple_momentum_rhs_includes_dirichlet_boundary_convection(monkeypatch)
                 "space_degree": 0,
                 "log_level": "ERROR",
                 "pbar_log": False,
+                "linear_solver": CaptureSolver(),
             }
         )
         model.temporary_velocity(bm.zeros(model.NC), uf, bm.zeros(2 * model.NC))
@@ -204,7 +204,10 @@ def test_collocated_simple_records_common_residuals(monkeypatch):
     model.solve(max_iter=5, tol=1.0e-5, relax=0.32)
 
     assert len(model.residuals) == 1
-    assert model.residuals[0] == {
+    assert {
+        key: model.residuals[0][key]
+        for key in ("mass", "pressure_update", "pressure_correction")
+    } == {
         "mass": 0.0,
         "pressure_update": 0.0,
         "pressure_correction": 0.0,
@@ -253,7 +256,10 @@ def test_staggered_simple_records_common_residuals(monkeypatch):
     model.solve(max_iter=5, tol=1.0e-5, relax=0.32)
 
     assert len(model.residuals) == 1
-    assert model.residuals[0] == {
+    assert {
+        key: model.residuals[0][key]
+        for key in ("mass", "pressure_update", "pressure_correction")
+    } == {
         "mass": 0.0,
         "pressure_update": 0.0,
         "pressure_correction": 0.0,
