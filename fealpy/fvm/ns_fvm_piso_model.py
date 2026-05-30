@@ -63,6 +63,7 @@ class NSFVMPISOModel(ComputationalModel, CollocatedNSFVMOperators):
             self.pressure_nonorthogonal_tol,
         )
         self.set_pde(options["pde"])
+        self._init_momentum_coefficients(options)
         self.set_mesh(options["nx"], options["ny"])
         self.set_space(options.get("space_degree", 0))
         self.linear_solver = self._init_linear_solver(options)
@@ -122,9 +123,20 @@ class NSFVMPISOModel(ComputationalModel, CollocatedNSFVMOperators):
         self._init_collocated_discretization(
             degree,
             self.pde.velocity_dirichlet,
+            pressure_gradient_method=self.options.get(
+                "pressure_gradient_method", "extended_lsq"
+            ),
+            velocity_gradient_method=self.options.get(
+                "velocity_gradient_method", "extended_lsq"
+            ),
             with_velocity_dirichlet_bc=True,
         )
-        self.rhie_chow = RhieChowInterpolation(self.mesh)
+        self.rhie_chow = RhieChowInterpolation(
+            self.mesh,
+            pressure_gradient_method=self.options.get(
+                "rhie_chow_pressure_gradient_method", "extended_lsq"
+            ),
+        )
 
     def initial_solution(self) -> Tuple[TensorLike, TensorLike, TensorLike]:
         t0 = self.duration[0]
@@ -135,14 +147,17 @@ class NSFVMPISOModel(ComputationalModel, CollocatedNSFVMOperators):
 
     def temporary_velocity(self, U0, Uf0, p0, t, return_matrix=False):
         bform = BilinearForm(self.velocity_space)
-        bform.add_integrator(ScalarDiffusionIntegrator(q=self.p + 2))
-        bform.add_integrator(ConvectionIntegrator(q=self.p + 2, coef=Uf0))
+        bform.add_integrator(ScalarDiffusionIntegrator(q=self.p + 2, coef=self.mu))
+        bform.add_integrator(ConvectionIntegrator(q=self.p + 2, coef=self.rho * Uf0))
         A = bform.assembly()
 
         M = CSRTensor(
             crow=bm.arange(2*self.NC + 1),
             col=bm.arange(2*self.NC),
-            values=bm.concatenate([self.cm / self.tau, self.cm / self.tau]),
+            values=bm.concatenate([
+                self.rho * self.cm / self.tau,
+                self.rho * self.cm / self.tau,
+            ]),
             spshape=(2*self.NC, 2*self.NC),
         )
 
@@ -162,10 +177,10 @@ class NSFVMPISOModel(ComputationalModel, CollocatedNSFVMOperators):
         b = (
             f
             - p_grad_integrator
-            + (U0 * (self.cm / self.tau)[:, None]).flatten(order="F")
+            + (U0 * (self.rho * self.cm / self.tau)[:, None]).flatten(order="F")
         )
-        A, b = self.velocity_dirichlet_bc.DiffusionApply(A, b)
-        b = self.velocity_dirichlet_bc.ConvectionApply(b, Uf0)
+        A, b = self.velocity_dirichlet_bc.DiffusionApply(A, b, coef=self.mu)
+        b = self.velocity_dirichlet_bc.ConvectionApply(b, self.rho * Uf0)
         # FEALPy sparse assembly can leave duplicate entries here.
         A = A.tocoo().coalesce().tocsr()
         a_p = A.diags().values
@@ -380,6 +395,7 @@ class NSFVMPISOModel(ComputationalModel, CollocatedNSFVMOperators):
         Uf0=None,
         p0=None,
         n_correctors=None,
+        snapshot_callback=None,
     ) -> Tuple[TensorLike, TensorLike, TensorLike]:
         if U0 is None or Uf0 is None or p0 is None:
             U0, Uf0, p0 = self.initial_solution()
@@ -442,6 +458,16 @@ class NSFVMPISOModel(ComputationalModel, CollocatedNSFVMOperators):
                 [current_velocity[:self.NC], current_velocity[self.NC:]], axis=-1
             )
             p0 = current_pressure
+            if snapshot_callback is not None:
+                snapshot_callback(
+                    step=n + 1,
+                    time=t + self.tau,
+                    model=self,
+                    cell_velocity=U0,
+                    face_velocity=Uf0,
+                    pressure=p0,
+                    flux=phi,
+                )
 
         self.uh = current_velocity[:self.NC]
         self.vh = current_velocity[self.NC:]

@@ -7,6 +7,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "fealpy" / "fvm" / "ns_fvm_piso_model.py"
 SIMPLE_SOURCE = ROOT / "fealpy" / "fvm" / "ns_fvm_simple_model.py"
+SIMPLE_SOLVER_SOURCE = ROOT / "fealpy" / "fvm" / "collocated_simple_solver.py"
 EXAMPLE = ROOT / "example" / "fvm" / "ns_fvm_piso_example.py"
 
 
@@ -82,16 +83,21 @@ def test_only_standard_pressure_state_piso_route_remains():
 
 
 def test_collocated_solvers_use_shared_internal_operators():
-    from fealpy.fvm import NSFVMPISOModel, NSFVMSimpleModel
+    from fealpy.fvm import CollocatedSimpleSolver, NSFVMPISOModel, NSFVMSimpleModel
     from fealpy.fvm.collocated_ns_fvm_utils import CollocatedNSFVMOperators
 
     assert issubclass(NSFVMPISOModel, CollocatedNSFVMOperators)
+    assert issubclass(CollocatedSimpleSolver, CollocatedNSFVMOperators)
     assert issubclass(NSFVMSimpleModel, CollocatedNSFVMOperators)
+    assert issubclass(NSFVMSimpleModel, CollocatedSimpleSolver)
 
     piso_source = SOURCE.read_text()
-    simple_source = SIMPLE_SOURCE.read_text()
+    simple_solver_source = SIMPLE_SOLVER_SOURCE.read_text()
     assert "from .collocated_ns_fvm_utils import CollocatedNSFVMOperators" in piso_source
-    assert "from .collocated_ns_fvm_utils import CollocatedNSFVMOperators" in simple_source
+    assert (
+        "from .collocated_ns_fvm_utils import CollocatedNSFVMOperators"
+        in simple_solver_source
+    )
 
 
 def test_model_exposes_piso_components_and_no_route_dispatch():

@@ -40,6 +40,36 @@ class CollocatedNSFVMOperators:
         value = options.get(name, default)
         return default if value is None else int(value)
 
+    @staticmethod
+    def _as_positive_scalar(value, name: str) -> float:
+        if callable(value):
+            value = value()
+        try:
+            scalar = float(value)
+        except TypeError:
+            scalar = float(bm.to_numpy(value))
+        if scalar <= 0.0:
+            raise ValueError(f"{name} must be positive.")
+        return scalar
+
+    def _init_momentum_coefficients(self, options) -> None:
+        """Initialize scalar density and dynamic viscosity for momentum solves."""
+        rho_value = options.get("rho", None)
+        if rho_value is None:
+            rho_value = getattr(self.pde, "rho", 1.0)
+
+        mu_value = options.get("mu", None)
+        if mu_value is None:
+            for name in ("mu", "viscosity", "nu"):
+                if hasattr(self.pde, name):
+                    mu_value = getattr(self.pde, name)
+                    break
+            else:
+                mu_value = 1.0
+
+        self.rho = self._as_positive_scalar(rho_value, "rho")
+        self.mu = self._as_positive_scalar(mu_value, "mu")
+
     def _init_navier_stokes_mesh(
         self,
         options,
@@ -80,6 +110,11 @@ class CollocatedNSFVMOperators:
         degree: int,
         velocity_dirichlet,
         *,
+        pressure_gradient_method: str = "extended_lsq",
+        velocity_gradient_method: str = "extended_lsq",
+        velocity_dirichlet_threshold=None,
+        pressure_dirichlet=None,
+        pressure_dirichlet_threshold=None,
         with_divergence: bool = False,
         with_velocity_dirichlet_bc: bool = False,
     ) -> None:
@@ -89,18 +124,31 @@ class CollocatedNSFVMOperators:
         self.points = self.mesh.entity_barycenter("cell")
         self.epoints = self.mesh.entity_barycenter("edge")
 
-        self.pressure_gradient = GradientReconstruct(self.mesh)
+        self.pressure_gradient = GradientReconstruct(
+            self.mesh,
+            method=pressure_gradient_method,
+            gd=pressure_dirichlet,
+            bc_type="dirichlet" if pressure_dirichlet is not None else None,
+            threshold=pressure_dirichlet_threshold,
+        )
         self.velocity_gradient = GradientReconstruct(
             self.mesh,
+            method=velocity_gradient_method,
             gd=velocity_dirichlet,
             bc_type="dirichlet",
+            threshold=velocity_dirichlet_threshold,
         )
         self.nonorthogonal_geometry = NonOrthogonalGeometry(self.mesh)
         self.velocity_dirichlet = velocity_dirichlet
+        self.velocity_dirichlet_threshold = velocity_dirichlet_threshold
         if with_divergence:
             self.divergence = DivergenceReconstruct(self.mesh)
         if with_velocity_dirichlet_bc:
-            self.velocity_dirichlet_bc = DirichletBC(self.mesh, velocity_dirichlet)
+            self.velocity_dirichlet_bc = DirichletBC(
+                self.mesh,
+                velocity_dirichlet,
+                threshold=velocity_dirichlet_threshold,
+            )
 
         self.e2c = self.mesh.edge_to_cell()
         self.edge_measure = self.mesh.entity_measure("edge")
@@ -151,6 +199,7 @@ class CollocatedNSFVMOperators:
             ScalarCrossDiffusionIntegrator(
                 flat_velocity,
                 grad_f,
+                coef=getattr(self, "diffusion_coef", getattr(self, "mu", 1.0)),
                 geometry=self.nonorthogonal_geometry,
                 boundary_policy="all",
             )
@@ -193,11 +242,29 @@ class CollocatedNSFVMOperators:
         edge_middle_point = self.mesh.entity_barycenter("edge")
         return bd_edge, self.velocity_dirichlet(edge_middle_point[bd_edge])
 
-    def face_interpolation_owner_weight(self):
-        """Return owner-side linear interpolation weights for faces."""
+    def face_interpolation_owner_weight(self, method: str = "distance"):
+        """Return owner-side interpolation weights for faces."""
         e2c = self.e2c[:, :2]
         owner = e2c[:, 0]
         neighbour = e2c[:, 1]
+        if method == "average":
+            weight = 0.5 * bm.ones_like(self.edge_measure)
+            return bm.where(owner != neighbour, weight, 1.0)
+        if method == "linear":
+            face_centers = self.mesh.entity_barycenter("face")
+            cell_centers = self.mesh.entity_barycenter("cell")
+            Sf = self.mesh.edge_normal()
+            owner_dist = bm.abs(
+                bm.einsum("ij,ij->i", Sf, face_centers - cell_centers[owner])
+            )
+            neighbour_dist = bm.abs(
+                bm.einsum("ij,ij->i", Sf, cell_centers[neighbour] - face_centers)
+            )
+            total_dist = owner_dist + neighbour_dist
+            weight = bm.where(total_dist > 0.0, neighbour_dist / total_dist, 0.5)
+            return bm.where(owner != neighbour, weight, 1.0)
+        if method != "distance":
+            raise ValueError("method must be 'average', 'distance', or 'linear'.")
         owner_dist = bm.linalg.norm(self.epoints - self.points[owner], axis=-1)
         neighbour_dist = bm.linalg.norm(
             self.points[neighbour] - self.epoints, axis=-1
@@ -206,20 +273,20 @@ class CollocatedNSFVMOperators:
         weight = bm.where(total_dist > 0.0, neighbour_dist / total_dist, 0.5)
         return bm.where(owner != neighbour, weight, 1.0)
 
-    def face_interpolate_cell_scalar(self, cell_values):
+    def face_interpolate_cell_scalar(self, cell_values, method: str = "distance"):
         """Linearly interpolate a cell scalar to faces using face geometry."""
         e2c = self.e2c[:, :2]
-        owner_weight = self.face_interpolation_owner_weight()
+        owner_weight = self.face_interpolation_owner_weight(method=method)
         return (
             owner_weight * cell_values[e2c[:, 0]]
             + (1.0 - owner_weight) * cell_values[e2c[:, 1]]
         )
 
-    def face_interpolate_cell_vector(self, cell_vectors):
+    def face_interpolate_cell_vector(self, cell_vectors, method: str = "distance"):
         """Linearly interpolate a cell vector to faces using face geometry."""
         cell_vectors = self._cell_velocity(cell_vectors)
         e2c = self.e2c[:, :2]
-        owner_weight = self.face_interpolation_owner_weight()
+        owner_weight = self.face_interpolation_owner_weight(method=method)
         return (
             owner_weight[:, None] * cell_vectors[e2c[:, 0]]
             + (1.0 - owner_weight)[:, None] * cell_vectors[e2c[:, 1]]
@@ -276,6 +343,22 @@ class CollocatedNSFVMOperators:
         A = BlockForm([[A, A1.T], [A1, None]])
         return A.assembly_sparse_matrix(format="csr")
 
+    def _boundary_face_coefficient(self, coef):
+        """Return boundary-face coefficients from scalar or face-wise data."""
+        if isinstance(coef, (int, float)):
+            return coef
+
+        coef = bm.array(coef)
+        if coef.shape == ():
+            return coef
+
+        boundary_faces = self.mesh.boundary_face_index()
+        if coef.shape[0] == self.mesh.number_of_faces():
+            return coef[boundary_faces]
+        if coef.shape[0] == boundary_faces.shape[0]:
+            return coef
+        return coef
+
     def _solve_pressure_correction_with_cross_rhs(
         self,
         rhs,
@@ -285,17 +368,39 @@ class CollocatedNSFVMOperators:
         nonorthogonal_max_iter: int,
         nonorthogonal_tol: float,
         cross_flux,
+        dirichlet_value=None,
+        dirichlet_threshold=None,
     ):
         if nonorthogonal_max_iter < 0:
             raise ValueError("nonorthogonal_max_iter must be non-negative.")
         if nonorthogonal_tol <= 0.0:
             raise ValueError("nonorthogonal_tol must be positive.")
 
-        A = self._assemble_pressure_gauge_matrix(coef, q=q)
-        b0 = bm.array([0])
+        has_dirichlet = (
+            dirichlet_value is not None and dirichlet_threshold is not None
+        )
+        if has_dirichlet:
+            A = BilinearForm(self.space).add_integrator(
+                ScalarDiffusionIntegrator(q=q, coef=coef)
+            ).assembly()
+            boundary_coef = self._boundary_face_coefficient(coef)
+            pressure_bc = DirichletBC(self.mesh, dirichlet_value)
+        else:
+            A = self._assemble_pressure_gauge_matrix(coef, q=q)
+            b0 = bm.array([0])
 
         def solve_with_cross_rhs(cross):
-            b = bm.concatenate([rhs + cross, b0], axis=0)
+            b = rhs + cross
+            if has_dirichlet:
+                A_bc, b_bc = pressure_bc.DiffusionApply(
+                    A,
+                    b,
+                    coef=boundary_coef,
+                    threshold=dirichlet_threshold,
+                )
+                return self.linear_solver.solve(A_bc, b_bc)
+
+            b = bm.concatenate([b, b0], axis=0)
             return self.linear_solver.solve(A, b)[:-1]
 
         cross_rhs = bm.zeros_like(rhs)

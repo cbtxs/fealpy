@@ -19,7 +19,15 @@ class RhieChowInterpolation:
     the momentum equation or choose pressure relaxation parameters.
     """
 
-    def __init__(self, mesh):
+    def __init__(
+        self,
+        mesh,
+        *,
+        pressure_gradient_method="extended_lsq",
+        velocity_interpolation="average",
+        pressure_dirichlet=None,
+        pressure_dirichlet_threshold=None,
+    ):
         from .gradient_reconstruct import GradientReconstruct
         from .vector_decomposition import VectorDecomposition
 
@@ -31,21 +39,67 @@ class RhieChowInterpolation:
         self.cell_measures = mesh.entity_measure("cell")
         self.edge_to_cell = mesh.edge_to_cell()
         self.cell_to_edge = mesh.cell_to_edge()
-        self.gradient_reconstruct = GradientReconstruct(mesh)
+        self.velocity_interpolation = self._validate_velocity_interpolation(
+            velocity_interpolation
+        )
+        self.pressure_dirichlet = pressure_dirichlet
+        self.pressure_dirichlet_threshold = pressure_dirichlet_threshold
+        self.gradient_reconstruct = GradientReconstruct(
+            mesh,
+            method=pressure_gradient_method,
+            gd=pressure_dirichlet,
+            bc_type="dirichlet" if pressure_dirichlet is not None else None,
+            threshold=pressure_dirichlet_threshold,
+        )
         self.e, self.d = VectorDecomposition(mesh).centroid_vector_calculation()
+
+    @staticmethod
+    def _validate_velocity_interpolation(velocity_interpolation):
+        if velocity_interpolation not in {"average", "linear"}:
+            raise ValueError(
+                "velocity_interpolation must be 'average' or 'linear'."
+            )
+        return velocity_interpolation
+
+    def _owner_weight(self):
+        if self.velocity_interpolation == "average":
+            return 0.5 * bm.ones(self.NF, dtype=self.cm.dtype)
+
+        owner = self.edge_to_cell[:, 0]
+        neighbour = self.edge_to_cell[:, 1]
+        face_centers = self.mesh.entity_barycenter("face")
+        Sf = self.mesh.edge_normal()
+        own = bm.abs(
+            bm.einsum("ij,ij->i", Sf, face_centers - self.cell_centers[owner])
+        )
+        nei = bm.abs(
+            bm.einsum("ij,ij->i", Sf, self.cell_centers[neighbour] - face_centers)
+        )
+        total = own + nei
+        weight = bm.where(total > 0.0, nei / total, 0.5)
+        return bm.where(owner == neighbour, 1.0, weight)
+
+    def _interpolate_cell_scalar(self, value):
+        weight = self._owner_weight()
+        owner = self.edge_to_cell[:, 0]
+        neighbour = self.edge_to_cell[:, 1]
+        return weight * value[owner] + (1.0 - weight) * value[neighbour]
+
+    def _interpolate_cell_vector(self, value):
+        weight = self._owner_weight()
+        owner = self.edge_to_cell[:, 0]
+        neighbour = self.edge_to_cell[:, 1]
+        return weight[:, None] * value[owner] + (1.0 - weight)[:, None] * value[neighbour]
 
     def Ucell2edge(self, u, ap, face_response_coefficient=None):
         """Interpolate cell velocity and pressure response to faces."""
         u = bm.stack([u[:self.NC],u[self.NC:]],axis=-1)
         e2c = self.edge_to_cell
-        # x = ap[e2c[:,0]]*u[e2c[:,0]]+ap[e2c[:,1]]*u[e2c[:,1]]
-        # y = ap[e2c[:,0]]+ap[e2c[:,1]]
-        # uf = x/y
-        uf = (u[e2c[:,0]]+u[e2c[:,1]])/2
+        uf = self._interpolate_cell_vector(u)
         if face_response_coefficient is None:
-            ap = ap[:self.NC][:,None]
-            dp = self.cm[:,None]/ap
-            df = (dp[e2c[:,1]]+dp[e2c[:,0]])/2
+            ap = ap[:self.NC]
+            dp = self.cm / ap
+            df = self._interpolate_cell_scalar(dp)[:, None]
         else:
             df = as_backend_array(face_response_coefficient, dtype=uf.dtype)[:, None]
         return uf,df
@@ -58,11 +112,34 @@ class RhieChowInterpolation:
         """
         e, d = self.e, self.d
         partial_p = (p[self.edge_to_cell[:,1]] - p[self.edge_to_cell[:,0]])/d
+        partial_p = self._apply_pressure_dirichlet_boundary_partial(p, partial_p)
         e_cf = e / d[:, None]
         grad_p = self.gradient_reconstruct.cell_gradient(p)
         overline_grad_p_f = self.gradient_reconstruct.face_gradient(grad_p)
         GradientDifference = (partial_p - bm.einsum('ij,ij->i', overline_grad_p_f, e_cf))[:, None]*e_cf
         return GradientDifference
+
+    def _apply_pressure_dirichlet_boundary_partial(self, p, partial_p):
+        """Use pressure Dirichlet data in boundary compact pressure jumps."""
+        if self.pressure_dirichlet is None:
+            return partial_p
+
+        bd_face = self.mesh.boundary_face_index()
+        face_centers = self.mesh.entity_barycenter("face")[bd_face]
+        if self.pressure_dirichlet_threshold is not None:
+            flag = self.gradient_reconstruct._boundary_face_flag(
+                face_centers, self.pressure_dirichlet_threshold
+            )
+            bd_face = bd_face[flag]
+            face_centers = face_centers[flag]
+
+        if bd_face.shape[0] == 0:
+            return partial_p
+
+        owner = self.edge_to_cell[bd_face, 0]
+        bd_value = self.pressure_dirichlet(face_centers)
+        bd_partial = (bd_value - p[owner]) / self.d[bd_face]
+        return bm.set_at(partial_p, bd_face, bd_partial)
 
     def Interpolation(self, u, ap, p, face_response_coefficient=None):
         """Return pressure-stabilized vector face velocity."""

@@ -25,6 +25,15 @@ from .pressure_correction_control import (
     pressure_correction_converged,
 )
 from .fvm_linear_solver import FVMLinearSolver, FVMLinearSolverConfig
+from .engineering_boundary_conditions import (
+    BoundaryCondition,
+    BoundaryPatch,
+    EngineeringBoundaryConditions,
+)
+from .collocated_simple_solver import CollocatedSimpleSolver
+from .simple_solver_data import SimpleBoundaryConditions, SimpleSolverControls
+from .lid_driven_cavity_case import LidDrivenCavityCase
+from .cylinder_flow_case import CylinderFlowCase
 
 from .poisson_fvm_model import PoissonFVMModel
 

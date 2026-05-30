@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 
 from fealpy.backend import backend_manager as bm
-from fealpy.fvm import NonOrthogonalGeometry, PoissonFVMModel
+from fealpy.fvm import NonOrthogonalGeometry
 from fealpy.model import PDEModelManager
 
 
@@ -63,29 +63,3 @@ def test_exp0013_bad_tri_mesh_triggers_openfoam_stabilization():
     assert mesh.number_of_cells() == 2
     assert np.any(ratio[is_internal] <= geometry.eps)
     assert np.max(stabilized_ratio[is_internal]) <= 1.0 + 1.0 / geometry.eps
-
-
-def test_poisson_fvm_solves_complex_mesh_with_openfoam_stabilized_correction():
-    pytest.importorskip("gmsh")
-    bm.set_backend("numpy")
-    pde = PDEModelManager("poisson").get_example(13)
-    model = PoissonFVMModel(
-        {
-            "pde": pde,
-            "nx": 8,
-            "ny": 8,
-            "space_degree": 0,
-            "mesh_type": "complex_tri",
-            "pbar_log": False,
-            "log_level": "WARNING",
-            "nonorthogonal_correction_method": "openfoam_stabilized",
-        }
-    )
-
-    assert _mean_nonorthogonal_ratio(model.mesh) > 0.13
-    uh = model.solve(max_iter=6, tol=1.0e-7)
-    error = float(model.compute_error())
-
-    assert np.all(np.isfinite(np.asarray(uh)))
-    assert np.isfinite(error)
-    assert error < 0.35

@@ -1,0 +1,260 @@
+from fealpy.backend import backend_manager as bm
+
+
+def _constant_velocity(points):
+    return bm.stack([bm.ones(points.shape[0]), bm.zeros(points.shape[0])], axis=-1)
+
+
+def _left_right_engineering_bc(mesh, *, with_pressure=False):
+    from fealpy.fvm import (
+        BoundaryCondition,
+        BoundaryPatch,
+        EngineeringBoundaryConditions,
+    )
+
+    conditions = [
+        BoundaryCondition("velocity", "left", "dirichlet", _constant_velocity),
+        BoundaryCondition("velocity", "right", "natural", None),
+    ]
+    if with_pressure:
+        conditions.append(BoundaryCondition("pressure", "right", "dirichlet", 0.0))
+
+    return EngineeringBoundaryConditions(
+        mesh,
+        patches=[
+            BoundaryPatch("left", lambda p: bm.abs(p[:, 0]) < 1.0e-12),
+            BoundaryPatch("right", lambda p: bm.abs(p[:, 0] - 1.0) < 1.0e-12),
+        ],
+        conditions=conditions,
+    )
+
+
+def _simple_model_with_left_right_bc(*, with_pressure=False, **options):
+    from fealpy.fvm import NSFVMSimpleModel
+
+    def build_bc(mesh, pde):
+        return _left_right_engineering_bc(mesh, with_pressure=with_pressure)
+
+    model_options = {
+        "pde": 6,
+        "nx": 4,
+        "ny": 4,
+        "space_degree": 0,
+        "log_level": "ERROR",
+        "pbar_log": False,
+        "boundary_conditions": build_bc,
+    }
+    model_options.update(options)
+    return NSFVMSimpleModel(model_options)
+
+
+def test_engineering_boundary_conditions_select_only_dirichlet_patches():
+    bm.set_backend("numpy")
+    from fealpy.model import PDEModelManager
+
+    pde = PDEModelManager("navier_stokes").get_example(6)
+    mesh = pde.init_mesh["uniform_qrad"](nx=4, ny=4)
+
+    bc = _left_right_engineering_bc(mesh)
+
+    bd_face = mesh.boundary_face_index()
+    face_centers = mesh.entity_barycenter("face")[bd_face]
+    flag = bc.dirichlet_threshold("velocity")(face_centers)
+    selected_faces, selected_values = bc.boundary_face_velocity("velocity")
+
+    assert int(bm.to_numpy(bm.sum(flag))) == 4
+    assert selected_faces.shape[0] == 4
+    assert selected_values.shape == (4, 2)
+    assert bool(bm.all(mesh.entity_barycenter("face")[selected_faces][:, 0] < 1.0e-12))
+    assert bool(bm.all(selected_values[:, 0] == 1.0))
+    assert bool(bm.all(selected_values[:, 1] == 0.0))
+
+
+def test_simple_model_uses_engineering_boundary_conditions_for_face_constraints():
+    bm.set_backend("numpy")
+    model = _simple_model_with_left_right_bc()
+
+    bd_edge, bd_value = model._boundary_face_velocity()
+    face_centers = model.mesh.entity_barycenter("face")[bd_edge]
+
+    assert bd_edge.shape[0] == 4
+    assert bd_value.shape == (4, 2)
+    assert bool(bm.all(face_centers[:, 0] < 1.0e-12))
+    assert model.velocity_gradient.threshold is not None
+
+
+def test_cylinder_case_engineering_boundary_conditions_excludes_outlet_velocity():
+    bm.set_backend("numpy")
+    import pytest
+    from fealpy.fvm import CylinderFlowCase
+
+    pytest.importorskip("gmsh")
+    case = CylinderFlowCase(
+        mesh_size=0.12,
+        cylinder_mesh_size=0.03,
+        wake_mesh_size=0.06,
+    )
+    mesh = case.init_mesh["improved_tri"]()
+    bc = case.engineering_boundary_conditions(mesh)
+
+    bd_edge, _ = bc.boundary_face_velocity("velocity")
+    face_centers = mesh.entity_barycenter("face")[bd_edge]
+
+    assert bool(bm.any(case.is_inlet_boundary(face_centers)))
+    assert bool(bm.any(case.is_wall_boundary(face_centers)))
+    assert bool(bm.any(case.is_cylinder_boundary(face_centers)))
+    assert not bool(bm.any(case.is_outlet_boundary(face_centers)))
+
+
+def test_simple_pressure_dirichlet_outlet_contributes_pressure_correction_flux():
+    bm.set_backend("numpy")
+    model = _simple_model_with_left_right_bc(with_pressure=True)
+    p_corr = bm.ones(model.NC)
+    response_coef = bm.ones(model.mesh.number_of_faces())
+    flux = model.pressure_correction_flux(p_corr, response_coef)
+    outlet_faces = model.engineering_bc.patch_face_index("right")
+
+    assert float(bm.max(bm.abs(flux[outlet_faces]))) > 1.0e-12
+
+
+def test_simple_pressure_gradient_uses_engineering_pressure_dirichlet_boundary():
+    bm.set_backend("numpy")
+    model = _simple_model_with_left_right_bc(with_pressure=True)
+
+    assert model.pressure_gradient.gd is not None
+    assert model.pressure_gradient.threshold is not None
+
+
+def test_simple_gradient_methods_are_configurable_for_pressure_and_velocity():
+    bm.set_backend("numpy")
+    import pytest
+    from fealpy.fvm import NSFVMSimpleModel
+
+    with pytest.raises(ValueError, match="Unknown cell_gradient variant"):
+        NSFVMSimpleModel(
+            {
+                "pde": 6,
+                "nx": 4,
+                "ny": 4,
+                "space_degree": 0,
+                "log_level": "ERROR",
+                "pbar_log": False,
+                "pressure_gradient_method": "not_a_gradient_method",
+            }
+        )
+
+    with pytest.raises(ValueError, match="Unknown cell_gradient variant"):
+        NSFVMSimpleModel(
+            {
+                "pde": 6,
+                "nx": 4,
+                "ny": 4,
+                "space_degree": 0,
+                "log_level": "ERROR",
+                "pbar_log": False,
+                "velocity_gradient_method": "not_a_gradient_method",
+            }
+        )
+
+
+def test_simple_rhie_chow_keeps_independent_default_gradient_method():
+    bm.set_backend("numpy")
+    from fealpy.fvm import NSFVMSimpleModel
+
+    model = NSFVMSimpleModel(
+        {
+            "pde": 6,
+            "nx": 4,
+            "ny": 4,
+            "space_degree": 0,
+            "log_level": "ERROR",
+            "pbar_log": False,
+            "pressure_gradient_method": "face_lsq",
+        }
+    )
+    rhie_chow = model._build_rhie_chow_interpolation()
+
+    grad_diff = rhie_chow.GradientDifference(bm.ones(model.NC))
+    assert grad_diff.shape == (model.mesh.number_of_faces(), 2)
+
+
+def test_simple_rhie_chow_gradient_method_is_explicitly_configurable():
+    bm.set_backend("numpy")
+    import pytest
+    from fealpy.fvm import NSFVMSimpleModel
+
+    model = NSFVMSimpleModel(
+        {
+            "pde": 6,
+            "nx": 4,
+            "ny": 4,
+            "space_degree": 0,
+            "log_level": "ERROR",
+            "pbar_log": False,
+            "rhie_chow_pressure_gradient_method": "face_lsq",
+        }
+    )
+    rhie_chow = model._build_rhie_chow_interpolation()
+
+    with pytest.raises(ValueError, match="face_lsq stencil is rank deficient"):
+        rhie_chow.GradientDifference(bm.ones(model.NC))
+
+
+def test_simple_face_interpolation_method_controls_response_and_rhie_chow():
+    bm.set_backend("numpy")
+    import numpy as np
+    from fealpy.fvm import NSFVMSimpleModel
+
+    model = NSFVMSimpleModel(
+        {
+            "pde": 6,
+            "nx": 4,
+            "ny": 4,
+            "space_degree": 0,
+            "log_level": "ERROR",
+            "pbar_log": False,
+            "face_interpolation_method": "linear",
+        }
+    )
+    ap = bm.ones(2 * model.NC)
+
+    response = np.asarray(model._pressure_response_face_coefficient(ap))
+    expected = np.asarray(
+        model.face_interpolate_cell_scalar(model.cm / ap[: model.NC], method="linear")
+    )
+
+    assert np.linalg.norm(response - expected) < 1.0e-12
+    assert model._build_rhie_chow_interpolation().velocity_interpolation == "linear"
+
+
+def test_rhie_chow_uses_engineering_pressure_dirichlet_boundary():
+    bm.set_backend("numpy")
+    model = _simple_model_with_left_right_bc(with_pressure=True)
+    rhie_chow = model._build_rhie_chow_interpolation()
+    pressure = bm.ones(model.NC)
+    outlet_faces = model.engineering_bc.patch_face_index("right")
+    normal_component = bm.einsum(
+        "ij,ij->i",
+        rhie_chow.GradientDifference(pressure)[outlet_faces],
+        model.mesh.edge_normal()[outlet_faces],
+    )
+
+    assert float(bm.max(bm.abs(normal_component))) > 1.0e-12
+
+
+def test_simple_natural_velocity_outlet_adds_owner_convection_diagonal():
+    bm.set_backend("numpy")
+    from fealpy.sparse import spdiags
+
+    model = _simple_model_with_left_right_bc(with_pressure=True)
+    A = spdiags(bm.zeros(2 * model.NC), 0, 2 * model.NC, 2 * model.NC)
+    uf = bm.zeros((model.mesh.number_of_faces(), 2))
+    uf = bm.set_at(uf, (slice(None), 0), 1.0)
+
+    A = model._apply_velocity_natural_convection(A, uf)
+    diag = bm.array(A.to_scipy().diagonal())
+    outlet_faces = model.engineering_bc.patch_face_index("right")
+    outlet_owners = model.mesh.edge_to_cell()[outlet_faces, 0]
+
+    assert float(bm.min(diag[outlet_owners])) > 0.0
+    assert float(bm.min(diag[outlet_owners + model.NC])) > 0.0

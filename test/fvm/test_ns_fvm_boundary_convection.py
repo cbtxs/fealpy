@@ -166,6 +166,8 @@ def test_simple_mass_residual_is_normalized_and_scale_invariant():
 
 def test_collocated_simple_records_common_residuals(monkeypatch):
     bm.set_backend("numpy")
+    import fealpy.fvm.collocated_simple_solver as simple_solver
+    import fealpy.fvm.simple_iteration_control as simple_iteration
     import fealpy.fvm.ns_fvm_simple_model as simple_model
 
     class FakeRhieChow:
@@ -175,9 +177,10 @@ def test_collocated_simple_records_common_residuals(monkeypatch):
         def Interpolation(self, u, ap, p):
             return bm.zeros((self.mesh.number_of_faces(), 2))
 
-    monkeypatch.setattr(simple_model, "RhieChowInterpolation", FakeRhieChow)
-    monkeypatch.setattr(simple_model, "collocated_mass_residual", lambda mesh, uf: 0.0)
-    monkeypatch.setattr(simple_model, "relative_l2_update", lambda mesh, update, p: 0.0)
+    monkeypatch.setattr(simple_solver, "RhieChowInterpolation", FakeRhieChow)
+    monkeypatch.setattr(simple_iteration, "collocated_mass_residual", lambda mesh, uf: 0.0)
+    monkeypatch.setattr(simple_iteration, "cell_l2_norm", lambda mesh, value: 0.0)
+    monkeypatch.setattr(simple_iteration, "relative_l2_update", lambda mesh, update, p: 0.0)
     monkeypatch.setattr(
         simple_model.NSFVMSimpleModel,
         "temporary_velocity",
@@ -186,7 +189,7 @@ def test_collocated_simple_records_common_residuals(monkeypatch):
     monkeypatch.setattr(
         simple_model.NSFVMSimpleModel,
         "pressure_correct",
-        lambda self, ap, uf: bm.zeros(self.NC),
+        lambda self, ap, uf, *, response_coef=None: bm.zeros(self.NC),
     )
 
     model = simple_model.NSFVMSimpleModel(
@@ -201,16 +204,22 @@ def test_collocated_simple_records_common_residuals(monkeypatch):
     )
     model.pde.dirichlet_velocity = lambda points: bm.zeros_like(points)
 
-    model.solve(max_iter=5, tol=1.0e-5, relax=0.32)
+    model.solve(max_iter=5, tol=1.0e-5)
 
     assert len(model.residuals) == 1
     assert {
         key: model.residuals[0][key]
-        for key in ("mass", "pressure_update", "pressure_correction")
+        for key in (
+            "mass",
+            "pressure_update",
+            "pressure_correction",
+            "pressure_relax",
+        )
     } == {
         "mass": 0.0,
         "pressure_update": 0.0,
         "pressure_correction": 0.0,
+        "pressure_relax": 0.03,
     }
 
 

@@ -1,7 +1,10 @@
 import numpy as np
 
 from fealpy.fem import LinearForm
+from fealpy.functionspace import ScaledMonomialSpace2d
+from fealpy.mesh import TriangleMesh
 from fealpy.fvm import (
+    ConvectionIntegrator,
     GradientReconstruct,
     NSFVMPISOModel,
     NSFVMSimpleModel,
@@ -21,6 +24,81 @@ def linear_velocity(points):
     u = points[:, 0] + 2.0 * points[:, 1] + 3.0
     v = -0.5 * points[:, 0] + 0.25 * points[:, 1] - 1.0
     return np.stack([u, v], axis=-1)
+
+
+def _skew_two_cell_mesh():
+    nodes = np.array(
+        [
+            [0.0, 0.0],
+            [1.0, 0.0],
+            [0.2, 1.0],
+            [1.5, 1.0],
+        ],
+        dtype=float,
+    )
+    cells = np.array([[0, 1, 2], [1, 3, 2]], dtype=np.int32)
+    return TriangleMesh(nodes, cells)
+
+
+def _openfoam_owner_weight(mesh, face):
+    e2c = np.asarray(mesh.edge_to_cell()[:, :2])
+    owner, neighbour = e2c[face]
+    face_center = np.asarray(mesh.entity_barycenter("face")[face])
+    cell_center = np.asarray(mesh.entity_barycenter("cell"))
+    sf = np.asarray(mesh.edge_normal()[face])
+    own = abs(float(np.dot(sf, face_center - cell_center[owner])))
+    nei = abs(float(np.dot(sf, cell_center[neighbour] - face_center)))
+    return nei / (own + nei)
+
+
+def test_convection_integrator_can_use_openfoam_linear_face_weights():
+    mesh = _skew_two_cell_mesh()
+    space = ScaledMonomialSpace2d(mesh, 0)
+    e2c = np.asarray(mesh.edge_to_cell()[:, :2])
+    internal_face = int(np.flatnonzero(e2c[:, 0] != e2c[:, 1])[0])
+    face_velocity = np.tile(np.array([[0.7, -0.2]]), (mesh.number_of_faces(), 1))
+
+    local = np.asarray(
+        ConvectionIntegrator(
+            q=2,
+            coef=face_velocity,
+            interpolation="linear",
+        ).assembly(space)
+    )
+
+    weight = _openfoam_owner_weight(mesh, internal_face)
+    sf = np.asarray(mesh.edge_normal()[internal_face])
+    flux = float(np.dot(sf, face_velocity[internal_face]))
+    expected = flux * np.array(
+        [
+            [weight, 1.0 - weight],
+            [-weight, -(1.0 - weight)],
+        ]
+    )
+
+    assert abs(weight - 0.5) > 1.0e-3
+    assert np.linalg.norm(local[internal_face] - expected) < 1.0e-12
+
+
+def test_rhie_chow_can_use_openfoam_linear_velocity_interpolation():
+    mesh = _skew_two_cell_mesh()
+    e2c = np.asarray(mesh.edge_to_cell()[:, :2])
+    internal_face = int(np.flatnonzero(e2c[:, 0] != e2c[:, 1])[0])
+    weight = _openfoam_owner_weight(mesh, internal_face)
+    velocity = np.array([[1.0, -2.0], [4.0, 3.0]])
+    flat_velocity = velocity.flatten(order="F")
+    ap = np.ones(2 * mesh.number_of_cells())
+
+    uf, _ = RhieChowInterpolation(
+        mesh,
+        velocity_interpolation="linear",
+    ).Ucell2edge(flat_velocity, ap)
+
+    owner, neighbour = e2c[internal_face]
+    expected = weight * velocity[owner] + (1.0 - weight) * velocity[neighbour]
+
+    assert abs(weight - 0.5) > 1.0e-3
+    assert np.linalg.norm(np.asarray(uf[internal_face]) - expected) < 1.0e-12
 
 
 def test_simple_solver_pressure_gradient_integrator_is_exact_for_linear_pressure():
