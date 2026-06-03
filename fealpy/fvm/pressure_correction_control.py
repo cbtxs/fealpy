@@ -30,10 +30,7 @@ class PressureRelaxationConfig:
             raise ValueError("max_value must be positive.")
         if self.growth_factor <= 1.0:
             raise ValueError("growth_factor must be greater than 1.")
-        if (
-            self.severe_growth_factor is not None
-            and self.severe_growth_factor <= 1.0
-        ):
+        if self.severe_growth_factor is not None and self.severe_growth_factor <= 1.0:
             raise ValueError("severe_growth_factor must be greater than 1.")
         if self.patience < 1:
             raise ValueError("patience must be positive.")
@@ -57,18 +54,12 @@ class PressureRelaxationController:
     velocity correction formulas.
     """
 
-    def __init__(
-        self,
-        initial: float,
-        config: Optional[PressureRelaxationConfig] = None,
-    ):
+    def __init__(self, initial: float, config: Optional[PressureRelaxationConfig] = None):
         if initial <= 0.0:
             raise ValueError("initial pressure relaxation must be positive.")
         self.config = config or PressureRelaxationConfig(max_value=initial)
         self.value = initial
-        self.max_value = (
-            initial if self.config.max_value is None else self.config.max_value
-        )
+        self.max_value = initial if self.config.max_value is None else self.config.max_value
         self.deterioration_count = 0
         self.small_update_count = 0
         self.cooldown = 0
@@ -146,10 +137,7 @@ class PressureRelaxationController:
         return self.value, "increase"
 
     def _has_mass_history(self, residuals):
-        return (
-            self.config.mass_key in residuals[-1]
-            and self.config.mass_key in residuals[-2]
-        )
+        return self.config.mass_key in residuals[-1] and self.config.mass_key in residuals[-2]
 
     def _reset_deterioration(self):
         self.deterioration_count = 0
@@ -159,10 +147,7 @@ class PressureRelaxationController:
 
 def pressure_correction_converged(residual, tol_mass, tol_pressure_update):
     """Return whether pressure-correction residuals satisfy stopping criteria."""
-    return (
-        residual["mass"] < tol_mass
-        and residual["pressure_update"] < tol_pressure_update
-    )
+    return residual["mass"] < tol_mass and residual["pressure_update"] < tol_pressure_update
 
 
 def format_pressure_correction_log(

@@ -76,25 +76,16 @@ class CollocatedSimpleSolver(CollocatedNSFVMOperators):
             pbar_log=pbar_log,
             log_level=log_level,
         )
-        self.diffusion_coef = self._as_positive_scalar(
-            diffusion_coef, "diffusion_coef"
-        )
-        self.convection_coef = self._as_positive_scalar(
-            convection_coef, "convection_coef"
-        )
+        self.diffusion_coef = self._as_positive_scalar(diffusion_coef, "diffusion_coef")
+        self.convection_coef = self._as_positive_scalar(convection_coef, "convection_coef")
         self.source = source
         self.mesh = mesh
         self.cm = self.mesh.entity_measure("cell")
         self.NC = self.mesh.number_of_cells()
         self.iteration_control = SimpleIterationControl(self.mesh, self.logger)
-        self.boundary_conditions = self._validate_boundary_conditions(
-            boundary_conditions
-        )
+        self.boundary_conditions = self._validate_boundary_conditions(boundary_conditions)
         self._init_discretization(degree=self.controls.space_degree)
-        self.linear_solver = self._init_solver_backend(
-            linear_solver,
-            linear_solver_config,
-        )
+        self.linear_solver = self._init_solver_backend(linear_solver, linear_solver_config)
 
     @staticmethod
     def _build_logger(name, *, pbar_log=False, log_level="WARNING"):
@@ -116,13 +107,9 @@ class CollocatedSimpleSolver(CollocatedNSFVMOperators):
     def _validate_boundary_conditions(self, boundary_conditions):
         """Validate boundary-condition data required by the SIMPLE solver."""
         required = ("dirichlet_threshold", "dirichlet_value", "boundary_face_velocity")
-        missing = [
-            name for name in required if not hasattr(boundary_conditions, name)
-        ]
+        missing = [name for name in required if not hasattr(boundary_conditions, name)]
         if missing:
-            raise TypeError(
-                "boundary_conditions must provide " + ", ".join(required)
-            )
+            raise TypeError("boundary_conditions must provide " + ", ".join(required))
         return boundary_conditions
 
     def _init_solver_backend(self, linear_solver, linear_solver_config):
@@ -290,21 +277,12 @@ class CollocatedSimpleSolver(CollocatedNSFVMOperators):
         jump = p_corr[self.e2c[:, 0]] - p_corr[self.e2c[:, 1]]
         return coefficient * jump
 
-    def pressure_correction_flux(
-        self,
-        p_corr: TensorLike,
-        response_coef: TensorLike,
-    ) -> TensorLike:
+    def pressure_correction_flux(self, p_corr: TensorLike, response_coef: TensorLike) -> TensorLike:
         """Return the full pressure-correction flux used to correct mass flux."""
-        flux = (
-            self._pressure_correction_orthogonal_flux(p_corr, response_coef)
-            - self._pressure_correction_cross_flux(p_corr, response_coef)
-        )
-        return self._add_pressure_dirichlet_boundary_flux(
-            flux,
-            p_corr,
-            response_coef,
-        )
+        orthogonal_flux = self._pressure_correction_orthogonal_flux(p_corr, response_coef)
+        cross_flux = self._pressure_correction_cross_flux(p_corr, response_coef)
+        flux = orthogonal_flux - cross_flux
+        return self._add_pressure_dirichlet_boundary_flux(flux, p_corr, response_coef)
 
     def _add_pressure_dirichlet_boundary_flux(
         self,
@@ -369,11 +347,7 @@ class CollocatedSimpleSolver(CollocatedNSFVMOperators):
         if nonorthogonal_tol <= 0.0:
             raise ValueError("nonorthogonal_tol must be positive.")
 
-        dp_edge = (
-            self._pressure_response_face_coefficient(ap)
-            if response_coef is None
-            else response_coef
-        )
+        dp_edge = self._pressure_response_face_coefficient(ap) if response_coef is None else response_coef
         div_u = self.divergence.Reconstruct(uf)
         return self._solve_pressure_correction_with_cross_rhs(
             -div_u,
@@ -394,9 +368,7 @@ class CollocatedSimpleSolver(CollocatedNSFVMOperators):
     def _face_velocity(rhie_chow, u, ap, p, response_coef, bd_edge, bdedgeu):
         """Construct Rhie-Chow face velocity and enforce velocity Dirichlet data."""
         try:
-            uf = rhie_chow.Interpolation(
-                u, ap, p, face_response_coefficient=response_coef
-            )
+            uf = rhie_chow.Interpolation(u, ap, p, face_response_coefficient=response_coef)
         except TypeError:
             uf = rhie_chow.Interpolation(u, ap, p)
         return bm.set_at(uf, bd_edge, bdedgeu)
@@ -427,9 +399,7 @@ class CollocatedSimpleSolver(CollocatedNSFVMOperators):
     def _boundary_face_velocity(self):
         """Return only faces with prescribed velocity data when using patches."""
         try:
-            return self.boundary_conditions.boundary_face_velocity(
-                "velocity", mesh=self.mesh
-            )
+            return self.boundary_conditions.boundary_face_velocity("velocity", mesh=self.mesh)
         except TypeError:
             return self.boundary_conditions.boundary_face_velocity("velocity")
 
@@ -464,9 +434,7 @@ class CollocatedSimpleSolver(CollocatedNSFVMOperators):
 
         for iteration in range(1, max_iter + 1):
             response_coef = self._pressure_response_face_coefficient(ap)
-            uf = self._face_velocity(
-                rhie_chow, u, ap, p, response_coef, bd_edge, bdedgeu
-            )
+            uf = self._face_velocity(rhie_chow, u, ap, p, response_coef, bd_edge, bdedgeu)
             p_corr = self.pressure_correct(ap, uf, response_coef=response_coef)
             pressure_relax, p_update, residual = (
                 self.iteration_control.pressure_update_step(
@@ -486,9 +454,7 @@ class CollocatedSimpleSolver(CollocatedNSFVMOperators):
             )
             self.iteration_control.log_iteration(iteration, residual)
 
-            if pressure_correction_converged(
-                residual, tol_mass, tol_pressure_update
-            ):
+            if pressure_correction_converged(residual, tol_mass, tol_pressure_update):
                 self.logger.info("Converged.")
                 break
 

@@ -229,17 +229,7 @@ class NSFVMRCModel(ComputationalModel):
         omega = bm.minimum(omega_max, bm.maximum(omega_min, omega))
         return float(omega)
 
-    def _relax_pressure(
-        self,
-        p_old,
-        p_raw,
-        state,
-        *,
-        relaxation,
-        omega,
-        omega_min,
-        omega_max,
-    ):
+    def _relax_pressure(self, p_old, p_raw, state, *, relaxation, omega, omega_min, omega_max):
         delta = p_raw - p_old
         if relaxation == "picard":
             used_omega = 1.0

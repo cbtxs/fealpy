@@ -6,7 +6,7 @@ from .fvm_geometry import FVMGeometry
 
 
 class DivergenceReconstruct:
-    """Scatter signed face fluxes to owner and neighbour cells.
+    """Reconstruct cell-integrated flux imbalance from face velocities.
 
     The returned value is the integrated cell flux imbalance, not divided by
     cell measure.  This convention matches the SIMPLE pressure-correction RHS
@@ -16,6 +16,17 @@ class DivergenceReconstruct:
     def __init__(self, mesh):
         self.mesh = mesh
         self.fvm_geometry = FVMGeometry(mesh)
+
+    def Reconstruct(self, face_velocity):
+        """Divergence from vector collocated face velocities.
+
+        ``face_velocity`` is defined on mesh faces.  The owner-oriented scalar
+        flux is ``phi_f = dot(u_f, S_f)`` and is scattered to the owner cell
+        with positive sign and to the neighbour cell with negative sign.
+        """
+        Sf = self.fvm_geometry.S_f
+        face_flux = bm.einsum("ij,ij->i", face_velocity, Sf)
+        return self.fvm_geometry.scatter_face_flux_to_cells(face_flux)
 
     def StagReconstruct(self, edge_velocity):
         """Divergence from scalar staggered normal velocities."""
@@ -28,9 +39,3 @@ class DivergenceReconstruct:
         div_u = bm.index_add(div_u, pe2c[:, 0], flux, axis=0)
         div_u = bm.index_add(div_u, pe2c[mask, 1], flux[mask], axis=0, alpha=-1)
         return div_u
-    
-    def Reconstruct(self, edge_velocity):
-        """Divergence from vector collocated face velocities."""
-        Sf = self.fvm_geometry.S_f
-        integrator = bm.einsum('ij,ij->i', edge_velocity, Sf)
-        return self.fvm_geometry.scatter_face_flux_to_cells(integrator)

@@ -7,10 +7,11 @@ from fealpy.backend import backend_manager as bm
 from fealpy.model import ComputationalModel
 
 from .collocated_simple_solver import CollocatedSimpleSolver
+from .navier_stokes_model_adapter import NavierStokesModelAdapter
 from .simple_solver_data import SimpleBoundaryConditions, SimpleSolverControls
 
 
-class NSFVMSimpleModel(ComputationalModel, CollocatedSimpleSolver):
+class NSFVMSimpleModel(ComputationalModel, NavierStokesModelAdapter, CollocatedSimpleSolver):
     """Finite Volume SIMPLE model for PDE examples with exact solutions."""
 
     def __init__(self, options):
@@ -23,11 +24,17 @@ class NSFVMSimpleModel(ComputationalModel, CollocatedSimpleSolver):
         self.pde = pde
         self._init_momentum_coefficients(options)
         mesh = self._init_mesh(options)
-        boundary_conditions = self._init_simple_boundary_conditions(options, mesh, pde)
+        boundary_input = self._init_simple_boundary_conditions(options, mesh, pde)
         self.engineering_bc = (
-            boundary_conditions
+            boundary_input
             if options.get("boundary_conditions") is not None
+            and hasattr(boundary_input, "to_pde_boundary")
             else None
+        )
+        boundary_conditions = (
+            boundary_input.to_pde_boundary()
+            if hasattr(boundary_input, "to_pde_boundary")
+            else boundary_input
         )
         self._init_simple_solver(
             mesh=mesh,
@@ -52,10 +59,7 @@ class NSFVMSimpleModel(ComputationalModel, CollocatedSimpleSolver):
 
     def _init_mesh(self, options):
         """Build the PDE default mesh and apply optional uniform refinement."""
-        return self._init_navier_stokes_mesh(
-            options,
-            default_mesh_type="uniform_tri",
-        )
+        return self._init_navier_stokes_mesh(options, default_mesh_type="uniform_tri")
 
     def _init_simple_boundary_conditions(self, options, mesh, pde):
         """Translate model or engineering boundary input to solver boundary data."""
@@ -63,14 +67,8 @@ class NSFVMSimpleModel(ComputationalModel, CollocatedSimpleSolver):
         if boundary_conditions is None:
             return SimpleBoundaryConditions(pde.dirichlet_velocity)
 
-        if callable(boundary_conditions) and not hasattr(
-            boundary_conditions, "dirichlet_threshold"
-        ):
-            return self._call_boundary_condition_factory(
-                boundary_conditions,
-                mesh,
-                pde,
-            )
+        if callable(boundary_conditions) and not hasattr(boundary_conditions, "dirichlet_threshold"):
+            return self._call_boundary_condition_factory(boundary_conditions, mesh, pde)
         return boundary_conditions
 
     @staticmethod

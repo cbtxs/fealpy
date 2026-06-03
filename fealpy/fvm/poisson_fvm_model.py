@@ -48,12 +48,8 @@ class PoissonFVMModel(ComputationalModel):
         self.set_pde(options["pde"])
         self.set_mesh(options["nx"], options["ny"])
         self.set_space(options["space_degree"])
-        self.nonorthogonal_correction_method = options.get(
-            "nonorthogonal_correction_method", "bounded_over_relaxed"
-        )
-        self.nonorthogonal_limit_coeff = options.get(
-            "nonorthogonal_limit_coeff", 0.5
-        )
+        self.nonorthogonal_correction_method = options.get("nonorthogonal_correction_method", "bounded_over_relaxed")
+        self.nonorthogonal_limit_coeff = options.get("nonorthogonal_limit_coeff", 0.5)
 
     def __str__(self) -> str:
         """Return a summary of the model configuration."""

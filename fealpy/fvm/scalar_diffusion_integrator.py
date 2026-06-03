@@ -107,7 +107,7 @@ def scalar_diffusion_local_matrix(
     face_strength = bm.einsum("i,i->i", mag_E_f / geometry.mag_d_f, face_coef)
     direction_matrix = bm.array([[1.0, -1.0], [-1.0, 1.0]], dtype=space.ftype)
     eye_D = bm.eye(D, dtype=space.ftype, device=bm.get_device(space))
-    base_matrix = bm.einsum(
-        "ij,pq->ipjq", eye_D, direction_matrix
-    ).reshape(2 * D, 2 * D)
+    base_matrix = bm.einsum("ij,pq->ipjq", eye_D, direction_matrix).reshape(
+        2 * D, 2 * D
+    )
     return bm.einsum("i,ab->iab", face_strength, base_matrix)

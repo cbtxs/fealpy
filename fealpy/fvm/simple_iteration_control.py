@@ -92,11 +92,7 @@ class SimpleIterationControl:
         )
 
     @staticmethod
-    def pressure_relaxation_controller(
-        relax,
-        adaptive_pressure_relax,
-        relaxation_config,
-    ):
+    def pressure_relaxation_controller(relax, adaptive_pressure_relax, relaxation_config):
         """Create the optional pressure-relaxation controller."""
         if relax <= 0:
             raise ValueError("relax must be positive.")
@@ -104,10 +100,7 @@ class SimpleIterationControl:
             return None
         if isinstance(relaxation_config, dict):
             relaxation_config = PressureRelaxationConfig(**relaxation_config)
-        return PressureRelaxationController(
-            initial=relax,
-            config=relaxation_config,
-        )
+        return PressureRelaxationController(initial=relax, config=relaxation_config)
 
     def pressure_update_step(
         self,
@@ -140,9 +133,7 @@ class SimpleIterationControl:
             pressure_relax, relax_action = relaxation.update(residuals)
             if relax_action in {"reduce", "increase"}:
                 p_update = pressure_relax * p_corr
-                residual["pressure_update"] = relative_l2_update(
-                    self.mesh, p_update, p
-                )
+                residual["pressure_update"] = relative_l2_update(self.mesh, p_update, p)
 
         residual["pressure_relax"] = pressure_relax
         residual["pressure_relax_reduced"] = relax_action == "reduce"

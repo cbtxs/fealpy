@@ -2,8 +2,7 @@ from fealpy.backend import backend_manager as bm
 from fealpy.decorator.variantmethod import variantmethod
 
 from .backend_utils import as_backend_array
-from .face_interpolation import face_interpolation_owner_weight
-from .fvm_geometry import FVMGeometry
+from .fvm_geometry import FVMGeometry, face_interpolation_owner_weight
 
 
 class LSQGradientReconstruct:
@@ -48,9 +47,7 @@ class LSQGradientReconstruct:
             A = bm.zeros((NC, d.shape[-1], d.shape[-1]), dtype=cell_centers.dtype)
             cells = bm.arange(NC, dtype=N.dtype)
             for k in range(N.shape[1]):
-                A = self._add_lsq_matrix_samples(
-                    A, cells, d[:, k, :], sample_weight[:, k]
-                )
+                A = self._add_lsq_matrix_samples(A, cells, d[:, k, :], sample_weight[:, k])
             inv_A = self._invert_lsq_matrix(A, "extended_lsq")
             self._extended_lsq_cache_key = weights
             self._extended_lsq_cache = (N, weighted_d, A, inv_A, cell_centers)
@@ -62,21 +59,11 @@ class LSQGradientReconstruct:
         if U.ndim == 1:
             b = bm.zeros((U.shape[0], weighted_d.shape[-1]), dtype=U.dtype)
             for k in range(N.shape[1]):
-                b = self._add_lsq_rhs_samples(
-                    b,
-                    cells,
-                    weighted_d[:, k, :],
-                    U[N[:, k]] - U,
-                )
+                b = self._add_lsq_rhs_samples(b, cells, weighted_d[:, k, :], U[N[:, k]] - U)
         else:
             b = bm.zeros((U.shape[0], U.shape[1], weighted_d.shape[-1]), dtype=U.dtype)
             for k in range(N.shape[1]):
-                b = self._add_lsq_rhs_samples(
-                    b,
-                    cells,
-                    weighted_d[:, k, :],
-                    U[N[:, k]] - U,
-                )
+                b = self._add_lsq_rhs_samples(b, cells, weighted_d[:, k, :], U[N[:, k]] - U)
 
         bc_type = None
         if self.owner.gd is not None:
@@ -93,29 +80,14 @@ class LSQGradientReconstruct:
                     bd_owner = self.fvm_geometry.owner[bdedge]
                     face_centers = self.fvm_geometry.face_center
                     bd_d = face_centers[bdedge] - cell_centers[bd_owner]
-                    A_dirichlet = self._add_lsq_matrix_samples(
-                        bm.copy(A), bd_owner, bd_d, boundary_weight
-                    )
-                    inv_A_dirichlet = self._invert_lsq_matrix(
-                        A_dirichlet, "extended_lsq"
-                    )
+                    A_dirichlet = self._add_lsq_matrix_samples(bm.copy(A), bd_owner, bd_d, boundary_weight)
+                    inv_A_dirichlet = self._invert_lsq_matrix(A_dirichlet, "extended_lsq")
                     self._extended_lsq_dirichlet_cache_key = cache_key
-                    self._extended_lsq_dirichlet_cache = (
-                        bdedge,
-                        bd_owner,
-                        bd_d,
-                        inv_A_dirichlet,
-                    )
+                    self._extended_lsq_dirichlet_cache = (bdedge, bd_owner, bd_d, inv_A_dirichlet)
                 bdedge, bd_owner, bd_d, inv_A = self._extended_lsq_dirichlet_cache
                 face_centers = self.fvm_geometry.face_center
                 bd_value = self.owner.gd(face_centers[bdedge])
-                b = self._add_lsq_rhs_samples(
-                    b,
-                    bd_owner,
-                    bd_d,
-                    bd_value - U[bd_owner],
-                    boundary_weight,
-                )
+                b = self._add_lsq_rhs_samples(b, bd_owner, bd_d, bd_value - U[bd_owner], boundary_weight)
 
         grad = self._solve_lsq_system(A, b, "extended_lsq", inv_A=inv_A)
 
@@ -194,12 +166,7 @@ class LSQGradientReconstruct:
         if self.owner.gd is not None:
             face_centers = self.fvm_geometry.face_center
             bd_value = self.owner.gd(face_centers[bdedge])
-            b = self._add_lsq_rhs_samples(
-                b,
-                bd_owner,
-                bd_d,
-                bd_value - U[bd_owner],
-            )
+            b = self._add_lsq_rhs_samples(b, bd_owner, bd_d, bd_value - U[bd_owner])
 
         return self._solve_lsq_system(A, b, "face_lsq", inv_A=inv_A)
 
@@ -219,10 +186,7 @@ class LSQGradientReconstruct:
             A = bm.zeros((NC, 2, 2), dtype=cell_centers.dtype)
             d = cell_centers[internal_neighbour] - cell_centers[internal_owner]
             scale = face_measure[internal_face] / bm.einsum("ij,ij->i", d, d)
-            owner_weight = face_interpolation_owner_weight(
-                self.mesh,
-                method="linear",
-            )[internal_face]
+            owner_weight = face_interpolation_owner_weight(self.mesh, method="linear")[internal_face]
             owner_scale = (1.0 - owner_weight) * scale
             neighbour_scale = owner_weight * scale
             A = self._add_lsq_matrix_samples(A, internal_owner, d, owner_scale)
@@ -272,9 +236,7 @@ class LSQGradientReconstruct:
 
         delta = U[internal_neighbour] - U[internal_owner]
         b = self._add_lsq_rhs_samples(b, internal_owner, d, delta, owner_scale)
-        b = self._add_lsq_rhs_samples(
-            b, internal_neighbour, d, delta, neighbour_scale
-        )
+        b = self._add_lsq_rhs_samples(b, internal_neighbour, d, delta, neighbour_scale)
 
         if self.owner.gd is not None:
             bc_type = "dirichlet" if self.owner.bc_type is None else self.owner.bc_type
@@ -293,17 +255,11 @@ class LSQGradientReconstruct:
                 points - cell_centers[selected_owner],
             )[:, None]
             face_measure = self.fvm_geometry.mag_S_f
-            selected_scale = (
-                face_measure[selected] / bm.einsum("ij,ij->i", selected_d, selected_d)
-            )
+            selected_scale = face_measure[selected] / bm.einsum("ij,ij->i", selected_d, selected_d)
             bd_value = self.owner.gd(points)
             if bc_type == "neumann":
                 normal_distance = bm.abs(
-                    bm.einsum(
-                        "ij,ij->i",
-                        points - cell_centers[selected_owner],
-                        selected_normal,
-                    )
+                    bm.einsum("ij,ij->i", points - cell_centers[selected_owner], selected_normal)
                 )
                 if U.ndim == 1:
                     bd_value = U[selected_owner] + bd_value * normal_distance
@@ -384,19 +340,13 @@ class LSQGradientReconstruct:
             return bm.einsum("nij,nj->ni", inv_A, b)
         return bm.einsum("nij,nkj->nki", inv_A, b)
 
-    def _solve_cell_neumann_constraint(
-        self, grad, A, b, bd_value, unit_normal, cell, local_indices
-    ):
+    def _solve_cell_neumann_constraint(self, grad, A, b, bd_value, unit_normal, cell, local_indices):
         local_indices = bm.array(local_indices, dtype=bm.int64)
         normal = unit_normal[local_indices]
         n_constraint = len(local_indices)
         kkt = bm.zeros((2 + n_constraint, 2 + n_constraint), dtype=A.dtype)
         kkt = bm.set_at(kkt, (slice(None, 2), slice(None, 2)), A[cell])
-        kkt = bm.set_at(
-            kkt,
-            (slice(None, 2), slice(2, None)),
-            bm.swapaxes(normal, 0, 1),
-        )
+        kkt = bm.set_at(kkt, (slice(None, 2), slice(2, None)), bm.swapaxes(normal, 0, 1))
         kkt = bm.set_at(kkt, (slice(2, None), slice(None, 2)), normal)
 
         if b.ndim == 2:
@@ -453,9 +403,7 @@ class GreenGaussGradientReconstruct:
         if self.owner.bc_type is not None and self.owner.gd is None:
             raise ValueError("gd must be provided when bc_type is set.")
         if self.owner.bc_type not in (None, "dirichlet", "neumann"):
-            raise ValueError(
-                f"Unknown Green-Gauss bc_type: {self.owner.bc_type!r}."
-            )
+            raise ValueError(f"Unknown Green-Gauss bc_type: {self.owner.bc_type!r}.")
 
         U = as_backend_array(U)
         cell_measure = self.mesh.entity_measure("cell")
@@ -487,16 +435,12 @@ class GreenGaussGradientReconstruct:
             else:
                 unit_normal = self.fvm_geometry.n_f[bdedge]
                 center_to_face = points - self.fvm_geometry.cell_center[bd_owner]
-                normal_distance = bm.abs(
-                    bm.einsum("ij,ij->i", center_to_face, unit_normal)
-                )
+                normal_distance = bm.abs(bm.einsum("ij,ij->i", center_to_face, unit_normal))
                 normal_derivative = self.owner.gd(points)
                 if scalar_field:
                     bd_value = U[bd_owner] + normal_derivative * normal_distance
                 else:
-                    bd_value = (
-                        U[bd_owner] + normal_derivative * normal_distance[:, None]
-                    )
+                    bd_value = U[bd_owner] + normal_derivative * normal_distance[:, None]
 
             if scalar_field:
                 flux_grad = bd_value[:, None] * self.owner.S_f[bdedge]

@@ -7,6 +7,9 @@ from fealpy.fvm import (
     FVMGeometry,
     face_interpolation_owner_weight,
 )
+from fealpy.fvm.fvm_geometry import (
+    face_interpolation_owner_weight as geometry_face_interpolation_owner_weight,
+)
 from fealpy.mesh import QuadrangleMesh, TriangleMesh
 
 
@@ -189,12 +192,22 @@ def test_decomposition_quantities_are_not_initialized_as_basic_geometry():
 
 
 @pytest.mark.parametrize("mesh", _meshes())
-def test_linear_owner_weight_matches_existing_face_interpolation(mesh):
+def test_linear_owner_weight_matches_exported_face_interpolation(mesh):
     geometry = FVMGeometry(mesh)
 
     np.testing.assert_allclose(
         np.asarray(geometry.linear_owner_weight()),
         np.asarray(face_interpolation_owner_weight(mesh, method="linear")),
+        rtol=1.0e-13,
+        atol=1.0e-13,
+    )
+
+
+@pytest.mark.parametrize("mesh", _meshes())
+def test_face_interpolation_owner_weight_is_exported_from_geometry(mesh):
+    np.testing.assert_allclose(
+        np.asarray(geometry_face_interpolation_owner_weight(mesh, method="linear")),
+        np.asarray(FVMGeometry(mesh).linear_owner_weight()),
         rtol=1.0e-13,
         atol=1.0e-13,
     )

@@ -53,9 +53,7 @@ class ScalarSourceIntegrator(LinearInt, SrcInt, CellInt):
         source = self.source
         mesh = getattr(space, 'mesh', None)
         bcs, ws, cm, index = self.fetch(space, indices)
-        val = process_coef_func(
-            source, bcs=bcs, mesh=mesh, etype='cell', index=index
-        )
+        val = process_coef_func(source, bcs=bcs, mesh=mesh, etype='cell', index=index)
         # val: (Q, NC) for scalar data or (Q, NC, D) for vector data.
         if val.ndim == 2:
             return bm.einsum('j, qj, q -> q', ws, val, cm)

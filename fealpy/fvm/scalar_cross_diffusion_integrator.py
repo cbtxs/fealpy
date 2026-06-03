@@ -84,11 +84,7 @@ class ScalarCrossDiffusionIntegrator(LinearInt, OpInt, FaceInt):
     def fetch(self, space: _FS):
         index = self.index
         mesh = self._mesh(space)
-        geometry = (
-            self.geometry
-            if self.geometry is not None
-            else FVMGeometry(mesh, index=index)
-        )
+        geometry = self.geometry if self.geometry is not None else FVMGeometry(mesh, index=index)
         return geometry.face_to_cell, geometry
 
     @staticmethod
@@ -166,9 +162,7 @@ def scalar_cross_diffusion_face_flux(
         face_flux = bm.array(face_flux_correction, dtype=space.ftype)
     else:
         if grad_f is None:
-            raise ValueError(
-                "grad_f is required when face_flux_correction is not provided."
-            )
+            raise ValueError("grad_f is required when face_flux_correction is not provided.")
         if correction_vector is not None:
             correction_vector = bm.array(correction_vector, dtype=space.ftype)
         elif correction_method == "orthogonal":
@@ -176,9 +170,7 @@ def scalar_cross_diffusion_face_flux(
         else:
             # Boundary handling is a scheme-level decision; raw geometry still
             # exposes the bounded over-relaxed T_f on all faces.
-            correction_vector = geometry.bounded_over_relaxed_decomposition(
-                eps=nonorthogonal_eps
-            )[2]
+            correction_vector = geometry.bounded_over_relaxed_decomposition(eps=nonorthogonal_eps)[2]
 
         if grad_f.ndim == 2:
             face_flux = bm.einsum("ij,ij->i", correction_vector, grad_f)
@@ -201,9 +193,7 @@ def scalar_cross_diffusion_face_flux(
 
         if correction_method == "limited":
             if face_flux.ndim != 1:
-                raise ValueError(
-                    "limited correction currently supports scalar face flux only."
-                )
+                raise ValueError("limited correction currently supports scalar face flux only.")
             if uh is None:
                 raise ValueError("uh is required when correction_method='limited'.")
 
@@ -212,16 +202,12 @@ def scalar_cross_diffusion_face_flux(
             elif uh.dtype != space.ftype:
                 uh = bm.astype(uh, space.ftype)
             if uh.ndim != 1:
-                raise ValueError(
-                    "limited correction currently supports scalar cell values only."
-                )
+                raise ValueError("limited correction currently supports scalar cell values only.")
 
             is_internal = face_to_cell[:, 0] != face_to_cell[:, 1]
             owner = face_to_cell[:, 0]
             neighbour = face_to_cell[:, 1]
-            _, mag_E_f, _ = geometry.bounded_over_relaxed_decomposition(
-                eps=nonorthogonal_eps
-            )
+            _, mag_E_f, _ = geometry.bounded_over_relaxed_decomposition(eps=nonorthogonal_eps)
             orthogonal_coeff = mag_E_f / geometry.mag_d_f
             orthogonal_flux = bm.zeros_like(face_flux)
             cell_jump = bm.abs(uh[neighbour[is_internal]] - uh[owner[is_internal]])

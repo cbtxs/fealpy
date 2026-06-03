@@ -10,6 +10,8 @@ SOURCE = ROOT / "fealpy" / "fvm" / "ns_fvm_piso_model.py"
 PISO_SOLVER_SOURCE = ROOT / "fealpy" / "fvm" / "collocated_piso_solver.py"
 SIMPLE_SOURCE = ROOT / "fealpy" / "fvm" / "ns_fvm_simple_model.py"
 SIMPLE_SOLVER_SOURCE = ROOT / "fealpy" / "fvm" / "collocated_simple_solver.py"
+COLLOCATED_NS_UTILS = ROOT / "fealpy" / "fvm" / "collocated_ns_fvm_utils.py"
+FVM_INIT = ROOT / "fealpy" / "fvm" / "__init__.py"
 EXAMPLE = ROOT / "example" / "fvm" / "ns_fvm_piso_example.py"
 
 
@@ -114,8 +116,27 @@ def test_collocated_solvers_use_shared_internal_operators():
     )
 
 
+def test_collocated_shared_operators_do_not_depend_on_model_adapter_semantics():
+    from fealpy.fvm.collocated_ns_fvm_utils import CollocatedNSFVMOperators
+
+    source = COLLOCATED_NS_UTILS.read_text()
+
+    assert "PDEModelManager" not in source
+    assert "fealpy.model" not in source
+    for name in [
+        "_resolve_navier_stokes_pde",
+        "_normalized_mesh_type",
+        "_option_int",
+        "_init_momentum_coefficients",
+        "_init_navier_stokes_mesh",
+    ]:
+        assert not hasattr(CollocatedNSFVMOperators, name)
+
+
 def test_model_exposes_piso_components_and_no_route_dispatch():
     from fealpy.fvm import CollocatedPisoSolver, NSFVMPISOModel
+    from fealpy.fvm import solver_diagnostics
+    import fealpy.fvm.engineering_boundary_conditions as boundary_module
 
     for name in [
         "temporary_velocity",
@@ -123,6 +144,7 @@ def test_model_exposes_piso_components_and_no_route_dispatch():
         "face_flux",
         "divergence_from_flux",
         "pressure_correction_flux",
+        "solve_pressure_state_equation",
         "rhie_chow_face_velocity",
         "velocity_pressure_correction",
         "pressure_correction_step",
@@ -147,9 +169,37 @@ def test_model_exposes_piso_components_and_no_route_dispatch():
     solver = _class("CollocatedPisoSolver", PISO_SOLVER_SOURCE)
     solve = _method(solver, "solve")
     calls = _calls_in_node(solve)
-    assert "pressure_correction_step" in calls
-    assert "operator_splitting_velocity_correction" in calls
-    assert "rhie_chow_face_velocity" in calls
+    assert "_advance_time_step" in calls
+
+    advance = _method(solver, "_advance_time_step")
+    advance_calls = _calls_in_node(advance)
+    assert "temporary_velocity" in advance_calls
+    assert "_run_pressure_correctors" in advance_calls
+    assert "rhie_chow_face_velocity" in advance_calls
+
+    correctors = _method(solver, "_run_pressure_correctors")
+    corrector_calls = _calls_in_node(correctors)
+    assert "pressure_correction_step" in corrector_calls
+    assert "operator_splitting_velocity_correction" in corrector_calls
+    assert "_record_corrector_diagnostics" in corrector_calls
+
+    callback = _method(solver, "_record_corrector_diagnostics")
+    callback_calls = _calls_in_node(callback)
+    assert "rhie_chow_face_velocity" in callback_calls
+    assert not hasattr(CollocatedPisoSolver, "_pressure_correction_diagnostics")
+    assert not hasattr(CollocatedPisoSolver, "_apply_selected_face_velocity_dirichlet")
+    assert not hasattr(CollocatedPisoSolver, "_apply_selected_boundary_flux_constraint")
+    assert hasattr(CollocatedPisoSolver, "_assemble_pressure_state_system")
+    assert hasattr(CollocatedPisoSolver, "_add_pressure_dirichlet_boundary_flux")
+    assert not (ROOT / "fealpy" / "fvm" / "piso_pressure_equation.py").exists()
+    assert not (ROOT / "fealpy" / "fvm" / "solver_boundary.py").exists()
+    assert "piso_pressure_equation" not in PISO_SOLVER_SOURCE.read_text()
+    assert "solver_boundary" not in PISO_SOLVER_SOURCE.read_text()
+    assert "solver_boundary" not in FVM_INIT.read_text()
+    assert hasattr(boundary_module, "apply_face_velocity_constraint")
+    assert hasattr(boundary_module, "apply_boundary_flux_constraint")
+    assert hasattr(boundary_module, "selected_boundary_faces")
+    assert hasattr(solver_diagnostics, "pressure_correction_diagnostics")
     assert hasattr(CollocatedPisoSolver, "temporary_velocity")
     assert hasattr(CollocatedPisoSolver, "pressure_correction_step")
     assert "apply_pressure_rate_correction" not in calls
@@ -193,6 +243,7 @@ def test_piso_pressure_free_flux_matches_velocity_route():
 def test_piso_pressure_correction_step_uses_pressure_free_flux(monkeypatch):
     from fealpy.backend import backend_manager as bm
     from fealpy.fvm import NSFVMPISOModel
+    import fealpy.fvm.collocated_piso_solver as piso_module
 
     model = NSFVMPISOModel(_model_options(nx=2, ny=2, nt=1))
     nf = model.mesh.number_of_faces()
@@ -212,13 +263,13 @@ def test_piso_pressure_correction_step_uses_pressure_free_flux(monkeypatch):
         lambda *args, **kwargs: bm.zeros(nf),
     )
     monkeypatch.setattr(
-        model,
-        "_apply_selected_boundary_flux_constraint",
-        lambda flux, boundary_faces, boundary_velocity: flux,
+        piso_module,
+        "apply_boundary_flux_constraint",
+        lambda flux, boundary_faces, boundary_velocity, face_normal, **kwargs: flux,
     )
     monkeypatch.setattr(
         model,
-        "_solve_pressure_correction_state_and_flux",
+        "solve_pressure_state_equation",
         lambda rhs, a_p, **kwargs: (
             bm.zeros(nc),
             bm.zeros(nf),
@@ -506,6 +557,7 @@ def test_piso_face_interpolation_option_reaches_pressure_response(monkeypatch):
 def test_piso_face_interpolation_option_reaches_pressure_free_flux(monkeypatch):
     from fealpy.backend import backend_manager as bm
     from fealpy.fvm import NSFVMPISOModel
+    import fealpy.fvm.collocated_piso_solver as piso_module
 
     options = _model_options(nx=2, ny=2, nt=1)
     options["face_interpolation_method"] = "linear"
@@ -530,13 +582,13 @@ def test_piso_face_interpolation_option_reaches_pressure_free_flux(monkeypatch):
         lambda *args, **kwargs: bm.zeros(nf),
     )
     monkeypatch.setattr(
-        model,
-        "_apply_selected_boundary_flux_constraint",
-        lambda flux, boundary_faces, boundary_velocity: flux,
+        piso_module,
+        "apply_boundary_flux_constraint",
+        lambda flux, boundary_faces, boundary_velocity, face_normal, **kwargs: flux,
     )
     monkeypatch.setattr(
         model,
-        "_solve_pressure_correction_state_and_flux",
+        "solve_pressure_state_equation",
         lambda rhs, a_p, **kwargs: (
             bm.zeros(model.NC),
             bm.zeros(nf),
@@ -566,6 +618,7 @@ def test_piso_face_interpolation_option_reaches_pressure_free_flux(monkeypatch):
 def test_piso_pressure_nonorthogonal_final_flux_matches_final_system(monkeypatch):
     from fealpy.backend import backend_manager as bm
     from fealpy.fvm import NSFVMPISOModel
+    import fealpy.fvm.collocated_piso_solver as piso_module
 
     options = _model_options(nx=2, ny=2, nt=1)
     options["pressure_nonorthogonal_max_iter"] = 2
@@ -598,9 +651,9 @@ def test_piso_pressure_nonorthogonal_final_flux_matches_final_system(monkeypatch
         lambda *args, **kwargs: bm.zeros(nf, dtype=model.cm.dtype),
     )
     monkeypatch.setattr(
-        model,
-        "_apply_selected_boundary_flux_constraint",
-        lambda flux, boundary_faces, boundary_velocity: flux,
+        piso_module,
+        "apply_boundary_flux_constraint",
+        lambda flux, boundary_faces, boundary_velocity, face_normal, **kwargs: flux,
     )
     monkeypatch.setattr(
         model,
@@ -646,6 +699,7 @@ def test_piso_pressure_nonorthogonal_final_flux_matches_final_system(monkeypatch
 def test_piso_pressure_nonorthogonal_first_rhs_uses_entering_pressure(monkeypatch):
     from fealpy.backend import backend_manager as bm
     from fealpy.fvm import NSFVMPISOModel
+    import fealpy.fvm.collocated_piso_solver as piso_module
 
     options = _model_options(nx=2, ny=2, nt=1)
     options["pressure_nonorthogonal_max_iter"] = 1
@@ -677,9 +731,9 @@ def test_piso_pressure_nonorthogonal_first_rhs_uses_entering_pressure(monkeypatc
         lambda *args, **kwargs: bm.zeros(nf, dtype=model.cm.dtype),
     )
     monkeypatch.setattr(
-        model,
-        "_apply_selected_boundary_flux_constraint",
-        lambda flux, boundary_faces, boundary_velocity: flux,
+        piso_module,
+        "apply_boundary_flux_constraint",
+        lambda flux, boundary_faces, boundary_velocity, face_normal, **kwargs: flux,
     )
     monkeypatch.setattr(
         model,
@@ -725,3 +779,47 @@ def test_piso_pressure_nonorthogonal_first_rhs_uses_entering_pressure(monkeypatc
     assert solve_values == [2.0, 3.0]
     assert np.allclose(captured_cross_rhs[0], 7.0)
     assert np.allclose(captured_cross_rhs[1], 2.0)
+
+
+def test_piso_corrector_diagnostics_can_be_enabled_without_callback():
+    from fealpy.fvm import FVMLinearSolverConfig, NSFVMPISOModel
+
+    options = _model_options(nx=2, ny=2, nt=1)
+    options.update(
+        {
+            "diagnostics_enabled": True,
+            "linear_solver_config": FVMLinearSolverConfig(solver="scipy"),
+            "log_level": "ERROR",
+        }
+    )
+    model = NSFVMPISOModel(options)
+
+    model.solve()
+
+    assert len(model.corrector_diagnostics) == model.n_correctors
+    first = model.corrector_diagnostics[0]
+    assert first["step"] == 1
+    assert first["corrector"] == 1
+    assert "pressure_free_divergence_linf" in first
+    assert "rhie_chow_flux_error_linf" in first
+
+
+def test_piso_corrector_callback_still_enables_diagnostics():
+    from fealpy.fvm import FVMLinearSolverConfig, NSFVMPISOModel
+
+    options = _model_options(nx=2, ny=2, nt=1)
+    options.update(
+        {
+            "linear_solver_config": FVMLinearSolverConfig(solver="scipy"),
+            "log_level": "ERROR",
+        }
+    )
+    model = NSFVMPISOModel(options)
+    rows = []
+
+    model.solve(corrector_callback=lambda **row: rows.append(row))
+
+    assert len(rows) == model.n_correctors
+    assert model.corrector_diagnostics == rows
+    assert rows[0]["step"] == 1
+    assert rows[0]["corrector"] == 1

@@ -1,11 +1,8 @@
 from .scalar_diffusion_integrator import ScalarDiffusionIntegrator
 from .scalar_cross_diffusion_integrator import ScalarCrossDiffusionIntegrator
 from .scalar_source_integrator import ScalarSourceIntegrator
-from .deviatoric_stress_source import (
-    DeviatoricStressSourceIntegrator,
-    deviatoric_stress_integral,
-)
-from .face_interpolation import face_interpolation_owner_weight
+from .deviatoric_stress_source import DeviatoricStressSourceIntegrator
+from .fvm_geometry import FVMGeometry, face_interpolation_owner_weight
 from .face_gradient import reconstruct_face_gradient
 from .convection_integrator import ConvectionIntegrator
 
@@ -14,7 +11,6 @@ from .staggered_mesh_manager import StaggeredMeshManager
 from .div_reconstruct import DivergenceReconstruct
 from .dirichlet_bc import DirichletBC
 from .neumann_bc import NeumannBC
-from .fvm_geometry import FVMGeometry
 from .rhie_chow import RhieChowInterpolation
 from .simple_residual import (
     cell_l2_norm,
@@ -23,6 +19,7 @@ from .simple_residual import (
     relative_l2_update,
     staggered_mass_residual,
 )
+from . import solver_diagnostics
 from .pressure_correction_control import (
     PressureRelaxationConfig,
     PressureRelaxationController,
@@ -34,6 +31,7 @@ from .engineering_boundary_conditions import (
     BoundaryCondition,
     BoundaryPatch,
     EngineeringBoundaryConditions,
+    PDEBoundaryConditions,
 )
 from .collocated_piso_solver import CollocatedPisoSolver
 from .piso_solver_data import PisoBoundaryConditions, PisoSolverControls

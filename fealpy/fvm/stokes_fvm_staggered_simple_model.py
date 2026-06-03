@@ -265,9 +265,7 @@ class StokesFVMStaggeredSimpleModel(ComputationalModel):
             raise ValueError("relax_cooldown_steps must be non-negative.")
 
         tol_mass = tol if tol_mass is None else tol_mass
-        tol_pressure_update = (
-            10.0 * tol if tol_pressure_update is None else tol_pressure_update
-        )
+        tol_pressure_update = 10.0 * tol if tol_pressure_update is None else tol_pressure_update
         pressure_relax = relax
         relax_deterioration_count = 0
         relax_small_update_count = 0

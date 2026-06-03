@@ -31,32 +31,21 @@ class PisoSolverControls:
     momentum_nonorthogonal_tol: float = 1.0e-5
     pressure_nonorthogonal_max_iter: int = 10
     pressure_nonorthogonal_tol: float = 1.0e-5
+    diagnostics_enabled: bool = False
 
     def __post_init__(self):
         self.validate_piso_controls(self.n_correctors)
-        self.validate_snapshot_controls(
-            self.snapshot_interval,
-            self.snapshot_start_step,
-        )
+        self.validate_snapshot_controls(self.snapshot_interval, self.snapshot_start_step)
         self.validate_face_interpolation_method(self.face_interpolation_method)
         if self.rhie_chow_velocity_interpolation is not None:
-            self.validate_face_interpolation_method(
-                self.rhie_chow_velocity_interpolation
-            )
-            if (
-                self.rhie_chow_velocity_interpolation
-                != self.face_interpolation_method
-            ):
+            self.validate_face_interpolation_method(self.rhie_chow_velocity_interpolation)
+            if self.rhie_chow_velocity_interpolation != self.face_interpolation_method:
                 raise ValueError(
                     "rhie_chow_velocity_interpolation must match "
                     "face_interpolation_method."
                 )
-        self.validate_transient_flux_correction_limiter(
-            self.transient_flux_correction_limiter
-        )
-        self.validate_momentum_explicit_correction(
-            self.momentum_explicit_correction
-        )
+        self.validate_transient_flux_correction_limiter(self.transient_flux_correction_limiter)
+        self.validate_momentum_explicit_correction(self.momentum_explicit_correction)
         self.validate_nonorthogonal_controls(
             self.momentum_nonorthogonal_max_iter,
             self.momentum_nonorthogonal_tol,
@@ -118,6 +107,7 @@ class PisoSolverControls:
             pressure_nonorthogonal_tol=float(
                 options.get("pressure_nonorthogonal_tol", 1.0e-5)
             ),
+            diagnostics_enabled=bool(options.get("diagnostics_enabled", False)),
         )
 
     @property
@@ -234,10 +224,7 @@ class PisoBoundaryConditions:
 
     def has_pressure_dirichlet(self) -> bool:
         """Return whether pressure Dirichlet data are available."""
-        return (
-            self.pressure_dirichlet is not None
-            and self.pressure_dirichlet_threshold_value is not None
-        )
+        return self.pressure_dirichlet is not None and self.pressure_dirichlet_threshold_value is not None
 
     def pressure_dirichlet_threshold(self):
         """Return pressure Dirichlet threshold."""
@@ -250,9 +237,6 @@ class PisoBoundaryConditions:
             return value
 
         def constant(points):
-            return bm.broadcast_to(
-                bm.array(value, dtype=points.dtype),
-                (points.shape[0],),
-            )
+            return bm.broadcast_to(bm.array(value, dtype=points.dtype), (points.shape[0],))
 
         return constant

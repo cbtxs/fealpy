@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from fealpy.backend import backend_manager as bm
 from fealpy.fem import LinearForm
@@ -86,36 +87,58 @@ def test_gradient_reconstruct_boundary_data_uses_fvm_geometry(monkeypatch):
     assert nonzero_owner == set(owner.tolist())
 
 
-def test_face_interpolation_average_and_distance_use_fvm_geometry(monkeypatch):
-    import fealpy.fvm.face_interpolation as interpolation_module
+def test_face_gradient_average_interpolation_does_not_rebuild_geometry(monkeypatch):
+    import fealpy.fvm.face_gradient as face_gradient_module
+    from fealpy.fvm import reconstruct_face_gradient
+
+    mesh = _quad_mesh()
+    cell_gradient = bm.ones((mesh.number_of_cells(), mesh.geo_dimension()))
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("face gradient should reuse its FVMGeometry instance")
+
+    monkeypatch.setattr(
+        face_gradient_module,
+        "face_interpolation_owner_weight",
+        fail_if_called,
+        raising=False,
+    )
+
+    face_gradient = reconstruct_face_gradient(
+        mesh,
+        cell_gradient,
+        interpolation_method="average",
+    )
+
+    assert face_gradient.shape == (mesh.number_of_faces(), mesh.geo_dimension())
+
+
+def test_face_interpolation_average_uses_fvm_geometry_and_distance_is_removed(monkeypatch):
+    import fealpy.fvm.fvm_geometry as geometry_module
     from fealpy.fvm import face_interpolation_owner_weight
 
     mesh = _quad_mesh()
-    monkeypatch.setattr(
-        interpolation_module,
-        "FVMGeometry",
-        ShiftedOperatorGeometry,
-    )
-    geometry = ShiftedOperatorGeometry(mesh)
+    real_geometry_cls = geometry_module.FVMGeometry
+
+    class FakeGeometry:
+        def __init__(self, mesh, *, index=slice(None)):
+            real = real_geometry_cls(mesh, index=index)
+            self.is_internal = real.is_internal
+            self.mag_S_f = 2.5 * real.mag_S_f
+
+        def linear_owner_weight(self):
+            raise AssertionError("average interpolation should not use linear weights")
+
+    monkeypatch.setattr(geometry_module, "FVMGeometry", FakeGeometry)
+    geometry = FakeGeometry(mesh)
 
     average = face_interpolation_owner_weight(mesh, method="average")
-    distance = face_interpolation_owner_weight(mesh, method="distance")
 
     expected_average = np.where(np.asarray(geometry.is_internal), 0.5, 1.0)
-    owner_dist = np.linalg.norm(
-        np.asarray(geometry.face_center) - np.asarray(geometry.cell_center)[np.asarray(geometry.owner)],
-        axis=1,
-    )
-    neighbour_dist = np.linalg.norm(
-        np.asarray(geometry.cell_center)[np.asarray(geometry.neighbour)] - np.asarray(geometry.face_center),
-        axis=1,
-    )
-    total = owner_dist + neighbour_dist
-    expected_distance = np.where(total > 0.0, neighbour_dist / total, 0.5)
-    expected_distance = np.where(np.asarray(geometry.is_internal), expected_distance, 1.0)
 
     np.testing.assert_allclose(np.asarray(average), expected_average)
-    np.testing.assert_allclose(np.asarray(distance), expected_distance)
+    with pytest.raises(ValueError, match="average.*linear"):
+        face_interpolation_owner_weight(mesh, method="distance")
 
 
 def test_convection_integrator_uses_fvm_geometry_face_area_vector(monkeypatch):
@@ -192,3 +215,82 @@ def test_collocated_divergence_and_mass_residual_use_fvm_geometry(monkeypatch):
 
     np.testing.assert_allclose(np.asarray(div), expected_div, rtol=1.0e-13, atol=1.0e-13)
     assert residual >= 0.0
+
+
+def test_collocated_mass_residual_scatter_uses_single_geometry(monkeypatch):
+    import fealpy.fvm.simple_residual as residual_module
+    from fealpy.fvm import FVMGeometry, collocated_mass_residual
+
+    mesh = _quad_mesh()
+    face_velocity = bm.ones((mesh.number_of_faces(), mesh.geo_dimension()))
+    calls = []
+
+    class CountingGeometry(FVMGeometry):
+        def scatter_face_flux_to_cells(self, face_flux):
+            calls.append(np.asarray(face_flux).copy())
+            return super().scatter_face_flux_to_cells(face_flux)
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("collocated mass residual should scatter face flux directly")
+
+    monkeypatch.setattr(residual_module, "FVMGeometry", CountingGeometry)
+    monkeypatch.setattr(residual_module, "DivergenceReconstruct", fail_if_called)
+
+    residual = collocated_mass_residual(mesh, face_velocity)
+
+    assert residual >= 0.0
+    assert len(calls) == 1
+
+
+def test_rhie_chow_interpolation_reuses_instance_geometry_for_owner_weights(monkeypatch):
+    import fealpy.fvm.rhie_chow as rhie_chow_module
+    from fealpy.fvm import FVMGeometry, RhieChowInterpolation
+
+    mesh = _quad_mesh()
+
+    class WeightedGeometry(FVMGeometry):
+        def linear_owner_weight(self):
+            return bm.where(
+                self.is_internal,
+                0.125 * bm.ones_like(self.mag_S_f),
+                1.0,
+            )
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("RhieChowInterpolation should reuse its FVMGeometry")
+
+    monkeypatch.setattr(rhie_chow_module, "FVMGeometry", WeightedGeometry)
+    monkeypatch.setattr(
+        rhie_chow_module,
+        "face_interpolation_owner_weight",
+        fail_if_called,
+        raising=False,
+    )
+
+    cell_velocity = np.arange(2 * mesh.number_of_cells(), dtype=float).reshape(
+        mesh.number_of_cells(),
+        2,
+    )
+    flat_velocity = cell_velocity.flatten(order="F")
+    ap = bm.ones(2 * mesh.number_of_cells())
+
+    face_velocity, _ = RhieChowInterpolation(
+        mesh,
+        velocity_interpolation="linear",
+    ).Ucell2edge(flat_velocity, ap)
+
+    geometry = WeightedGeometry(mesh)
+    weight = np.asarray(geometry.linear_owner_weight())
+    owner = np.asarray(geometry.owner)
+    neighbour = np.asarray(geometry.neighbour)
+    expected = (
+        weight[:, None] * cell_velocity[owner]
+        + (1.0 - weight)[:, None] * cell_velocity[neighbour]
+    )
+
+    np.testing.assert_allclose(
+        np.asarray(face_velocity),
+        expected,
+        rtol=1.0e-13,
+        atol=1.0e-13,
+    )

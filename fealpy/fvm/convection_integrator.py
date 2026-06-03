@@ -11,8 +11,7 @@ from fealpy.functionspace.space import FunctionSpace as _FS
 
 from fealpy.fem.integrator import LinearInt, OpInt, FaceInt, enable_cache
 
-from .face_interpolation import face_interpolation_owner_weight
-from .fvm_geometry import FVMGeometry
+from .fvm_geometry import FVMGeometry, face_interpolation_owner_weight
 
 
 class ConvectionIntegrator(LinearInt, OpInt, FaceInt):
@@ -52,9 +51,7 @@ class ConvectionIntegrator(LinearInt, OpInt, FaceInt):
     @staticmethod
     def _validate_interpolation(interpolation: str) -> str:
         if interpolation not in {"average", "linear"}:
-            raise ValueError(
-                "interpolation must be 'average' or 'linear'."
-            )
+            raise ValueError("interpolation must be 'average' or 'linear'.")
         return interpolation
 
     @enable_cache
@@ -82,11 +79,8 @@ class ConvectionIntegrator(LinearInt, OpInt, FaceInt):
         Sf, _, _, phi = self.fetch(space)
         D = phi.shape[-1]
         eye_D = bm.eye(D, dtype=space.ftype, device=bm.get_device(space))
-        owner_weight = face_interpolation_owner_weight(
-            getattr(space, "mesh"),
-            method=self.interpolation,
-            index=self.index,
-        )
+        mesh = getattr(space, "mesh")
+        owner_weight = face_interpolation_owner_weight(mesh, method=self.interpolation, index=self.index)
         neighbour_weight = 1.0 - owner_weight
         direction_matrix = bm.stack(
             [
@@ -95,14 +89,9 @@ class ConvectionIntegrator(LinearInt, OpInt, FaceInt):
             ],
             axis=1,
         )
-        base_matrix = bm.einsum(
-            "ij,fpq->fipjq", eye_D, direction_matrix
-        ).reshape(-1, 2 * D, 2 * D)
+        base_matrix = bm.einsum("ij,fpq->fipjq", eye_D, direction_matrix).reshape(-1, 2 * D, 2 * D)
         if coef is None:
-            coef = bm.stack(
-                [bm.ones_like(Sf[:, 0]), bm.zeros_like(Sf[:, 0])],
-                axis=1,
-            )
+            coef = bm.stack([bm.ones_like(Sf[:, 0]), bm.zeros_like(Sf[:, 0])], axis=1)
         integrator = bm.einsum("ij,ij->i", Sf, coef)
         result = integrator[:, None, None] * base_matrix
 

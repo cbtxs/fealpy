@@ -2,7 +2,7 @@
 
 from fealpy.backend import backend_manager as bm
 from fealpy.mesh import HomogeneousMesh
-from fealpy.typing import Index, _S
+from fealpy.typing import Index, TensorLike, _S
 
 
 class FVMGeometry:
@@ -41,9 +41,7 @@ class FVMGeometry:
         if self.face_center.ndim == 1:
             self.face_center = self.face_center[None, :]
 
-        owner_to_neighbour = self.cell_center[self.neighbour] - self.cell_center[
-            self.owner
-        ]
+        owner_to_neighbour = self.cell_center[self.neighbour] - self.cell_center[self.owner]
         owner_to_face = self.face_center - self.cell_center[self.owner]
         self.d_f = bm.where(self.is_internal[:, None], owner_to_neighbour, owner_to_face)
         self.mag_d_f = bm.linalg.norm(self.d_f, axis=1)
@@ -73,11 +71,8 @@ class FVMGeometry:
             raise ValueError("face area vector is not owner-oriented.")
 
         self.boundary_owner_to_face_vector = owner_to_face[self.is_boundary]
-        self.boundary_normal_distance = bm.einsum(
-            "ij,ij->i",
-            self.boundary_owner_to_face_vector,
-            self.n_f[self.is_boundary],
-        )
+        boundary_normal = self.n_f[self.is_boundary]
+        self.boundary_normal_distance = bm.einsum("ij,ij->i", self.boundary_owner_to_face_vector, boundary_normal)
         if bm.any(self.boundary_normal_distance <= 0.0):
             raise ValueError("boundary face has zero owner-normal distance.")
 
@@ -135,20 +130,8 @@ class FVMGeometry:
         area vector direction.  Boundary faces return one because no real
         neighbour cell participates in the interpolation.
         """
-        owner_dist = bm.abs(
-            bm.einsum(
-                "ij,ij->i",
-                self.S_f,
-                self.face_center - self.cell_center[self.owner],
-            )
-        )
-        neighbour_dist = bm.abs(
-            bm.einsum(
-                "ij,ij->i",
-                self.S_f,
-                self.cell_center[self.neighbour] - self.face_center,
-            )
-        )
+        owner_dist = bm.abs(bm.einsum("ij,ij->i", self.S_f, self.face_center - self.cell_center[self.owner]))
+        neighbour_dist = bm.abs(bm.einsum("ij,ij->i", self.S_f, self.cell_center[self.neighbour] - self.face_center))
         total_dist = owner_dist + neighbour_dist
         weight = bm.where(total_dist > 0.0, neighbour_dist / total_dist, 0.5)
         return bm.where(self.is_internal, weight, 1.0)
@@ -189,3 +172,21 @@ class FVMGeometry:
             axis=0,
             alpha=-1,
         )
+
+
+def face_interpolation_owner_weight(mesh: HomogeneousMesh, *, method: str = "linear", index: Index = _S) -> TensorLike:
+    """Return owner-side face interpolation weights.
+
+    ``linear`` is the geometry-consistent face interpolation used by the
+    collocated FVM operators.  ``average`` is the arithmetic central weight.
+    Boundary faces return one because no neighbour cell participates.
+    """
+    if method not in {"average", "linear"}:
+        raise ValueError("method must be 'average' or 'linear'.")
+
+    geometry = FVMGeometry(mesh, index=index)
+    if method == "linear":
+        return geometry.linear_owner_weight()
+
+    weight = 0.5 * bm.ones_like(geometry.mag_S_f)
+    return bm.where(geometry.is_internal, weight, 1.0)

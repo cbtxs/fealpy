@@ -1,10 +1,7 @@
-"""Shared internal helpers for collocated Navier-Stokes FVM solvers."""
-
-from typing import Optional, Union
+"""Shared internal operators for collocated Navier-Stokes FVM solvers."""
 
 from fealpy.typing import TensorLike
 from fealpy.backend import backend_manager as bm
-from fealpy.model import PDEModelManager
 from fealpy.functionspace import ScaledMonomialSpace2d, TensorFunctionSpace
 from fealpy.fem import BilinearForm, LinearForm, BlockForm
 from fealpy.sparse import COOTensor
@@ -13,34 +10,14 @@ from .scalar_diffusion_integrator import ScalarDiffusionIntegrator
 from .scalar_cross_diffusion_integrator import ScalarCrossDiffusionIntegrator
 from .gradient_reconstruct import GradientReconstruct
 from .face_gradient import reconstruct_face_gradient
-from .face_interpolation import face_interpolation_owner_weight
 from .div_reconstruct import DivergenceReconstruct
 from .dirichlet_bc import DirichletBC
-from .fvm_geometry import FVMGeometry
+from .fvm_geometry import FVMGeometry, face_interpolation_owner_weight
 from .fvm_linear_solver import FVMLinearSolver, FVMLinearSolverConfig
 
 
 class CollocatedNSFVMOperators:
     """Internal mixin for common collocated Navier-Stokes FVM algebra."""
-
-    @staticmethod
-    def _resolve_navier_stokes_pde(pde: Union[int, object]):
-        return (
-            PDEModelManager("navier_stokes").get_example(pde)
-            if isinstance(pde, int)
-            else pde
-        )
-
-    @staticmethod
-    def _normalized_mesh_type(mesh_type: str) -> str:
-        if mesh_type == "uniform_qrad":
-            return "uniform_quad"
-        return mesh_type
-
-    @staticmethod
-    def _option_int(options, name: str, default: int) -> int:
-        value = options.get(name, default)
-        return default if value is None else int(value)
 
     @staticmethod
     def _as_positive_scalar(value, name: str) -> float:
@@ -53,59 +30,6 @@ class CollocatedNSFVMOperators:
         if scalar <= 0.0:
             raise ValueError(f"{name} must be positive.")
         return scalar
-
-    def _init_momentum_coefficients(self, options) -> None:
-        """Initialize scalar density and dynamic viscosity for momentum solves."""
-        rho_value = options.get("rho", None)
-        if rho_value is None:
-            rho_value = getattr(self.pde, "rho", 1.0)
-
-        mu_value = options.get("mu", None)
-        if mu_value is None:
-            for name in ("mu", "viscosity", "nu"):
-                if hasattr(self.pde, name):
-                    mu_value = getattr(self.pde, name)
-                    break
-            else:
-                mu_value = 1.0
-
-        self.rho = self._as_positive_scalar(rho_value, "rho")
-        self.mu = self._as_positive_scalar(mu_value, "mu")
-
-    def _init_navier_stokes_mesh(
-        self,
-        options,
-        *,
-        default_mesh_type: str,
-        normalize_mesh_type: bool = False,
-    ):
-        mesh_type = options.get("mesh_type") or getattr(
-            self.pde, "default_mesh_type", default_mesh_type
-        )
-        if normalize_mesh_type:
-            mesh_type = self._normalized_mesh_type(mesh_type)
-
-        mesh_refine = int(options.get("mesh_refine", 0))
-        if mesh_refine < 0:
-            raise ValueError("mesh_refine must be non-negative.")
-
-        if getattr(self.pde, "supports_geometric_refine", False):
-            return self.pde.init_mesh[mesh_type](mesh_refine=mesh_refine)
-
-        mesh_options = {}
-        if "nx" in options:
-            mesh_options["nx"] = int(options["nx"])
-        if "ny" in options:
-            mesh_options["ny"] = int(options["ny"])
-        mesh = self.pde.init_mesh[mesh_type](**mesh_options)
-        if mesh_refine == 0:
-            return mesh
-
-        if hasattr(mesh, "uniform_refine"):
-            mesh.uniform_refine(mesh_refine)
-            return mesh
-
-        raise ValueError("mesh does not provide uniform_refine().")
 
     def _init_collocated_discretization(
         self,
@@ -192,9 +116,7 @@ class CollocatedNSFVMOperators:
     def compute_cross_diffusion(self, velocity: TensorLike) -> TensorLike:
         """Assemble the explicit non-orthogonal momentum diffusion correction."""
         cell_velocity = self._cell_velocity(velocity)
-        flat_velocity = (
-            velocity if velocity.ndim == 1 else self._flatten_velocity(velocity)
-        )
+        flat_velocity = velocity if velocity.ndim == 1 else self._flatten_velocity(velocity)
         grad_u = self.velocity_gradient.cell_gradient(cell_velocity)
         grad_f = reconstruct_face_gradient(self.mesh, grad_u)
         return LinearForm(self.velocity_space).add_integrator(
@@ -243,20 +165,17 @@ class CollocatedNSFVMOperators:
         bd_edge = bm.nonzero(self.fvm_geometry.is_boundary)[0]
         return bd_edge, self.velocity_dirichlet(self.fvm_geometry.face_center[bd_edge])
 
-    def face_interpolation_owner_weight(self, method: str = "distance"):
+    def face_interpolation_owner_weight(self, method: str = "linear"):
         """Return owner-side interpolation weights for faces."""
         return face_interpolation_owner_weight(self.mesh, method=method)
 
-    def face_interpolate_cell_scalar(self, cell_values, method: str = "distance"):
+    def face_interpolate_cell_scalar(self, cell_values, method: str = "linear"):
         """Linearly interpolate a cell scalar to faces using face geometry."""
         e2c = self.e2c[:, :2]
         owner_weight = self.face_interpolation_owner_weight(method=method)
-        return (
-            owner_weight * cell_values[e2c[:, 0]]
-            + (1.0 - owner_weight) * cell_values[e2c[:, 1]]
-        )
+        return owner_weight * cell_values[e2c[:, 0]] + (1.0 - owner_weight) * cell_values[e2c[:, 1]]
 
-    def face_interpolate_cell_vector(self, cell_vectors, method: str = "distance"):
+    def face_interpolate_cell_vector(self, cell_vectors, method: str = "linear"):
         """Linearly interpolate a cell vector to faces using face geometry."""
         cell_vectors = self._cell_velocity(cell_vectors)
         e2c = self.e2c[:, :2]
@@ -273,10 +192,6 @@ class CollocatedNSFVMOperators:
     def divergence_from_flux(self, phi):
         """Scatter signed face fluxes to the cell flux imbalance."""
         return self.fvm_geometry.scatter_face_flux_to_cells(phi)
-
-    def _scatter_face_flux(self, face_flux: TensorLike) -> TensorLike:
-        """Scatter owner-oriented face fluxes to cell divergence values."""
-        return self.divergence_from_flux(face_flux)
 
     def _pressure_correction_cross_flux(
         self,
@@ -298,11 +213,7 @@ class CollocatedNSFVMOperators:
             "face_interpolation_method",
             getattr(controls, "face_interpolation_method", "average"),
         )
-        grad_f = reconstruct_face_gradient(
-            self.mesh,
-            grad_p,
-            interpolation_method=face_method,
-        )
+        grad_f = reconstruct_face_gradient(self.mesh, grad_p, interpolation_method=face_method)
         T_f = self.fvm_geometry.bounded_over_relaxed_decomposition()[2]
         cross_flux = response_coef * bm.einsum("ij,ij->i", T_f, grad_f)
         return bm.where(self.fvm_geometry.is_boundary, 0.0, cross_flux)
@@ -355,13 +266,9 @@ class CollocatedNSFVMOperators:
         if nonorthogonal_tol <= 0.0:
             raise ValueError("nonorthogonal_tol must be positive.")
 
-        has_dirichlet = (
-            dirichlet_value is not None and dirichlet_threshold is not None
-        )
+        has_dirichlet = dirichlet_value is not None and dirichlet_threshold is not None
         if has_dirichlet:
-            A = BilinearForm(self.space).add_integrator(
-                ScalarDiffusionIntegrator(q=q, coef=coef)
-            ).assembly()
+            A = BilinearForm(self.space).add_integrator(ScalarDiffusionIntegrator(q=q, coef=coef)).assembly()
             boundary_coef = self._boundary_face_coefficient(coef)
             pressure_bc = DirichletBC(self.mesh, dirichlet_value)
         else:
@@ -371,12 +278,7 @@ class CollocatedNSFVMOperators:
         def solve_with_cross_rhs(cross):
             b = rhs + cross
             if has_dirichlet:
-                A_bc, b_bc = pressure_bc.DiffusionApply(
-                    A,
-                    b,
-                    coef=boundary_coef,
-                    threshold=dirichlet_threshold,
-                )
+                A_bc, b_bc = pressure_bc.DiffusionApply(A, b, coef=boundary_coef, threshold=dirichlet_threshold)
                 return self.linear_solver.solve(A_bc, b_bc)
 
             b = bm.concatenate([b, b0], axis=0)
@@ -387,19 +289,15 @@ class CollocatedNSFVMOperators:
             self.last_pressure_nonorthogonal_iterations = 0
             return solve_with_cross_rhs(cross_rhs)
 
-        pressure = bm.zeros(self.NC, dtype=rhs.dtype)
         self.last_pressure_nonorthogonal_iterations = 0
         for iteration in range(1, nonorthogonal_max_iter + 1):
             next_pressure = solve_with_cross_rhs(cross_rhs)
-            next_cross_rhs = self.divergence_from_flux(
-                cross_flux(next_pressure, coef)
-            )
+            next_cross_rhs = self.divergence_from_flux(cross_flux(next_pressure, coef))
             self.last_pressure_nonorthogonal_iterations = iteration
             if bm.max(bm.abs(next_cross_rhs - cross_rhs)) < nonorthogonal_tol:
                 return next_pressure
-            pressure = next_pressure
             cross_rhs = next_cross_rhs
-        return pressure
+        return next_pressure
 
     def enforce_face_flux(self, face_velocity, target_flux):
         """Adjust only the normal component of a vector face velocity."""
@@ -431,9 +329,7 @@ class CollocatedNSFVMOperators:
         boundary_velocity = bm.array(boundary_velocity)
         if boundary_velocity.shape[0] == self.mesh.number_of_faces():
             boundary_velocity = boundary_velocity[bd_edge]
-        target_flux = bm.einsum(
-            "ij,ij->i", boundary_velocity, self.fvm_geometry.S_f[bd_edge]
-        )
+        target_flux = bm.einsum("ij,ij->i", boundary_velocity, self.fvm_geometry.S_f[bd_edge])
         return bm.set_at(constrained, bd_edge, target_flux)
 
     def velocity_pressure_correction(self, u_flat, pressure_field, a_p):

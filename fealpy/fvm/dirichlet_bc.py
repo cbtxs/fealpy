@@ -17,6 +17,11 @@ class DirichletBC:
     block in different algebraic forms.  It is a boundary-condition application
     layer, not a general PDE solver and not a place for SIMPLE/PISO iteration
     rules.
+
+    Future cleanup should keep the main ``DiffusionApply`` and
+    ``ConvectionApply`` contracts intact, while moving shared boundary selector
+    logic out of this class and retiring legacy value-pinning paths after the
+    old staggered solvers are refactored.
     """
 
     def __init__(self, mesh, gd, threshold=None):
@@ -37,6 +42,8 @@ class DirichletBC:
         This helper is useful for cell-centred unknowns stored directly on
         boundary cells.  It is not the face-flux Dirichlet treatment used by
         diffusion operators; that contract is handled by ``DiffusionApply``.
+        This path is kept for legacy staggered solvers and can be revisited
+        when those models are cleaned up.
 
         Args:
             A (sparse matrix): System matrix to be modified.
@@ -153,6 +160,10 @@ class DirichletBC:
         ``lambda x: ...`` receives the x-coordinate of boundary face centers,
         ``lambda y: ...`` receives the y-coordinate, and a non-axis name such
         as ``lambda p: ...`` receives the full point array.
+
+        This selector logic is not Dirichlet-specific.  If Neumann and gradient
+        reconstruction boundary handling are refactored together, this should
+        become a small shared boundary-selection utility.
         """
         if not callable(threshold):
             raise ValueError("threshold must be a callable boundary face selector.")
@@ -185,10 +196,7 @@ class DirichletBC:
 
         positional = [
             p for p in params
-            if p.kind in (
-                p.POSITIONAL_ONLY,
-                p.POSITIONAL_OR_KEYWORD,
-            )
+            if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
         ]
         if len(positional) != 1:
             return None
@@ -204,6 +212,10 @@ class DirichletBC:
         )
 
     def _select_boundary_coef(self, coef, bd_flag):
+        # This and ``_normalize_boundary_coef`` are only a two-stage adapter for
+        # thresholded ``DiffusionApply`` calls.  Once the boundary coefficient
+        # contract is stable, they can be folded into one clearer normalization
+        # path or moved to a shared boundary-coefficient helper.
         if isinstance(coef, (int, float)):
             return coef
 
@@ -242,6 +254,11 @@ class DirichletBC:
         This method modifies the right-hand side vector `b` to account for Dirichlet boundary 
         conditions in the divergence term, incorporating boundary face contributions and 
         vector field normals.
+
+        This helper is not used by the current collocated SIMPLE/PISO paths.
+        Keep it until the divergence-boundary contract is reviewed, then either
+        connect it to a real solver path or move it out of the main boundary
+        operator.
 
         Args:
             b (ndarray): Right-hand side vector to be modified.

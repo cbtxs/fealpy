@@ -11,6 +11,12 @@ velocity coupling schemes report:
 Keeping these definitions in one place is useful because collocated and
 staggered SIMPLE solvers should stop on the same mathematical residuals even
 though their face-velocity representations differ.
+
+PISO solvers can reuse the same normalized face-flux residual definition, but
+they often already hold scalar face fluxes instead of vector face velocities.
+That route should be added when ``collocated_piso_solver.py`` is refactored, so
+PISO residual field names can stay separate from SIMPLE pressure-update
+residuals.
 """
 
 from fealpy.backend import backend_manager as bm
@@ -79,14 +85,13 @@ def normalized_flux_residual(mesh, cell_flux_imbalance, face_flux, eps=1.0e-30):
 def collocated_mass_residual(mesh, face_velocity):
     """Mass residual for collocated vector face velocities.
 
-    The scalar flux is ``phi_f = u_f · S_f`` where ``S_f`` is the oriented face
-    area vector.  The same vector face velocity is passed to the collocated
-    divergence reconstruction, so the diagnostic measures exactly the flux
-    imbalance represented by the supplied face velocity field.
+    The scalar flux is ``phi_f = dot(u_f, S_f)`` where ``S_f`` is the oriented
+    face area vector.  The cell imbalance is obtained by scattering this same
+    face flux with the owner-oriented geometry convention.
     """
     geometry = FVMGeometry(mesh)
     face_flux = bm.einsum("ij,ij->i", face_velocity, geometry.S_f)
-    cell_flux_imbalance = DivergenceReconstruct(mesh).Reconstruct(face_velocity)
+    cell_flux_imbalance = geometry.scatter_face_flux_to_cells(face_flux)
     return normalized_flux_residual(mesh, cell_flux_imbalance, face_flux)
 
 

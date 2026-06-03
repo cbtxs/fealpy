@@ -5,7 +5,6 @@ from fealpy.sparse import COOTensor
 
 from .backend_utils import as_backend_array
 from .face_gradient import reconstruct_face_gradient
-from .face_interpolation import face_interpolation_owner_weight
 from .fvm_geometry import FVMGeometry
 
 
@@ -36,15 +35,17 @@ class RhieChowInterpolation:
         self.mesh = mesh
         self.cm = self.mesh.entity_measure('cell')
         self.NC = mesh.number_of_cells()
-        self.NF = mesh.number_of_faces()
-        self.cell_centers = mesh.entity_barycenter("cell")
-        self.cell_measures = mesh.entity_measure("cell")
         self.fvm_geometry = FVMGeometry(mesh)
-        self.edge_to_cell = self.fvm_geometry.face_to_cell
-        self.cell_to_edge = mesh.cell_to_edge()
+        self.face_to_cell = self.fvm_geometry.face_to_cell
+        self.edge_to_cell = self.face_to_cell
         self.velocity_interpolation = self._validate_velocity_interpolation(
             velocity_interpolation
         )
+        if self.velocity_interpolation == "linear":
+            self.owner_weight = self.fvm_geometry.linear_owner_weight()
+        else:
+            weight = 0.5 * bm.ones_like(self.fvm_geometry.mag_S_f)
+            self.owner_weight = bm.where(self.fvm_geometry.is_internal, weight, 1.0)
         self.pressure_dirichlet = pressure_dirichlet
         self.pressure_dirichlet_threshold = pressure_dirichlet_threshold
         self.gradient_reconstruct = GradientReconstruct(
@@ -60,41 +61,28 @@ class RhieChowInterpolation:
     @staticmethod
     def _validate_velocity_interpolation(velocity_interpolation):
         if velocity_interpolation not in {"average", "linear"}:
-            raise ValueError(
-                "velocity_interpolation must be 'average' or 'linear'."
-            )
+            raise ValueError("velocity_interpolation must be 'average' or 'linear'.")
         return velocity_interpolation
 
-    def _owner_weight(self):
-        return face_interpolation_owner_weight(
-            self.mesh,
-            method=self.velocity_interpolation,
-        )
-
-    def _interpolate_cell_scalar(self, value):
-        weight = self._owner_weight()
-        owner = self.edge_to_cell[:, 0]
-        neighbour = self.edge_to_cell[:, 1]
+    def _interpolate_cell_value(self, value):
+        weight = self.owner_weight
+        weight_shape = (weight.shape[0],) + (1,) * (value.ndim - 1)
+        weight = weight.reshape(weight_shape)
+        owner = self.face_to_cell[:, 0]
+        neighbour = self.face_to_cell[:, 1]
         return weight * value[owner] + (1.0 - weight) * value[neighbour]
-
-    def _interpolate_cell_vector(self, value):
-        weight = self._owner_weight()
-        owner = self.edge_to_cell[:, 0]
-        neighbour = self.edge_to_cell[:, 1]
-        return weight[:, None] * value[owner] + (1.0 - weight)[:, None] * value[neighbour]
 
     def Ucell2edge(self, u, ap, face_response_coefficient=None):
         """Interpolate cell velocity and pressure response to faces."""
-        u = bm.stack([u[:self.NC],u[self.NC:]],axis=-1)
-        e2c = self.edge_to_cell
-        uf = self._interpolate_cell_vector(u)
+        u = bm.stack([u[:self.NC], u[self.NC:]], axis=-1)
+        uf = self._interpolate_cell_value(u)
         if face_response_coefficient is None:
             ap = ap[:self.NC]
             dp = self.cm / ap
-            df = self._interpolate_cell_scalar(dp)[:, None]
+            df = self._interpolate_cell_value(dp)[:, None]
         else:
             df = as_backend_array(face_response_coefficient, dtype=uf.dtype)[:, None]
-        return uf,df
+        return uf, df
 
     def GradientDifference(self, p):
         """Return the Rhie-Chow pressure-gradient difference.
@@ -103,13 +91,14 @@ class RhieChowInterpolation:
         the owner-neighbour line and the interpolated reconstructed gradient.
         """
         e, d = self.e, self.d
-        partial_p = (p[self.edge_to_cell[:,1]] - p[self.edge_to_cell[:,0]])/d
+        partial_p = (p[self.face_to_cell[:, 1]] - p[self.face_to_cell[:, 0]]) / d
         partial_p = self._apply_pressure_dirichlet_boundary_partial(p, partial_p)
         e_cf = e / d[:, None]
         grad_p = self.gradient_reconstruct.cell_gradient(p)
         overline_grad_p_f = reconstruct_face_gradient(self.mesh, grad_p)
-        GradientDifference = (partial_p - bm.einsum('ij,ij->i', overline_grad_p_f, e_cf))[:, None]*e_cf
-        return GradientDifference
+        interpolated_normal_gradient = bm.einsum("ij,ij->i", overline_grad_p_f, e_cf)
+        gradient_difference = (partial_p - interpolated_normal_gradient)[:, None] * e_cf
+        return gradient_difference
 
     def _apply_pressure_dirichlet_boundary_partial(self, p, partial_p):
         """Use pressure Dirichlet data in boundary compact pressure jumps."""
@@ -257,10 +246,7 @@ class RhieChowCoupledOperator:
 
     def assemble_pressure_block(self, ap, p_old=None):
         """Return ``(LRC, bp)`` for the coupled continuity equation."""
-        return (
-            self.pressure_stabilization_matrix(ap),
-            self.explicit_pressure_rhs(ap, p_old),
-        )
+        return self.pressure_stabilization_matrix(ap), self.explicit_pressure_rhs(ap, p_old)
 
     def _cell_lsq_gradient_matrix(self):
         """Return the private cell-LSQ gradient matrix used by the RC block.

@@ -107,19 +107,10 @@ class CylinderFlowCase:
         self.mesh_size = float(mesh_size)
         self.cylinder_mesh_size = float(cylinder_mesh_size)
         self.wake_mesh_size = float(wake_mesh_size)
-        self.cylinder_refine_radius = (
-            3.0 * self.radius
-            if cylinder_refine_radius is None
-            else float(cylinder_refine_radius)
-        )
-        self.wake_length = (
-            self.box[1] - (self.center[0] + self.radius)
-            if wake_length is None
-            else float(wake_length)
-        )
-        self.wake_half_width = (
-            1.5 * self.radius if wake_half_width is None else float(wake_half_width)
-        )
+        refine_radius = 3.0 * self.radius if cylinder_refine_radius is None else cylinder_refine_radius
+        self.cylinder_refine_radius = float(refine_radius)
+        self.wake_length = self.box[1] - (self.center[0] + self.radius) if wake_length is None else float(wake_length)
+        self.wake_half_width = 1.5 * self.radius if wake_half_width is None else float(wake_half_width)
         self.outlet_velocity_policy = outlet_velocity_policy
         self.eps = float(eps)
 

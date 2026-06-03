@@ -2,7 +2,10 @@ import numpy as np
 
 from fealpy.backend import backend_manager as bm
 from fealpy.functionspace import ScaledMonomialSpace2d
-from fealpy.fvm import DeviatoricStressSourceIntegrator, FVMGeometry
+from fealpy.fvm import (
+    DeviatoricStressSourceIntegrator,
+    FVMGeometry,
+)
 from fealpy.mesh import TriangleMesh
 
 

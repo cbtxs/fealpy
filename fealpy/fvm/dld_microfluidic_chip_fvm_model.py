@@ -31,10 +31,7 @@ class DLDMicrofluidicChipFVMModel(ComputationalModel):
     """
     def __init__(self, options: dict = None):
         self.options = options
-        super().__init__(
-            pbar_log=options['pbar_log'],
-            log_level=options['log_level']
-        )
+        super().__init__(pbar_log=options['pbar_log'], log_level=options['log_level'])
 
 
     def set_mesh(self, mesh):
@@ -55,4 +52,3 @@ class DLDMicrofluidicChipFVMModel(ComputationalModel):
     @variantmethod
     def solve(self):
         pass
-

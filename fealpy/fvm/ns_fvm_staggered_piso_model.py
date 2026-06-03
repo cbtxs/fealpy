@@ -43,11 +43,7 @@ class NSFVMStaggeredPISOModel(ComputationalModel):
         )
 
     def set_pde(self, pde: Union[int, object]) -> None:
-        self.pde = (
-            PDEModelManager("navier_stokes").get_example(pde)
-            if isinstance(pde, int)
-            else pde
-        )
+        self.pde = PDEModelManager("navier_stokes").get_example(pde) if isinstance(pde, int) else pde
 
     def set_mesh(self, nx: int, ny: int) -> None:
         self.staggered_mesh = StaggeredMeshManager(self.pde.domain(), nx=nx, ny=ny)
@@ -194,11 +190,7 @@ class NSFVMStaggeredPISOModel(ComputationalModel):
         response[self.vcell2pedge] = self.vcm / a_p_edge[self.vcell2pedge]
         return response
 
-    def correct_pressure_compute(
-        self,
-        rhs: TensorLike,
-        a_p_edge: TensorLike,
-    ) -> TensorLike:
+    def correct_pressure_compute(self, rhs: TensorLike, a_p_edge: TensorLike) -> TensorLike:
         """Solve the pressure correction equation with a zero-mean constraint."""
         response = self.pressure_response_on_pedge(a_p_edge)
         A = BilinearForm(self.pspace).add_integrator(

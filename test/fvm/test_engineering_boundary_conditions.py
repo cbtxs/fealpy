@@ -70,13 +70,43 @@ def test_engineering_boundary_conditions_select_only_dirichlet_patches():
     assert bool(bm.all(selected_values[:, 1] == 0.0))
 
 
+def test_engineering_boundary_conditions_convert_to_pde_boundary_conditions():
+    bm.set_backend("numpy")
+    from fealpy.fvm import PDEBoundaryConditions
+    from fealpy.model import PDEModelManager
+
+    pde = PDEModelManager("navier_stokes").get_example(6)
+    mesh = pde.init_mesh["uniform_qrad"](nx=4, ny=4)
+    engineering_bc = _left_right_engineering_bc(mesh, with_pressure=True)
+    pde_bc = engineering_bc.to_pde_boundary()
+
+    bd_edge, bd_value = pde_bc.boundary_face_velocity("velocity")
+    face_centers = mesh.entity_barycenter("face")[bd_edge]
+    pressure_threshold = pde_bc.pressure_dirichlet_threshold()
+    pressure_faces = mesh.boundary_face_index()
+    pressure_points = mesh.entity_barycenter("face")[pressure_faces]
+
+    assert isinstance(pde_bc, PDEBoundaryConditions)
+    assert pde_bc.conditions_for("velocity", "dirichlet")
+    assert pde_bc.conditions_for("velocity", "natural")
+    assert pde_bc.has_pressure_dirichlet()
+    assert bd_edge.shape[0] == 4
+    assert bd_value.shape == (4, 2)
+    assert bool(bm.all(face_centers[:, 0] < 1.0e-12))
+    assert int(bm.to_numpy(bm.sum(pressure_threshold(pressure_points)))) == 4
+
+
 def test_simple_model_uses_engineering_boundary_conditions_for_face_constraints():
     bm.set_backend("numpy")
+    from fealpy.fvm import EngineeringBoundaryConditions, PDEBoundaryConditions
+
     model = _simple_model_with_left_right_bc()
 
     bd_edge, bd_value = model._boundary_face_velocity()
     face_centers = model.mesh.entity_barycenter("face")[bd_edge]
 
+    assert isinstance(model.engineering_bc, EngineeringBoundaryConditions)
+    assert isinstance(model.boundary_conditions, PDEBoundaryConditions)
     assert bd_edge.shape[0] == 4
     assert bd_value.shape == (4, 2)
     assert bool(bm.all(face_centers[:, 0] < 1.0e-12))

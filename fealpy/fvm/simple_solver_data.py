@@ -128,10 +128,7 @@ class SimpleBoundaryConditions:
 
     def has_pressure_dirichlet(self) -> bool:
         """Return whether pressure Dirichlet data are available."""
-        return (
-            self.pressure_dirichlet is not None
-            and self.pressure_dirichlet_threshold_value is not None
-        )
+        return self.pressure_dirichlet is not None and self.pressure_dirichlet_threshold_value is not None
 
     def pressure_dirichlet_threshold(self):
         """Return pressure Dirichlet threshold."""

@@ -8,10 +8,11 @@ from fealpy.backend import backend_manager as bm
 from fealpy.model import ComputationalModel
 
 from .collocated_piso_solver import CollocatedPisoSolver
+from .navier_stokes_model_adapter import NavierStokesModelAdapter
 from .piso_solver_data import PisoBoundaryConditions, PisoSolverControls
 
 
-class NSFVMPISOModel(ComputationalModel, CollocatedPisoSolver):
+class NSFVMPISOModel(ComputationalModel, NavierStokesModelAdapter, CollocatedPisoSolver):
     """Finite-volume PISO model for PDE examples with exact solutions."""
 
     def __init__(self, options):
@@ -26,15 +27,17 @@ class NSFVMPISOModel(ComputationalModel, CollocatedPisoSolver):
         self._init_momentum_coefficients(options)
         mesh_type = self._piso_mesh_type(options)
         mesh = self._init_mesh(options, mesh_type)
-        boundary_conditions = self._init_piso_boundary_conditions(
-            options,
-            mesh,
-            pde,
-        )
+        boundary_input = self._init_piso_boundary_conditions(options, mesh, pde)
         self.engineering_bc = (
-            boundary_conditions
+            boundary_input
             if options.get("boundary_conditions") is not None
+            and hasattr(boundary_input, "to_pde_boundary")
             else None
+        )
+        boundary_conditions = (
+            boundary_input.to_pde_boundary()
+            if hasattr(boundary_input, "to_pde_boundary")
+            else boundary_input
         )
         self._init_piso_solver(
             mesh=mesh,
@@ -98,15 +101,8 @@ class NSFVMPISOModel(ComputationalModel, CollocatedPisoSolver):
                 velocity_dirichlet = pde.dirichlet_velocity
             return PisoBoundaryConditions(velocity_dirichlet)
 
-        if callable(boundary_conditions) and not hasattr(
-            boundary_conditions,
-            "dirichlet_threshold",
-        ):
-            return self._call_boundary_condition_factory(
-                boundary_conditions,
-                mesh,
-                pde,
-            )
+        if callable(boundary_conditions) and not hasattr(boundary_conditions, "dirichlet_threshold"):
+            return self._call_boundary_condition_factory(boundary_conditions, mesh, pde)
         return boundary_conditions
 
     @staticmethod

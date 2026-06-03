@@ -87,11 +87,7 @@ def _wall_sn_grad_viscous_force(
 
     velocity = bm.stack([uh, vh], axis=-1)
     delta_velocity = _wall_velocity(case, face_centers) - velocity[owner]
-    grad = (
-        delta_velocity[:, :, None]
-        * normal[:, None, :]
-        / normal_distance[:, None, None]
-    )
+    grad = delta_velocity[:, :, None] * normal[:, None, :] / normal_distance[:, None, None]
     strain = grad + bm.swapaxes(grad, 1, 2)
     divergence = grad[:, 0, 0] + grad[:, 1, 1]
     identity = bm.eye(2, dtype=sf.dtype)
@@ -176,18 +172,10 @@ def cylinder_force_coefficients(
     else:
         drag_coefficient = 2.0 * _as_float(total_force[0]) / dynamic_scale
         lift_coefficient = 2.0 * _as_float(total_force[1]) / dynamic_scale
-        pressure_drag_coefficient = (
-            2.0 * _as_float(pressure_total[0]) / dynamic_scale
-        )
-        pressure_lift_coefficient = (
-            2.0 * _as_float(pressure_total[1]) / dynamic_scale
-        )
-        viscous_drag_coefficient = (
-            2.0 * _as_float(viscous_total[0]) / dynamic_scale
-        )
-        viscous_lift_coefficient = (
-            2.0 * _as_float(viscous_total[1]) / dynamic_scale
-        )
+        pressure_drag_coefficient = 2.0 * _as_float(pressure_total[0]) / dynamic_scale
+        pressure_lift_coefficient = 2.0 * _as_float(pressure_total[1]) / dynamic_scale
+        viscous_drag_coefficient = 2.0 * _as_float(viscous_total[0]) / dynamic_scale
+        viscous_lift_coefficient = 2.0 * _as_float(viscous_total[1]) / dynamic_scale
 
     return {
         "cylinder_faces": int(cylinder_edges.shape[0]),

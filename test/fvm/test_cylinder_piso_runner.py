@@ -195,7 +195,7 @@ def test_piso_cylinder_history_reports_outlet_backflow_flux(tmp_path: Path):
             "pbar_log": False,
         }
     )
-    outlet_faces = model.boundary_conditions.patch_face_index("outlet")
+    outlet_faces = model.engineering_bc.patch_face_index("outlet")
     assert outlet_faces.shape[0] >= 2
 
     flux = bm.zeros(model.mesh.number_of_faces())

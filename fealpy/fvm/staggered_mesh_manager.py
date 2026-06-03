@@ -70,11 +70,7 @@ class StaggeredMeshManager:
                 "without an interior topological counterpart."
             )
 
-        values = (
-            boundary_velocity(points)
-            if callable(boundary_velocity)
-            else boundary_velocity
-        )
+        values = boundary_velocity(points) if callable(boundary_velocity) else boundary_velocity
         if not bm.is_tensor(values):
             values = bm.array(values)
         if len(values.shape) == 0:
