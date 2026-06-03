@@ -2,16 +2,16 @@ import numpy as np
 import pytest
 
 from fealpy.backend import backend_manager as bm
-from fealpy.fvm import NonOrthogonalGeometry
+from fealpy.fvm import FVMGeometry
 from fealpy.model import PDEModelManager
 
 
 def _mean_nonorthogonal_ratio(mesh):
     edge_to_cell = np.asarray(mesh.edge_to_cell()[:, :2])
     is_internal = edge_to_cell[:, 0] != edge_to_cell[:, 1]
-    geometry = NonOrthogonalGeometry(mesh)
-    correction = np.asarray(geometry.openfoam_correction_vector())
-    area = np.asarray(geometry.face_area_norm())
+    geometry = FVMGeometry(mesh)
+    correction = np.asarray(geometry.bounded_over_relaxed_decomposition()[2])
+    area = np.asarray(geometry.mag_S_f)
     ratio = np.linalg.norm(correction, axis=1) / area
     return float(np.mean(ratio[is_internal]))
 
@@ -45,21 +45,25 @@ def test_exp0013_complex_tri_mesh_is_more_nonorthogonal_than_regular_box():
     assert complex_ratio > 0.13
 
 
-def test_exp0013_bad_tri_mesh_triggers_openfoam_stabilization():
+def test_exp0013_bad_tri_mesh_triggers_bounded_over_relaxed_stabilization():
     bm.set_backend("numpy")
     pde = PDEModelManager("poisson").get_example(13)
     mesh = pde.init_mesh["bad_tri"]()
-    geometry = NonOrthogonalGeometry(mesh, eps=0.05)
+    geometry = FVMGeometry(mesh)
+    eps = 0.05
 
     edge_to_cell = np.asarray(mesh.edge_to_cell()[:, :2])
     is_internal = edge_to_cell[:, 0] != edge_to_cell[:, 1]
-    delta = np.asarray(geometry.cell_center_vector())
-    normal = np.asarray(geometry.unit_normal())
-    face_area = np.asarray(geometry.face_area_norm())
+    delta = np.asarray(geometry.d_f)
+    normal = np.asarray(geometry.n_f)
+    face_area = np.asarray(geometry.mag_S_f)
     ratio = np.einsum("ij,ij->i", normal, delta) / np.linalg.norm(delta, axis=1)
-    stabilized_norm = np.linalg.norm(np.asarray(geometry.openfoam_correction_vector()), axis=1)
+    stabilized_norm = np.linalg.norm(
+        np.asarray(geometry.bounded_over_relaxed_decomposition(eps=eps)[2]),
+        axis=1,
+    )
     stabilized_ratio = stabilized_norm / face_area
 
     assert mesh.number_of_cells() == 2
-    assert np.any(ratio[is_internal] <= geometry.eps)
-    assert np.max(stabilized_ratio[is_internal]) <= 1.0 + 1.0 / geometry.eps
+    assert np.any(ratio[is_internal] <= eps)
+    assert np.max(stabilized_ratio[is_internal]) <= 1.0 + 1.0 / eps

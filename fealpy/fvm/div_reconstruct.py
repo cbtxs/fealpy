@@ -2,6 +2,8 @@
 
 from fealpy.backend import backend_manager as bm
 
+from .fvm_geometry import FVMGeometry
+
 
 class DivergenceReconstruct:
     """Scatter signed face fluxes to owner and neighbour cells.
@@ -13,6 +15,7 @@ class DivergenceReconstruct:
 
     def __init__(self, mesh):
         self.mesh = mesh
+        self.fvm_geometry = FVMGeometry(mesh)
 
     def StagReconstruct(self, edge_velocity):
         """Divergence from scalar staggered normal velocities."""
@@ -28,14 +31,6 @@ class DivergenceReconstruct:
     
     def Reconstruct(self, edge_velocity):
         """Divergence from vector collocated face velocities."""
-        Sf = self.mesh.edge_normal()
+        Sf = self.fvm_geometry.S_f
         integrator = bm.einsum('ij,ij->i', edge_velocity, Sf)
-        e2c = self.mesh.edge_to_cell()[:,:2]
-        div_u = bm.zeros(self.mesh.number_of_cells(), dtype=integrator.dtype)
-        mask = e2c[:, 1] != e2c[:, 0]
-        div_u = bm.index_add(div_u, e2c[:, 0], integrator, axis=0)
-        div_u = bm.index_add(
-            div_u, e2c[mask, 1], integrator[mask], axis=0, alpha=-1
-        )
-        # bm.add.at(div_u, e2c[:, 1], -integrator)
-        return div_u
+        return self.fvm_geometry.scatter_face_flux_to_cells(integrator)

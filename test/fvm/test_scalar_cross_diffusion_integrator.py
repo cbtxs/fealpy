@@ -4,7 +4,7 @@ import pytest
 from fealpy.backend import backend_manager as bm
 from fealpy.fem import LinearForm
 from fealpy.functionspace import ScaledMonomialSpace2d, TensorFunctionSpace
-from fealpy.fvm import NonOrthogonalGeometry, ScalarCrossDiffusionIntegrator
+from fealpy.fvm import FVMGeometry, ScalarCrossDiffusionIntegrator
 from fealpy.mesh import TriangleMesh
 
 
@@ -66,6 +66,32 @@ def test_face_flux_correction_scatter_scalar():
     )
 
 
+def test_face_flux_correction_scatter_reuses_fvm_geometry(monkeypatch):
+    mesh, space = _box_space(nx=2, ny=1)
+    face_flux = np.linspace(0.2, 1.2, mesh.number_of_edges())
+    calls = []
+    original_scatter = FVMGeometry.scatter_face_flux_to_cells
+
+    def counted_scatter(self, selected_face_flux):
+        calls.append(np.asarray(selected_face_flux).copy())
+        return original_scatter(self, selected_face_flux)
+
+    monkeypatch.setattr(FVMGeometry, "scatter_face_flux_to_cells", counted_scatter)
+
+    rhs = LinearForm(space).add_integrator(
+        ScalarCrossDiffusionIntegrator(face_flux_correction=face_flux)
+    ).assembly()
+
+    assert len(calls) == 1
+    np.testing.assert_allclose(calls[0], face_flux, rtol=1.0e-13, atol=1.0e-13)
+    np.testing.assert_allclose(
+        np.asarray(rhs),
+        _expected_scalar_scatter(mesh, face_flux),
+        rtol=1.0e-13,
+        atol=1.0e-13,
+    )
+
+
 def test_face_flux_correction_scatter_vector():
     mesh, scalar_space = _box_space(nx=1, ny=1)
     space = TensorFunctionSpace(scalar_space, shape=(2, -1))
@@ -89,7 +115,7 @@ def test_face_flux_correction_scatter_vector():
     )
 
 
-def test_default_cross_diffusion_matches_openfoam_stabilized_scatter():
+def test_default_cross_diffusion_matches_bounded_over_relaxed_scatter():
     mesh, space = _box_space(nx=2, ny=1)
     grad_f = np.stack(
         [
@@ -101,7 +127,7 @@ def test_default_cross_diffusion_matches_openfoam_stabilized_scatter():
     coef = np.linspace(0.8, 1.4, mesh.number_of_edges())
     edge_to_cell = np.asarray(mesh.edge_to_cell()[:, :2])
     is_internal = edge_to_cell[:, 0] != edge_to_cell[:, 1]
-    correction = np.asarray(NonOrthogonalGeometry(mesh).openfoam_correction_vector())
+    correction = np.asarray(FVMGeometry(mesh).bounded_over_relaxed_decomposition()[2])
     face_flux = coef * np.einsum("ij,ij->i", correction, grad_f)
     face_flux[~is_internal] = 0.0
 
@@ -117,25 +143,67 @@ def test_default_cross_diffusion_matches_openfoam_stabilized_scatter():
     )
 
 
-def test_nonorthogonal_geometry_zero_correction_vector_shape():
+def test_default_cross_diffusion_reuses_fvm_geometry_bounded_decomposition(monkeypatch):
+    mesh, space = _box_space(nx=2, ny=1)
+    grad_f = np.stack(
+        [
+            np.linspace(-0.3, 0.5, mesh.number_of_edges()),
+            np.linspace(0.1, 0.7, mesh.number_of_edges()),
+        ],
+        axis=1,
+    )
+    calls = []
+    original_decomposition = FVMGeometry.bounded_over_relaxed_decomposition
+
+    def counted_decomposition(self, *, eps=0.05):
+        calls.append(eps)
+        return original_decomposition(self, eps=eps)
+
+    monkeypatch.setattr(
+        FVMGeometry,
+        "bounded_over_relaxed_decomposition",
+        counted_decomposition,
+    )
+
+    rhs = LinearForm(space).add_integrator(
+        ScalarCrossDiffusionIntegrator(np.zeros(mesh.number_of_cells()), grad_f)
+    ).assembly()
+
+    _, _, T_f = original_decomposition(FVMGeometry(mesh), eps=0.05)
+    face_flux = np.einsum("ij,ij->i", np.asarray(T_f), grad_f)
+    face_flux[np.asarray(FVMGeometry(mesh).is_boundary)] = 0.0
+
+    assert calls == [0.05]
+    np.testing.assert_allclose(
+        np.asarray(rhs),
+        _expected_scalar_scatter(mesh, face_flux),
+        rtol=1.0e-13,
+        atol=1.0e-13,
+    )
+
+
+def test_orthogonal_correction_vector_is_zero_like_face_area_vector():
     mesh, _ = _box_space(nx=2, ny=1)
-    geometry = NonOrthogonalGeometry(mesh)
-    zero = np.asarray(geometry.zero_correction_vector())
+    geometry = FVMGeometry(mesh)
+    zero = np.asarray(np.zeros_like(np.asarray(geometry.S_f)))
 
     assert zero.shape == (mesh.number_of_edges(), mesh.geo_dimension())
     np.testing.assert_allclose(zero, 0.0, atol=0.0)
 
 
-def test_nonorthogonal_geometry_openfoam_delta_coeff_is_stabilized():
+def test_bounded_over_relaxed_orthogonal_coefficient_is_stabilized():
     mesh, _ = _box_space(nx=2, ny=1)
     eps = 0.05
-    geometry = NonOrthogonalGeometry(mesh, eps=eps)
-    coeff = np.asarray(geometry.openfoam_delta_coeff())
-    delta = np.asarray(geometry.cell_center_vector())
-    unit_normal = np.asarray(geometry.unit_normal())
-    denominator = 1.0 / coeff
-    projected = np.einsum("ij,ij->i", unit_normal, delta)
-    lower_bound = eps * np.linalg.norm(delta, axis=1)
+    geometry = FVMGeometry(mesh)
+    _, mag_E_f, _ = geometry.bounded_over_relaxed_decomposition(eps=eps)
+    coefficient = np.asarray(mag_E_f) / np.asarray(geometry.mag_d_f)
+    denominator = np.asarray(geometry.mag_S_f) / coefficient
+    projected = np.einsum(
+        "ij,ij->i",
+        np.asarray(geometry.n_f),
+        np.asarray(geometry.d_f),
+    )
+    lower_bound = eps * np.asarray(geometry.mag_d_f)
 
     np.testing.assert_allclose(
         denominator,
@@ -145,7 +213,7 @@ def test_nonorthogonal_geometry_openfoam_delta_coeff_is_stabilized():
     )
 
 
-def test_nonorthogonal_geometry_openfoam_vector_differs_on_bad_internal_face():
+def test_bounded_over_relaxed_Tf_is_stabilized_on_bad_internal_face():
     a = 0.01
     y = 1.0
     node = bm.array(
@@ -159,19 +227,20 @@ def test_nonorthogonal_geometry_openfoam_vector_differs_on_bad_internal_face():
     )
     cell = bm.array([[0, 1, 2], [0, 3, 1]], dtype=bm.int32)
     mesh = TriangleMesh(node, cell)
-    geometry = NonOrthogonalGeometry(mesh, eps=0.05)
+    geometry = FVMGeometry(mesh)
+    eps = 0.05
 
     edge_to_cell = np.asarray(mesh.edge_to_cell()[:, :2])
     is_internal = edge_to_cell[:, 0] != edge_to_cell[:, 1]
-    delta = np.asarray(geometry.cell_center_vector())
-    normal = np.asarray(geometry.unit_normal())
-    face_area = np.asarray(geometry.face_area_norm())
+    delta = np.asarray(geometry.d_f)
+    normal = np.asarray(geometry.n_f)
+    face_area = np.asarray(geometry.mag_S_f)
     ratio = np.einsum("ij,ij->i", normal, delta) / np.linalg.norm(delta, axis=1)
-    stabilized = np.asarray(geometry.openfoam_correction_vector())
-    stabilized_ratio = np.linalg.norm(stabilized, axis=1) / face_area
+    T_f = np.asarray(geometry.bounded_over_relaxed_decomposition(eps=eps)[2])
+    stabilized_ratio = np.linalg.norm(T_f, axis=1) / face_area
 
-    assert np.any(ratio[is_internal] <= geometry.eps)
-    assert np.max(stabilized_ratio[is_internal]) <= 1.0 + 1.0 / geometry.eps
+    assert np.any(ratio[is_internal] <= eps)
+    assert np.max(stabilized_ratio[is_internal]) <= 1.0 + 1.0 / eps
 
 
 def test_orthogonal_correction_method_returns_zero_rhs():
@@ -191,7 +260,7 @@ def test_orthogonal_correction_method_returns_zero_rhs():
 
 def test_limited_correction_with_zero_limit_coeff_returns_zero_internal_rhs():
     mesh, space = _bad_two_triangle_space()
-    geometry = NonOrthogonalGeometry(mesh, eps=0.05)
+    geometry = FVMGeometry(mesh)
     edge_to_cell = np.asarray(mesh.edge_to_cell()[:, :2])
     is_internal = edge_to_cell[:, 0] != edge_to_cell[:, 1]
     grad_f = np.zeros((mesh.number_of_edges(), mesh.geo_dimension()))
@@ -212,22 +281,23 @@ def test_limited_correction_with_zero_limit_coeff_returns_zero_internal_rhs():
 
 def test_limited_correction_matches_manual_limiter_on_bad_internal_face():
     mesh, space = _bad_two_triangle_space()
-    geometry = NonOrthogonalGeometry(mesh, eps=0.05)
+    geometry = FVMGeometry(mesh)
     edge_to_cell = np.asarray(mesh.edge_to_cell()[:, :2])
     is_internal = edge_to_cell[:, 0] != edge_to_cell[:, 1]
     uh = np.array([0.0, 1.0])
     grad_f = np.zeros((mesh.number_of_edges(), mesh.geo_dimension()))
     grad_f[is_internal, 0] = 100.0
-    correction_vector = np.asarray(geometry.openfoam_correction_vector())
+    _, mag_E_f, correction_vector = geometry.bounded_over_relaxed_decomposition(
+        eps=0.05
+    )
+    correction_vector = np.asarray(correction_vector)
     full_flux = np.einsum("ij,ij->i", correction_vector, grad_f)
-    face_area = np.asarray(geometry.face_area_norm())
-    delta_coeff = np.asarray(geometry.openfoam_delta_coeff())
+    orthogonal_coeff = np.asarray(mag_E_f) / np.asarray(geometry.mag_d_f)
     owner = edge_to_cell[:, 0]
     neighbour = edge_to_cell[:, 1]
     orthogonal_flux = np.zeros(mesh.number_of_edges())
     orthogonal_flux[is_internal] = (
-        face_area[is_internal]
-        * delta_coeff[is_internal]
+        orthogonal_coeff[is_internal]
         * np.abs(uh[neighbour[is_internal]] - uh[owner[is_internal]])
     )
     limit_coeff = 0.5
@@ -292,7 +362,7 @@ def test_correction_vector_matches_equivalent_face_flux_correction():
     )
 
 
-def test_default_correction_method_matches_explicit_openfoam_stabilized():
+def test_default_correction_method_matches_explicit_bounded_over_relaxed():
     mesh, space = _box_space(nx=2, ny=1)
     grad_f = np.stack(
         [
@@ -309,8 +379,8 @@ def test_default_correction_method_matches_explicit_openfoam_stabilized():
         ScalarCrossDiffusionIntegrator(
             np.zeros(mesh.number_of_cells()),
             grad_f,
-            geometry=NonOrthogonalGeometry(mesh),
-            correction_method="openfoam_stabilized",
+            geometry=FVMGeometry(mesh),
+            correction_method="bounded_over_relaxed",
         )
     ).assembly()
 
@@ -322,9 +392,9 @@ def test_default_correction_method_matches_explicit_openfoam_stabilized():
     )
 
 
-def test_openfoam_stabilized_zeros_boundary_correction_by_default():
+def test_bounded_over_relaxed_zeros_boundary_correction_by_default():
     mesh, space = _box_space(nx=1, ny=1)
-    geometry = NonOrthogonalGeometry(mesh)
+    geometry = FVMGeometry(mesh)
     edge_to_cell = np.asarray(mesh.edge_to_cell()[:, :2])
     is_internal = edge_to_cell[:, 0] != edge_to_cell[:, 1]
     grad_f = np.stack(
@@ -334,7 +404,7 @@ def test_openfoam_stabilized_zeros_boundary_correction_by_default():
         ],
         axis=1,
     )
-    correction_vector = np.asarray(geometry.openfoam_correction_vector())
+    correction_vector = np.asarray(geometry.bounded_over_relaxed_decomposition()[2])
     full_flux = np.einsum("ij,ij->i", correction_vector, grad_f)
     expected_flux = full_flux.copy()
     expected_flux[~is_internal] = 0.0
@@ -347,7 +417,7 @@ def test_openfoam_stabilized_zeros_boundary_correction_by_default():
             np.zeros(mesh.number_of_cells()),
             grad_f,
             geometry=geometry,
-            correction_method="openfoam_stabilized",
+            correction_method="bounded_over_relaxed",
         )
     ).assembly()
 
@@ -359,9 +429,9 @@ def test_openfoam_stabilized_zeros_boundary_correction_by_default():
     )
 
 
-def test_openfoam_stabilized_boundary_policy_all_keeps_raw_boundary_flux():
+def test_bounded_over_relaxed_boundary_policy_all_keeps_raw_boundary_flux():
     mesh, space = _box_space(nx=1, ny=1)
-    geometry = NonOrthogonalGeometry(mesh)
+    geometry = FVMGeometry(mesh)
     grad_f = np.stack(
         [
             np.linspace(0.2, 1.0, mesh.number_of_edges()),
@@ -371,7 +441,7 @@ def test_openfoam_stabilized_boundary_policy_all_keeps_raw_boundary_flux():
     )
     face_flux = np.einsum(
         "ij,ij->i",
-        np.asarray(geometry.openfoam_correction_vector()),
+        np.asarray(geometry.bounded_over_relaxed_decomposition()[2]),
         grad_f,
     )
     expected = _expected_scalar_scatter(mesh, face_flux)
@@ -381,7 +451,7 @@ def test_openfoam_stabilized_boundary_policy_all_keeps_raw_boundary_flux():
             np.zeros(mesh.number_of_cells()),
             grad_f,
             geometry=geometry,
-            correction_method="openfoam_stabilized",
+            correction_method="bounded_over_relaxed",
             boundary_policy="all",
         )
     ).assembly()
@@ -409,16 +479,17 @@ def test_legacy_correction_method_is_not_supported():
 
 
 def _assert_finite_geometry_quantities(mesh):
-    geometry = NonOrthogonalGeometry(mesh)
-    assert np.asarray(geometry.openfoam_correction_vector()).shape == (
+    geometry = FVMGeometry(mesh)
+    _, mag_E_f, T_f = geometry.bounded_over_relaxed_decomposition()
+    assert np.asarray(T_f).shape == (
         mesh.number_of_edges(),
         mesh.geo_dimension(),
     )
-    assert np.all(np.isfinite(np.asarray(geometry.openfoam_delta_coeff())))
-    assert np.all(np.isfinite(np.asarray(geometry.openfoam_correction_vector())))
+    assert np.all(np.isfinite(np.asarray(mag_E_f) / np.asarray(geometry.mag_d_f)))
+    assert np.all(np.isfinite(np.asarray(T_f)))
 
 
-def test_circle_mesher_nonorthogonal_geometry_smoke():
+def test_circle_mesher_bounded_over_relaxed_geometry_smoke():
     pytest.importorskip("gmsh")
     from fealpy.mesher.circle_mesher import CircleMesher
 
@@ -427,7 +498,7 @@ def test_circle_mesher_nonorthogonal_geometry_smoke():
     _assert_finite_geometry_quantities(mesh)
 
 
-def test_box_with_circular_hole_mesher_nonorthogonal_geometry_smoke():
+def test_box_with_circular_hole_mesher_bounded_over_relaxed_geometry_smoke():
     pytest.importorskip("gmsh")
     from fealpy.mesher import BoxWithCircularHoleMesher2D
 

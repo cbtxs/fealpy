@@ -6,6 +6,8 @@ from dataclasses import dataclass
 
 from fealpy.backend import backend_manager as bm
 
+from .fvm_geometry import FVMGeometry
+
 
 @dataclass(frozen=True)
 class SimpleSolverControls:
@@ -114,8 +116,9 @@ class SimpleBoundaryConditions:
         """Return selected boundary faces and prescribed velocities."""
         if variable != "velocity":
             raise ValueError("boundary_face_velocity only supports 'velocity'.")
-        boundary_faces = mesh.boundary_face_index()
-        points = mesh.entity_barycenter("face")[boundary_faces]
+        geometry = FVMGeometry(mesh)
+        boundary_faces = bm.nonzero(geometry.is_boundary)[0]
+        points = geometry.face_center[boundary_faces]
         threshold = self.velocity_dirichlet_threshold
         if threshold is None:
             flag = bm.ones(boundary_faces.shape[0], dtype=bm.bool)

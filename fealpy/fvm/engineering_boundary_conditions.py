@@ -7,6 +7,8 @@ from typing import Callable, Iterable
 
 from fealpy.backend import backend_manager as bm
 
+from .fvm_geometry import FVMGeometry
+
 
 @dataclass(frozen=True)
 class BoundaryPatch:
@@ -45,6 +47,7 @@ class EngineeringBoundaryConditions:
         conditions: Iterable[BoundaryCondition],
     ) -> None:
         self.mesh = mesh
+        self.geometry = FVMGeometry(mesh)
         self.patches = tuple(patches)
         self.conditions = tuple(conditions)
         self._patch_by_name = self._build_patch_map(self.patches)
@@ -136,13 +139,13 @@ class EngineeringBoundaryConditions:
 
     def patch_face_mask(self, patch_name: str):
         """Return a boundary-face mask for one named patch."""
-        boundary_faces = self.mesh.boundary_face_index()
-        points = self.mesh.entity_barycenter("face")[boundary_faces]
+        boundary_faces = bm.nonzero(self.geometry.is_boundary)[0]
+        points = self.geometry.face_center[boundary_faces]
         return self._patch_flag(patch_name, points)
 
     def patch_face_index(self, patch_name: str):
         """Return global face indices belonging to one named patch."""
-        boundary_faces = self.mesh.boundary_face_index()
+        boundary_faces = bm.nonzero(self.geometry.is_boundary)[0]
         return boundary_faces[self.patch_face_mask(patch_name)]
 
     def boundary_face_velocity(self, variable: str = "velocity"):
@@ -150,8 +153,8 @@ class EngineeringBoundaryConditions:
         if variable != "velocity":
             raise ValueError("boundary_face_velocity only supports 'velocity'.")
 
-        boundary_faces = self.mesh.boundary_face_index()
-        points = self.mesh.entity_barycenter("face")[boundary_faces]
+        boundary_faces = bm.nonzero(self.geometry.is_boundary)[0]
+        points = self.geometry.face_center[boundary_faces]
         if not self.has_dirichlet(variable):
             return boundary_faces[:0], bm.zeros((0, points.shape[1]), dtype=points.dtype)
 

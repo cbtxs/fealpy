@@ -12,7 +12,7 @@ from fealpy.backend import TensorLike
 from fealpy.decorator import cartesian, variantmethod
 from fealpy.mesh import TriangleMesh
 
-from .nonorthogonal_geometry import NonOrthogonalGeometry
+from .fvm_geometry import FVMGeometry
 
 
 @dataclass(frozen=True)
@@ -451,9 +451,9 @@ class CylinderFlowCase:
 
     @staticmethod
     def _nonorthogonal_angles(mesh):
-        geometry = NonOrthogonalGeometry(mesh)
-        sf = np.asarray(bm.to_numpy(geometry.face_area_vector()))
-        d = np.asarray(bm.to_numpy(geometry.cell_center_vector()))
+        geometry = FVMGeometry(mesh)
+        sf = np.asarray(bm.to_numpy(geometry.S_f))
+        d = np.asarray(bm.to_numpy(geometry.d_f))
         e2c = np.asarray(bm.to_numpy(mesh.edge_to_cell()), dtype=np.int64)
         interior = e2c[:, 0] != e2c[:, 1]
         sf = sf[interior]

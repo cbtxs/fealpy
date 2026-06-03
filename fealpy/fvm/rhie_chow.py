@@ -4,6 +4,9 @@ from fealpy.backend import backend_manager as bm
 from fealpy.sparse import COOTensor
 
 from .backend_utils import as_backend_array
+from .face_gradient import reconstruct_face_gradient
+from .face_interpolation import face_interpolation_owner_weight
+from .fvm_geometry import FVMGeometry
 
 
 class RhieChowInterpolation:
@@ -29,7 +32,6 @@ class RhieChowInterpolation:
         pressure_dirichlet_threshold=None,
     ):
         from .gradient_reconstruct import GradientReconstruct
-        from .vector_decomposition import VectorDecomposition
 
         self.mesh = mesh
         self.cm = self.mesh.entity_measure('cell')
@@ -37,7 +39,8 @@ class RhieChowInterpolation:
         self.NF = mesh.number_of_faces()
         self.cell_centers = mesh.entity_barycenter("cell")
         self.cell_measures = mesh.entity_measure("cell")
-        self.edge_to_cell = mesh.edge_to_cell()
+        self.fvm_geometry = FVMGeometry(mesh)
+        self.edge_to_cell = self.fvm_geometry.face_to_cell
         self.cell_to_edge = mesh.cell_to_edge()
         self.velocity_interpolation = self._validate_velocity_interpolation(
             velocity_interpolation
@@ -51,7 +54,8 @@ class RhieChowInterpolation:
             bc_type="dirichlet" if pressure_dirichlet is not None else None,
             threshold=pressure_dirichlet_threshold,
         )
-        self.e, self.d = VectorDecomposition(mesh).centroid_vector_calculation()
+        self.e = self.fvm_geometry.d_f
+        self.d = self.fvm_geometry.mag_d_f
 
     @staticmethod
     def _validate_velocity_interpolation(velocity_interpolation):
@@ -62,22 +66,10 @@ class RhieChowInterpolation:
         return velocity_interpolation
 
     def _owner_weight(self):
-        if self.velocity_interpolation == "average":
-            return 0.5 * bm.ones(self.NF, dtype=self.cm.dtype)
-
-        owner = self.edge_to_cell[:, 0]
-        neighbour = self.edge_to_cell[:, 1]
-        face_centers = self.mesh.entity_barycenter("face")
-        Sf = self.mesh.edge_normal()
-        own = bm.abs(
-            bm.einsum("ij,ij->i", Sf, face_centers - self.cell_centers[owner])
+        return face_interpolation_owner_weight(
+            self.mesh,
+            method=self.velocity_interpolation,
         )
-        nei = bm.abs(
-            bm.einsum("ij,ij->i", Sf, self.cell_centers[neighbour] - face_centers)
-        )
-        total = own + nei
-        weight = bm.where(total > 0.0, nei / total, 0.5)
-        return bm.where(owner == neighbour, 1.0, weight)
 
     def _interpolate_cell_scalar(self, value):
         weight = self._owner_weight()
@@ -115,7 +107,7 @@ class RhieChowInterpolation:
         partial_p = self._apply_pressure_dirichlet_boundary_partial(p, partial_p)
         e_cf = e / d[:, None]
         grad_p = self.gradient_reconstruct.cell_gradient(p)
-        overline_grad_p_f = self.gradient_reconstruct.face_gradient(grad_p)
+        overline_grad_p_f = reconstruct_face_gradient(self.mesh, grad_p)
         GradientDifference = (partial_p - bm.einsum('ij,ij->i', overline_grad_p_f, e_cf))[:, None]*e_cf
         return GradientDifference
 
@@ -124,8 +116,8 @@ class RhieChowInterpolation:
         if self.pressure_dirichlet is None:
             return partial_p
 
-        bd_face = self.mesh.boundary_face_index()
-        face_centers = self.mesh.entity_barycenter("face")[bd_face]
+        bd_face = bm.nonzero(self.fvm_geometry.is_boundary)[0]
+        face_centers = self.fvm_geometry.face_center[bd_face]
         if self.pressure_dirichlet_threshold is not None:
             flag = self.gradient_reconstruct._boundary_face_flag(
                 face_centers, self.pressure_dirichlet_threshold
@@ -136,7 +128,7 @@ class RhieChowInterpolation:
         if bd_face.shape[0] == 0:
             return partial_p
 
-        owner = self.edge_to_cell[bd_face, 0]
+        owner = self.fvm_geometry.owner[bd_face]
         bd_value = self.pressure_dirichlet(face_centers)
         bd_partial = (bd_value - p[owner]) / self.d[bd_face]
         return bm.set_at(partial_p, bd_face, bd_partial)
@@ -166,6 +158,7 @@ class RhieChowCoupledOperator:
         self.mesh = mesh
         self.rho = rho
         self.gradient_reconstruct = GradientReconstruct(mesh)
+        self.fvm_geometry = FVMGeometry(mesh)
         self._cell_lsq_gradient_matrix_cache = None
 
     def pressure_stabilization_matrix(self, ap):
@@ -205,7 +198,7 @@ class RhieChowCoupledOperator:
             self._internal_pressure_flux_geometry(ap)
         )
         grad_p = self.gradient_reconstruct.cell_gradient(p_old)
-        grad_f = self.gradient_reconstruct.face_gradient(grad_p)[is_internal]
+        grad_f = reconstruct_face_gradient(self.mesh, grad_p)[is_internal]
         d_dot_grad = bm.einsum("ij,ij->i", d_pf, grad_f)
         face_rhs = -self.rho * beta * d_dot_grad
 
@@ -349,9 +342,8 @@ class RhieChowCoupledOperator:
         pressure
             Cell-centered pressure.
         """
-        mesh = self.mesh
-        NC = mesh.number_of_cells()
-        edge_to_cell = mesh.edge_to_cell()[:, :2]
+        NC = self.mesh.number_of_cells()
+        edge_to_cell = self.fvm_geometry.face_to_cell
         velocity = as_backend_array(velocity)
         if len(velocity.shape) == 1:
             velocity = bm.stack([velocity[:NC], velocity[NC:2 * NC]], axis=1)
@@ -366,7 +358,7 @@ class RhieChowCoupledOperator:
         )
 
         grad_p = self.gradient_reconstruct.cell_gradient(pressure)
-        interp_grad = self.gradient_reconstruct.face_gradient(grad_p)[is_internal]
+        interp_grad = reconstruct_face_gradient(self.mesh, grad_p)[is_internal]
         jump = pressure[neighbour] - pressure[owner]
         d_dot_grad = bm.einsum("ij,ij->i", d_pf, interp_grad)
         correction_flux = -beta * (jump - d_dot_grad)
@@ -383,11 +375,10 @@ class RhieChowCoupledOperator:
         side. Known boundary flux ``u_b · S_b`` is moved to the right-hand side
         with a minus sign.
         """
-        mesh = self.mesh
-        NC = mesh.number_of_cells()
-        bd_face = mesh.boundary_face_index()
-        owner = mesh.edge_to_cell()[bd_face, 0]
-        Sf = mesh.edge_normal()[bd_face]
+        NC = self.mesh.number_of_cells()
+        bd_face = bm.nonzero(self.fvm_geometry.is_boundary)[0]
+        owner = self.fvm_geometry.owner[bd_face]
+        Sf = self.fvm_geometry.S_f[bd_face]
         flux = bm.einsum("ij,ij->i", boundary_velocity, Sf)
         rhs = bm.zeros(NC, dtype=flux.dtype)
         rhs = bm.index_add(rhs, owner, flux, axis=0, alpha=-self.rho)
@@ -403,16 +394,12 @@ class RhieChowCoupledOperator:
         ``beta_f d_f dot grad(p)_f`` so all RC paths share one face-flux
         definition.
         """
-        mesh = self.mesh
-        edge_to_cell = mesh.edge_to_cell()[:, :2]
-        is_internal = edge_to_cell[:, 0] != edge_to_cell[:, 1]
-        internal_edge_to_cell = edge_to_cell[is_internal]
-        owner = internal_edge_to_cell[:, 0]
-        neighbour = internal_edge_to_cell[:, 1]
+        is_internal = self.fvm_geometry.is_internal
+        owner = self.fvm_geometry.owner[is_internal]
+        neighbour = self.fvm_geometry.neighbour[is_internal]
         D = self._cell_momentum_response(ap)
-        cell_center = mesh.entity_barycenter("cell")
-        Sf = mesh.edge_normal()[is_internal]
-        d_pf = cell_center[neighbour] - cell_center[owner]
+        Sf = self.fvm_geometry.S_f[is_internal]
+        d_pf = self.fvm_geometry.d_f[is_internal]
         Df = 0.5 * (D[owner] + D[neighbour])
         response = Df * Sf
         numerator = bm.einsum("ij,ij->i", response, Sf)

@@ -156,17 +156,32 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--pressure_gradient_method",
         default="extended_lsq",
-        choices=("extended_lsq", "face_lsq", "green_gauss"),
+        choices=(
+            "extended_lsq",
+            "face_lsq",
+            "weighted_lsq",
+            "green_gauss",
+        ),
     )
     parser.add_argument(
         "--velocity_gradient_method",
         default="extended_lsq",
-        choices=("extended_lsq", "face_lsq", "green_gauss"),
+        choices=(
+            "extended_lsq",
+            "face_lsq",
+            "weighted_lsq",
+            "green_gauss",
+        ),
     )
     parser.add_argument(
         "--rhie_chow_pressure_gradient_method",
         default="extended_lsq",
-        choices=("extended_lsq", "face_lsq", "green_gauss"),
+        choices=(
+            "extended_lsq",
+            "face_lsq",
+            "weighted_lsq",
+            "green_gauss",
+        ),
     )
     parser.add_argument(
         "--face_interpolation_method",

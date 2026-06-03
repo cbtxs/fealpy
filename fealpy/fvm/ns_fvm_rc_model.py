@@ -14,11 +14,12 @@ from fealpy.fvm import (
     ScalarDiffusionIntegrator,
     ScalarCrossDiffusionIntegrator,
     ScalarSourceIntegrator,
+    FVMGeometry,
     GradientReconstruct,
+    reconstruct_face_gradient,
     DirichletBC,
     NeumannBC,
     ConvectionIntegrator,
-    NonOrthogonalGeometry,
 )
 from .rhie_chow import RhieChowCoupledOperator
 
@@ -85,7 +86,7 @@ class NSFVMRCModel(ComputationalModel):
             gd=self.pde.dirichlet_velocity,
             bc_type="dirichlet",
         )
-        self.nonorthogonal_geometry = NonOrthogonalGeometry(self.mesh)
+        self.fvm_geometry = FVMGeometry(self.mesh)
         self.velocity_dirichlet_bc = DirichletBC(
             self.mesh, self.pde.dirichlet_velocity
         )
@@ -115,12 +116,12 @@ class NSFVMRCModel(ComputationalModel):
         lform = LinearForm(self.uspace)
         U = bm.stack((uh[:self.NC], uh[self.NC:]), axis=1)
         grad_u = self.velocity_gradient.cell_gradient(U)
-        grad_f = self.velocity_gradient.face_gradient(grad_u)
+        grad_f = reconstruct_face_gradient(self.mesh, grad_u)
         lform.add_integrator(
             ScalarCrossDiffusionIntegrator(
                 uh,
                 grad_f,
-                geometry=self.nonorthogonal_geometry,
+                geometry=self.fvm_geometry,
                 boundary_policy="all",
             )
         )
@@ -264,7 +265,7 @@ class NSFVMRCModel(ComputationalModel):
         ap_edge = (ap[e2c[:, 0]] + ap[e2c[:, 1]]) / 2
         # grad_f1 = (ph0[e2c[:, 1]] - ph0[e2c[:, 0]]) / self.h
         grad_p = self.pressure_gradient.cell_gradient(ph0)
-        grad_f2 = self.pressure_gradient.face_gradient(grad_p)
+        grad_f2 = reconstruct_face_gradient(self.mesh, grad_p)
 
         x = self.mesh.boundary_face_index()
         mask = bm.ones(grad_f2.shape[0], dtype=bm.bool)

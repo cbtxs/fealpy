@@ -12,9 +12,11 @@ from fealpy.sparse import COOTensor
 from .scalar_diffusion_integrator import ScalarDiffusionIntegrator
 from .scalar_cross_diffusion_integrator import ScalarCrossDiffusionIntegrator
 from .gradient_reconstruct import GradientReconstruct
+from .face_gradient import reconstruct_face_gradient
+from .face_interpolation import face_interpolation_owner_weight
 from .div_reconstruct import DivergenceReconstruct
 from .dirichlet_bc import DirichletBC
-from .nonorthogonal_geometry import NonOrthogonalGeometry
+from .fvm_geometry import FVMGeometry
 from .fvm_linear_solver import FVMLinearSolver, FVMLinearSolverConfig
 
 
@@ -138,7 +140,7 @@ class CollocatedNSFVMOperators:
             bc_type="dirichlet",
             threshold=velocity_dirichlet_threshold,
         )
-        self.nonorthogonal_geometry = NonOrthogonalGeometry(self.mesh)
+        self.fvm_geometry = FVMGeometry(self.mesh)
         self.velocity_dirichlet = velocity_dirichlet
         self.velocity_dirichlet_threshold = velocity_dirichlet_threshold
         if with_divergence:
@@ -150,7 +152,7 @@ class CollocatedNSFVMOperators:
                 threshold=velocity_dirichlet_threshold,
             )
 
-        self.e2c = self.mesh.edge_to_cell()
+        self.e2c = self.fvm_geometry.face_to_cell
         self.edge_measure = self.mesh.entity_measure("edge")
         self.last_nonorthogonal_iterations = 0
         self.last_momentum_nonorthogonal_iterations = 0
@@ -194,13 +196,13 @@ class CollocatedNSFVMOperators:
             velocity if velocity.ndim == 1 else self._flatten_velocity(velocity)
         )
         grad_u = self.velocity_gradient.cell_gradient(cell_velocity)
-        grad_f = self.velocity_gradient.face_gradient(grad_u)
+        grad_f = reconstruct_face_gradient(self.mesh, grad_u)
         return LinearForm(self.velocity_space).add_integrator(
             ScalarCrossDiffusionIntegrator(
                 flat_velocity,
                 grad_f,
                 coef=getattr(self, "diffusion_coef", getattr(self, "mu", 1.0)),
-                geometry=self.nonorthogonal_geometry,
+                geometry=self.fvm_geometry,
                 boundary_policy="all",
             )
         ).assembly()
@@ -238,40 +240,12 @@ class CollocatedNSFVMOperators:
         return corrected_velocity
 
     def _boundary_face_velocity(self):
-        bd_edge = self.mesh.boundary_face_index()
-        edge_middle_point = self.mesh.entity_barycenter("edge")
-        return bd_edge, self.velocity_dirichlet(edge_middle_point[bd_edge])
+        bd_edge = bm.nonzero(self.fvm_geometry.is_boundary)[0]
+        return bd_edge, self.velocity_dirichlet(self.fvm_geometry.face_center[bd_edge])
 
     def face_interpolation_owner_weight(self, method: str = "distance"):
         """Return owner-side interpolation weights for faces."""
-        e2c = self.e2c[:, :2]
-        owner = e2c[:, 0]
-        neighbour = e2c[:, 1]
-        if method == "average":
-            weight = 0.5 * bm.ones_like(self.edge_measure)
-            return bm.where(owner != neighbour, weight, 1.0)
-        if method == "linear":
-            face_centers = self.mesh.entity_barycenter("face")
-            cell_centers = self.mesh.entity_barycenter("cell")
-            Sf = self.mesh.edge_normal()
-            owner_dist = bm.abs(
-                bm.einsum("ij,ij->i", Sf, face_centers - cell_centers[owner])
-            )
-            neighbour_dist = bm.abs(
-                bm.einsum("ij,ij->i", Sf, cell_centers[neighbour] - face_centers)
-            )
-            total_dist = owner_dist + neighbour_dist
-            weight = bm.where(total_dist > 0.0, neighbour_dist / total_dist, 0.5)
-            return bm.where(owner != neighbour, weight, 1.0)
-        if method != "distance":
-            raise ValueError("method must be 'average', 'distance', or 'linear'.")
-        owner_dist = bm.linalg.norm(self.epoints - self.points[owner], axis=-1)
-        neighbour_dist = bm.linalg.norm(
-            self.points[neighbour] - self.epoints, axis=-1
-        )
-        total_dist = owner_dist + neighbour_dist
-        weight = bm.where(total_dist > 0.0, neighbour_dist / total_dist, 0.5)
-        return bm.where(owner != neighbour, weight, 1.0)
+        return face_interpolation_owner_weight(self.mesh, method=method)
 
     def face_interpolate_cell_scalar(self, cell_values, method: str = "distance"):
         """Linearly interpolate a cell scalar to faces using face geometry."""
@@ -294,22 +268,11 @@ class CollocatedNSFVMOperators:
 
     def face_flux(self, face_velocity):
         """Return the signed surface flux ``phi_f = u_f dot S_f``."""
-        return bm.einsum("ij,ij->i", face_velocity, self.mesh.edge_normal())
+        return bm.einsum("ij,ij->i", face_velocity, self.fvm_geometry.S_f)
 
     def divergence_from_flux(self, phi):
         """Scatter signed face fluxes to the cell flux imbalance."""
-        e2c = self.e2c[:, :2]
-        is_internal = e2c[:, 0] != e2c[:, 1]
-        result = bm.zeros(self.NC, dtype=phi.dtype)
-        result = bm.index_add(result, e2c[:, 0], phi, axis=0)
-        result = bm.index_add(
-            result,
-            e2c[is_internal, 1],
-            phi[is_internal],
-            axis=0,
-            alpha=-1,
-        )
-        return result
+        return self.fvm_geometry.scatter_face_flux_to_cells(phi)
 
     def _scatter_face_flux(self, face_flux: TensorLike) -> TensorLike:
         """Scatter owner-oriented face fluxes to cell divergence values."""
@@ -320,13 +283,29 @@ class CollocatedNSFVMOperators:
         pressure: TensorLike,
         response_coef: TensorLike,
     ) -> TensorLike:
-        """Return the explicit non-orthogonal pressure-correction face flux."""
+        """Return the explicit non-orthogonal flux induced by a pressure field.
+
+        For OpenFOAM-aligned PISO diagnostics this uses the same internal
+        face-gradient interpolation semantic as the momentum explicit source:
+        ``face_interpolation_method="linear"`` selects OpenFOAM-style linear
+        interpolation.  Pressure boundary cross flux remains zero on non-coupled
+        boundary faces, matching the pressure Laplacian correction route.
+        """
         grad_p = self.pressure_gradient.cell_gradient(pressure)
-        grad_f = self.pressure_gradient.face_gradient(grad_p)
-        correction_vector = self.nonorthogonal_geometry.openfoam_correction_vector()
-        cross_flux = response_coef * bm.einsum("ij,ij->i", correction_vector, grad_f)
-        is_boundary = self.e2c[:, 0] == self.e2c[:, 1]
-        return bm.where(is_boundary, 0.0, cross_flux)
+        controls = getattr(self, "controls", None)
+        face_method = getattr(
+            self,
+            "face_interpolation_method",
+            getattr(controls, "face_interpolation_method", "average"),
+        )
+        grad_f = reconstruct_face_gradient(
+            self.mesh,
+            grad_p,
+            interpolation_method=face_method,
+        )
+        T_f = self.fvm_geometry.bounded_over_relaxed_decomposition()[2]
+        cross_flux = response_coef * bm.einsum("ij,ij->i", T_f, grad_f)
+        return bm.where(self.fvm_geometry.is_boundary, 0.0, cross_flux)
 
     def _assemble_pressure_gauge_matrix(self, coef, q: int):
         A = BilinearForm(self.space).add_integrator(
@@ -352,7 +331,7 @@ class CollocatedNSFVMOperators:
         if coef.shape == ():
             return coef
 
-        boundary_faces = self.mesh.boundary_face_index()
+        boundary_faces = bm.nonzero(self.fvm_geometry.is_boundary)[0]
         if coef.shape[0] == self.mesh.number_of_faces():
             return coef[boundary_faces]
         if coef.shape[0] == boundary_faces.shape[0]:
@@ -424,7 +403,7 @@ class CollocatedNSFVMOperators:
 
     def enforce_face_flux(self, face_velocity, target_flux):
         """Adjust only the normal component of a vector face velocity."""
-        Sf = self.mesh.edge_normal()
+        Sf = self.fvm_geometry.S_f
         current_flux = self.face_flux(face_velocity)
         Sf_dot_Sf = bm.einsum("ij,ij->i", Sf, Sf)
         return face_velocity + ((target_flux - current_flux) / Sf_dot_Sf)[:, None] * Sf
@@ -435,7 +414,7 @@ class CollocatedNSFVMOperators:
             return face_velocity
 
         face_velocity = bm.array(face_velocity)
-        bd_edge = self.mesh.boundary_face_index()
+        bd_edge = bm.nonzero(self.fvm_geometry.is_boundary)[0]
         boundary_velocity = bm.array(boundary_velocity)
         if boundary_velocity.shape[0] == self.mesh.number_of_faces():
             boundary_velocity = boundary_velocity[bd_edge]
@@ -448,18 +427,23 @@ class CollocatedNSFVMOperators:
             return flux
 
         constrained = bm.array(flux)
-        bd_edge = self.mesh.boundary_face_index()
+        bd_edge = bm.nonzero(self.fvm_geometry.is_boundary)[0]
         boundary_velocity = bm.array(boundary_velocity)
         if boundary_velocity.shape[0] == self.mesh.number_of_faces():
             boundary_velocity = boundary_velocity[bd_edge]
         target_flux = bm.einsum(
-            "ij,ij->i", boundary_velocity, self.mesh.edge_normal()[bd_edge]
+            "ij,ij->i", boundary_velocity, self.fvm_geometry.S_f[bd_edge]
         )
         return bm.set_at(constrained, bd_edge, target_flux)
 
-    def velocity_pressure_correction(self, u_flat, pressure_increment, a_p):
-        """Apply the pressure-gradient velocity correction."""
-        grad_p = self.pressure_gradient.cell_gradient(pressure_increment)
+    def velocity_pressure_correction(self, u_flat, pressure_field, a_p):
+        """Apply ``U <- U - rAU grad(p)`` for the supplied pressure argument.
+
+        In SIMPLE callers this argument is a pressure correction ``p'``.  In
+        the current PISO route it is the corrected pressure state, not an
+        increment.
+        """
+        grad_p = self.pressure_gradient.cell_gradient(pressure_field)
         u_cell = self._cell_velocity(u_flat)
         u_cell = u_cell - (self.cm / a_p[:self.NC])[:, None] * grad_p
         return self._flatten_velocity(u_cell)

@@ -4,6 +4,7 @@ from fealpy.sparse import spdiags
 from fealpy.backend import backend_manager as bm
 
 from .backend_utils import as_backend_array, cast_like
+from .fvm_geometry import FVMGeometry
 
 
 class NeumannBC:
@@ -89,13 +90,13 @@ class NeumannBC:
         """
         if self.gd is None:
             raise ValueError("NeumannBC.DiffusionApply requires flux data gd.")
-        bdedge = self.mesh.boundary_face_index()
-        points = self.mesh.entity_barycenter('face')[bdedge, :]
+        geometry = FVMGeometry(self.mesh)
+        bdedge = bm.nonzero(geometry.is_boundary)[0]
+        points = geometry.face_center[bdedge]
         neumann = self.gd(points)
-        e2c = self.mesh.edge_to_cell()
-        bd_integrator = neumann * self.mesh.entity_measure('face')[bdedge]
+        bd_integrator = neumann * geometry.mag_S_f[bdedge]
         bd_integrator = cast_like(bd_integrator, f)
-        f = bm.index_add(f, e2c[bdedge, 0], bd_integrator, axis=0)
+        f = bm.index_add(f, geometry.owner[bdedge], bd_integrator, axis=0)
         return f
 
     def ConvectionApplyX(self, A, b):
@@ -107,11 +108,11 @@ class NeumannBC:
         """
 
         NC = self.mesh.number_of_cells()
-        Sf = self.mesh.edge_normal()
+        geometry = FVMGeometry(self.mesh)
+        Sf = geometry.S_f
         bdIdx = bm.zeros(NC, dtype=Sf.dtype)
-        bdedge = self.mesh.boundary_face_index()
-        e2c = self.mesh.edge_to_cell()
-        bde2c = e2c[bdedge, 0]
+        bdedge = bm.nonzero(geometry.is_boundary)[0]
+        bde2c = geometry.owner[bdedge]
         bdIdx = bm.index_add(bdIdx, bde2c, Sf[bdedge, 0], axis=0)
         A_0 = spdiags(bdIdx, 0, A.shape[0], A.shape[1])
         A = A + A_0
@@ -127,11 +128,11 @@ class NeumannBC:
         """
 
         NC = self.mesh.number_of_cells()
-        Sf = self.mesh.edge_normal()
+        geometry = FVMGeometry(self.mesh)
+        Sf = geometry.S_f
         bdIdx = bm.zeros(NC, dtype=Sf.dtype)
-        bdedge = self.mesh.boundary_face_index()
-        e2c = self.mesh.edge_to_cell()
-        bde2c = e2c[bdedge, 0]
+        bdedge = bm.nonzero(geometry.is_boundary)[0]
+        bde2c = geometry.owner[bdedge]
         bdIdx = bm.index_add(bdIdx, bde2c, Sf[bdedge, 1], axis=0)
         A_0 = spdiags(bdIdx, 0, A.shape[0], A.shape[1])
         A = A + A_0

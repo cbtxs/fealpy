@@ -16,6 +16,7 @@ though their face-velocity representations differ.
 from fealpy.backend import backend_manager as bm
 
 from .div_reconstruct import DivergenceReconstruct
+from .fvm_geometry import FVMGeometry
 
 
 def _as_float(value):
@@ -64,8 +65,7 @@ def normalized_flux_residual(mesh, cell_flux_imbalance, face_flux, eps=1.0e-30):
     balances.  A value near zero means that the supplied face fluxes satisfy
     discrete incompressibility relative to their own flux scale.
     """
-    e2c = mesh.edge_to_cell()[:, :2]
-    is_internal = e2c[:, 0] != e2c[:, 1]
+    is_internal = FVMGeometry(mesh).is_internal
     numerator = _as_float(bm.sum(bm.abs(cell_flux_imbalance)))
     denominator = bm.sum(bm.abs(face_flux))
     denominator = denominator + bm.sum(bm.abs(face_flux[is_internal]))
@@ -84,7 +84,8 @@ def collocated_mass_residual(mesh, face_velocity):
     divergence reconstruction, so the diagnostic measures exactly the flux
     imbalance represented by the supplied face velocity field.
     """
-    face_flux = bm.einsum("ij,ij->i", face_velocity, mesh.edge_normal())
+    geometry = FVMGeometry(mesh)
+    face_flux = bm.einsum("ij,ij->i", face_velocity, geometry.S_f)
     cell_flux_imbalance = DivergenceReconstruct(mesh).Reconstruct(face_velocity)
     return normalized_flux_residual(mesh, cell_flux_imbalance, face_flux)
 

@@ -10,6 +10,7 @@ from fealpy.fvm import (
     NSFVMSimpleModel,
     RhieChowInterpolation,
     ScalarCrossDiffusionIntegrator,
+    reconstruct_face_gradient,
 )
 
 
@@ -191,7 +192,7 @@ def test_cross_diffusion_gradient_path_is_exact_for_linear_velocity():
     cell_grad = np.asarray(
         gradient.cell_gradient(velocity)
     )
-    face_grad = np.asarray(gradient.face_gradient(cell_grad))
+    face_grad = np.asarray(reconstruct_face_gradient(model.mesh, cell_grad))
 
     assert np.linalg.norm(cell_grad - exact_cell_grad) < 1.0e-12
     assert np.linalg.norm(face_grad - exact_cell_grad) < 1.0e-12
@@ -202,7 +203,7 @@ def _boundary_all_cross_diffusion(model, uh):
     lform = LinearForm(space)
     U = np.stack((uh[:model.NC], uh[model.NC:]), axis=1)
     grad_u = model.velocity_gradient.cell_gradient(U)
-    grad_f = model.velocity_gradient.face_gradient(grad_u)
+    grad_f = reconstruct_face_gradient(model.mesh, grad_u)
     lform.add_integrator(
         ScalarCrossDiffusionIntegrator(
             uh,

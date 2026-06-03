@@ -1,4 +1,5 @@
 from pathlib import Path
+import math
 
 from fealpy.backend import backend_manager as bm
 
@@ -121,6 +122,62 @@ def test_cylinder_viscous_force_uses_wall_normal_sn_grad_by_default():
 
     assert abs(result["viscous_force_x"] - 8.0 / 3.0) < 1.0e-12
     assert result["viscous_force_y"] == 0.0
+
+
+def test_strouhal_summary_estimates_periodic_lift_history():
+    from fealpy.fvm.cylinder_flow_postprocess import strouhal_summary
+
+    frequency = 0.5
+    reference_length = 0.1
+    reference_velocity = 0.2
+    rows = []
+    for i in range(33):
+        time = 0.25 * i
+        rows.append(
+            {
+                "time": time,
+                "lift_coefficient": math.sin(2.0 * math.pi * frequency * time),
+                "drag_coefficient": 2.0,
+            }
+        )
+
+    result = strouhal_summary(
+        rows,
+        reference_length=reference_length,
+        reference_velocity=reference_velocity,
+        start_time=1.0,
+    )
+
+    assert result["valid"] is True
+    assert abs(result["frequency"] - frequency) < 1.0e-12
+    assert abs(result["strouhal_number"] - 0.25) < 1.0e-12
+    assert abs(result["lift_amplitude"] - 1.0) < 1.0e-12
+    assert abs(result["mean_drag_coefficient"] - 2.0) < 1.0e-12
+
+
+def test_strouhal_summary_rejects_tiny_lift_ripple():
+    from fealpy.fvm.cylinder_flow_postprocess import strouhal_summary
+
+    rows = []
+    for i in range(33):
+        time = 0.25 * i
+        rows.append(
+            {
+                "time": time,
+                "lift_coefficient": 1.0e-6
+                * math.sin(2.0 * math.pi * 0.5 * time),
+                "drag_coefficient": 2.0,
+            }
+        )
+
+    result = strouhal_summary(
+        rows,
+        reference_length=0.1,
+        reference_velocity=0.2,
+    )
+
+    assert result["valid"] is False
+    assert result["lift_amplitude"] < 1.0e-3
 
 
 def test_write_cylinder_outputs_creates_summary_and_vtu(tmp_path: Path):

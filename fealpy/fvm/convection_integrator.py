@@ -11,6 +11,9 @@ from fealpy.functionspace.space import FunctionSpace as _FS
 
 from fealpy.fem.integrator import LinearInt, OpInt, FaceInt, enable_cache
 
+from .face_interpolation import face_interpolation_owner_weight
+from .fvm_geometry import FVMGeometry
+
 class ConvectionIntegrator(LinearInt, OpInt, FaceInt):
     """Assemble a face-interpolation convection operator.
 
@@ -53,9 +56,7 @@ class ConvectionIntegrator(LinearInt, OpInt, FaceInt):
             raise RuntimeError("The ConvectionIntegrator only supports spaces on "
                                f"homogeneous meshes, but {type(mesh).__name__} is"
                                "not a subclass of HomoMesh.")
-        n = mesh.face_unit_normal(index=index)
-        facemeasure = mesh.entity_measure('face', index=index)
-        Sf = facemeasure[:, None] * n  # (NE, 2)
+        Sf = FVMGeometry(mesh, index=index).S_f
         q = self.q
         qf = mesh.quadrature_formula(q, 'face') 
         bcs, ws = qf.get_quadrature_points_and_weights()
@@ -63,25 +64,12 @@ class ConvectionIntegrator(LinearInt, OpInt, FaceInt):
         return Sf, index, bcs, phi
 
     def _owner_weight(self, space: _FS, Sf: TensorLike) -> TensorLike:
-        if self.interpolation == "average":
-            return 0.5 * bm.ones_like(Sf[:, 0])
-
         mesh = getattr(space, "mesh")
-        index = self.index
-        e2c = mesh.edge_to_cell(index=index)[:, :2]
-        owner = e2c[:, 0]
-        neighbour = e2c[:, 1]
-        face_centers = mesh.entity_barycenter("face", index=index)
-        cell_centers = mesh.entity_barycenter("cell")
-        own = bm.abs(
-            bm.einsum("ij,ij->i", Sf, face_centers - cell_centers[owner])
+        return face_interpolation_owner_weight(
+            mesh,
+            method=self.interpolation,
+            index=self.index,
         )
-        nei = bm.abs(
-            bm.einsum("ij,ij->i", Sf, cell_centers[neighbour] - face_centers)
-        )
-        total = own + nei
-        weight = bm.where(total > 0.0, nei / total, 0.5)
-        return bm.where(owner == neighbour, 1.0, weight)
     
     @variantmethod
     def assembly(self, space: _FS) -> TensorLike:

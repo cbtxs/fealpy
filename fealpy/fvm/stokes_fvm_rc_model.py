@@ -14,11 +14,12 @@ from fealpy.fvm import (
     ScalarDiffusionIntegrator,
     ScalarCrossDiffusionIntegrator,
     ScalarSourceIntegrator,
+    FVMGeometry,
     GradientReconstruct,
+    reconstruct_face_gradient,
     DirichletBC,
     NeumannBC,
     ConvectionIntegrator,
-    NonOrthogonalGeometry,
 )
 from .rhie_chow import RhieChowCoupledOperator
 
@@ -83,7 +84,7 @@ class StokesFVMRCModel(ComputationalModel):
             gd=self.pde.dirichlet_velocity,
             bc_type="dirichlet",
         )
-        self.nonorthogonal_geometry = NonOrthogonalGeometry(self.mesh)
+        self.fvm_geometry = FVMGeometry(self.mesh)
         self.velocity_dirichlet_bc = DirichletBC(
             self.mesh, self.pde.dirichlet_velocity
         )
@@ -108,12 +109,12 @@ class StokesFVMRCModel(ComputationalModel):
         lform = LinearForm(self.uspace)
         U = bm.stack((uh[:self.NC], uh[self.NC:]), axis=1)
         grad_u = self.velocity_gradient.cell_gradient(U)
-        grad_f = self.velocity_gradient.face_gradient(grad_u)
+        grad_f = reconstruct_face_gradient(self.mesh, grad_u)
         lform.add_integrator(
             ScalarCrossDiffusionIntegrator(
                 uh,
                 grad_f,
-                geometry=self.nonorthogonal_geometry,
+                geometry=self.fvm_geometry,
                 boundary_policy="all",
             )
         )

@@ -11,7 +11,7 @@ from fealpy.functionspace.space import FunctionSpace as _FS
 
 from fealpy.fem.integrator import LinearInt, OpInt, FaceInt, enable_cache
 
-from .vector_decomposition import VectorDecomposition
+from .fvm_geometry import FVMGeometry
 
 
 class ScalarDiffusionIntegrator(LinearInt, OpInt, FaceInt):
@@ -50,31 +50,24 @@ class ScalarDiffusionIntegrator(LinearInt, OpInt, FaceInt):
             raise RuntimeError("The ScalarDiffusionIntegrator only supports spaces on "
                                f"homogeneous meshes, but {type(mesh).__name__} is"
                                "not a subclass of HomoMesh.")
-        n = mesh.face_unit_normal(index=index)
-        facemeasure = mesh.entity_measure('face', index=index)
-        Sf = facemeasure[:, None] * n  # (NE, 2)
-        e, d = VectorDecomposition(mesh).centroid_vector_calculation()
+        geometry = FVMGeometry(mesh, index=index)
         q = self.q
         qf = mesh.quadrature_formula(q, 'face') 
         bcs, ws = qf.get_quadrature_points_and_weights()
         phi = space.basis(bcs, index=index)
-        return Sf, e, d, index, bcs,  phi
+        return geometry, index, bcs, phi
     
     @variantmethod
     def assembly(self, space: _FS) -> TensorLike:
-        Sf, e, d, _, _, phi = self.fetch(space)
+        geometry, _, _, phi = self.fetch(space)
         D = phi.shape[-1]
-        Sf_dot_Sf = bm.einsum('ij,ij->i', Sf, Sf)              
-        e_dot_Sf = bm.einsum('ij,ij->i', e, Sf)                
-        e_norm = bm.einsum('ij,ij->i', e, e)**0.5               
-        # Ef_abs = (|Sf|^2 / (e·Sf)) * |e|
-        Ef_abs = bm.einsum('i,i->i', Sf_dot_Sf / e_dot_Sf, e_norm)
+        _, Ef_abs, _ = geometry.over_relaxed_decomposition()
         coef = self.coef
         if coef is None:
             coef = bm.ones_like(Ef_abs, dtype=space.ftype)
         elif type(coef) in [int, float]:
             coef = bm.full_like(Ef_abs, fill_value=coef, dtype=space.ftype)
-        integrator  = bm.einsum('i,i->i', Ef_abs / d, coef)
+        integrator  = bm.einsum('i,i->i', Ef_abs / geometry.mag_d_f, coef)
         direction_matrix = bm.array([[1.0, -1.0], [-1.0, 1.0]], dtype=space.ftype)
         eye_D = bm.eye(D, dtype=space.ftype, device=bm.get_device(space))
         base_matrix = bm.einsum('ij,pq->ipjq', eye_D, direction_matrix).reshape(2*D, 2*D)

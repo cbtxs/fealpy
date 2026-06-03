@@ -6,7 +6,7 @@ from fealpy.backend import backend_manager as bm
 from fealpy.sparse import spdiags
 
 from .backend_utils import as_backend_array, cast_like
-from .vector_decomposition import VectorDecomposition
+from .fvm_geometry import FVMGeometry
 
 
 class DirichletBC:
@@ -106,15 +106,12 @@ class DirichletBC:
                 - A (sparse matrix): Modified system matrix with boundary conditions applied.
                 - b (ndarray): Modified right-hand side vector with boundary contributions.
         """
-        bd_edge = self.mesh.boundary_face_index()
-        e2c = self.mesh.edge_to_cell()
         NC = self.mesh.number_of_cells()
-        vector_decomposition = VectorDecomposition(self.mesh)
-        _, d = vector_decomposition.centroid_vector_calculation()
-        Ef_abs = vector_decomposition.Sor()
-        bd_integrator = Ef_abs[bd_edge] / d[bd_edge]
-        edge_middle_point = self.mesh.entity_barycenter('face')
-        bdedgepoint = edge_middle_point[bd_edge]
+        geometry = FVMGeometry(self.mesh)
+        bd_edge = bm.nonzero(geometry.is_boundary)[0]
+        _, Ef_abs, _ = geometry.over_relaxed_decomposition()
+        bd_integrator = Ef_abs[bd_edge] / geometry.mag_d_f[bd_edge]
+        bdedgepoint = geometry.face_center[bd_edge]
         if threshold is not None:
             bd_flag = self._boundary_face_flag(bdedgepoint, threshold)
             bd_edge = bd_edge[bd_flag]
@@ -124,7 +121,7 @@ class DirichletBC:
         coef = self._normalize_boundary_coef(coef, bd_integrator.shape[0])
         bd_integrator = coef * bd_integrator
         bd_integrator = cast_like(bd_integrator, b)
-        bde2c = e2c[bd_edge, 0]
+        bde2c = geometry.owner[bd_edge]
         # Scalar field: bd_u shape (NE,), vector field: (NE, D).
         bd_u = self.gd(bdedgepoint)[..., None]
         bdIdx = bm.zeros(NC, dtype=bd_integrator.dtype)
@@ -253,14 +250,11 @@ class DirichletBC:
             ndarray: Modified right-hand side vector with boundary contributions.
         """
         NC = self.mesh.number_of_cells()
-        n = self.mesh.face_unit_normal()
-        facemeasure = self.mesh.entity_measure('face')
-        bd_edge = self.mesh.boundary_face_index()
-        edge_middle_point = self.mesh.entity_barycenter('edge')
-        e2c = self.mesh.edge_to_cell()
-        bdedgepoint = edge_middle_point[bd_edge]
-        bdSf = (facemeasure[:, None] * n)[bd_edge]  # (bdNE, 2)
-        bde2c = e2c[bd_edge, 0]
+        geometry = FVMGeometry(self.mesh)
+        bd_edge = bm.nonzero(geometry.is_boundary)[0]
+        bdedgepoint = geometry.face_center[bd_edge]
+        bdSf = geometry.S_f[bd_edge]
+        bde2c = geometry.owner[bd_edge]
         # Current FVM Navier-Stokes paths store 2D vector fields as [u, v].
         bd_u = self.gd(bdedgepoint)
         bd_correct = bd_u * bdSf
@@ -282,11 +276,11 @@ class DirichletBC:
         if coef is None:
             return b
 
-        bd_edge = self.mesh.boundary_face_index()
-        e2c = self.mesh.edge_to_cell()
+        geometry = FVMGeometry(self.mesh)
+        bd_edge = bm.nonzero(geometry.is_boundary)[0]
         NC = self.mesh.number_of_cells()
-        Sf = self.mesh.edge_normal()[bd_edge]
-        bdedgepoint = self.mesh.entity_barycenter("face")[bd_edge, :]
+        Sf = geometry.S_f[bd_edge]
+        bdedgepoint = geometry.face_center[bd_edge]
         flux = self._boundary_convection_flux(coef, bd_edge, Sf)
 
         if threshold is not None:
@@ -295,7 +289,7 @@ class DirichletBC:
             bdedgepoint = bdedgepoint[bd_flag]
             flux = flux[bd_flag]
 
-        bde2c = e2c[bd_edge, 0]
+        bde2c = geometry.owner[bd_edge]
         bd_value = self.gd(bdedgepoint)
 
         if len(bd_value.shape) == 1:

@@ -248,8 +248,8 @@ class CollocatedSimpleSolver(CollocatedNSFVMOperators):
         if threshold is None:
             return matrix
 
-        bd_edge = self.mesh.boundary_face_index()
-        face_centers = self.mesh.entity_barycenter("face")[bd_edge]
+        bd_edge = bm.nonzero(self.fvm_geometry.is_boundary)[0]
+        face_centers = self.fvm_geometry.face_center[bd_edge]
         flag = threshold(face_centers)
         if not bool(bm.to_numpy(bm.any(flag))):
             return matrix
@@ -258,9 +258,9 @@ class CollocatedSimpleSolver(CollocatedNSFVMOperators):
         flux = bm.einsum(
             "ij,ij->i",
             self._convection_face_velocity(uf)[selected],
-            self.mesh.edge_normal()[selected],
+            self.fvm_geometry.S_f[selected],
         )
-        owner = self.e2c[selected, 0]
+        owner = self.fvm_geometry.owner[selected]
         diagonal = bm.zeros(self.NC, dtype=flux.dtype)
         diagonal = bm.index_add(diagonal, owner, flux, axis=0)
         diagonal = bm.concatenate([diagonal, diagonal], axis=0)
@@ -282,8 +282,8 @@ class CollocatedSimpleSolver(CollocatedNSFVMOperators):
         response_coef: TensorLike,
     ) -> TensorLike:
         """Return the implicit orthogonal pressure-correction face flux."""
-        Sf = self.nonorthogonal_geometry.face_area_vector()
-        d = self.nonorthogonal_geometry.cell_center_vector()
+        Sf = self.fvm_geometry.S_f
+        d = self.fvm_geometry.d_f
         Sf_dot_Sf = bm.einsum("ij,ij->i", Sf, Sf)
         d_dot_Sf = bm.einsum("ij,ij->i", d, Sf)
         coefficient = response_coef * Sf_dot_Sf / d_dot_Sf
@@ -317,20 +317,20 @@ class CollocatedSimpleSolver(CollocatedNSFVMOperators):
         if threshold is None:
             return flux
 
-        bd_edge = self.mesh.boundary_face_index()
-        face_centers = self.mesh.entity_barycenter("face")[bd_edge]
+        bd_edge = bm.nonzero(self.fvm_geometry.is_boundary)[0]
+        face_centers = self.fvm_geometry.face_center[bd_edge]
         flag = threshold(face_centers)
         if not bool(bm.to_numpy(bm.any(flag))):
             return flux
 
         selected = bd_edge[flag]
-        Sf = self.nonorthogonal_geometry.face_area_vector()[selected]
-        d = self.nonorthogonal_geometry.cell_center_vector()[selected]
+        Sf = self.fvm_geometry.S_f[selected]
+        d = self.fvm_geometry.d_f[selected]
         Sf_dot_Sf = bm.einsum("ij,ij->i", Sf, Sf)
         d_dot_Sf = bm.einsum("ij,ij->i", d, Sf)
         response_coef = bm.array(response_coef)
         coefficient = response_coef[selected] * Sf_dot_Sf / d_dot_Sf
-        owner = self.e2c[selected, 0]
+        owner = self.fvm_geometry.owner[selected]
         bd_value = self._zero_pressure_correction(face_centers[flag])
         bd_flux = coefficient * (p_corr[owner] - bd_value)
         return bm.set_at(flux, selected, bd_flux)
@@ -344,7 +344,7 @@ class CollocatedSimpleSolver(CollocatedNSFVMOperators):
         bdedgeu: TensorLike,
     ) -> TensorLike:
         """Correct only the normal face velocity component from ``p_corr``."""
-        Sf = self.nonorthogonal_geometry.face_area_vector()
+        Sf = self.fvm_geometry.S_f
         delta_phi = self.pressure_correction_flux(p_corr, response_coef)
         Sf_dot_Sf = bm.einsum("ij,ij->i", Sf, Sf)
         uf = uf + (delta_phi / Sf_dot_Sf)[:, None] * Sf

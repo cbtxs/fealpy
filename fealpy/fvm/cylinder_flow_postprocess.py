@@ -169,9 +169,25 @@ def cylinder_force_coefficients(
     if dynamic_scale == 0.0:
         drag_coefficient = 0.0
         lift_coefficient = 0.0
+        pressure_drag_coefficient = 0.0
+        pressure_lift_coefficient = 0.0
+        viscous_drag_coefficient = 0.0
+        viscous_lift_coefficient = 0.0
     else:
         drag_coefficient = 2.0 * _as_float(total_force[0]) / dynamic_scale
         lift_coefficient = 2.0 * _as_float(total_force[1]) / dynamic_scale
+        pressure_drag_coefficient = (
+            2.0 * _as_float(pressure_total[0]) / dynamic_scale
+        )
+        pressure_lift_coefficient = (
+            2.0 * _as_float(pressure_total[1]) / dynamic_scale
+        )
+        viscous_drag_coefficient = (
+            2.0 * _as_float(viscous_total[0]) / dynamic_scale
+        )
+        viscous_lift_coefficient = (
+            2.0 * _as_float(viscous_total[1]) / dynamic_scale
+        )
 
     return {
         "cylinder_faces": int(cylinder_edges.shape[0]),
@@ -183,6 +199,10 @@ def cylinder_force_coefficients(
         "viscous_force_y": _as_float(viscous_total[1]),
         "drag_coefficient": float(drag_coefficient),
         "lift_coefficient": float(lift_coefficient),
+        "pressure_drag_coefficient": float(pressure_drag_coefficient),
+        "pressure_lift_coefficient": float(pressure_lift_coefficient),
+        "viscous_drag_coefficient": float(viscous_drag_coefficient),
+        "viscous_lift_coefficient": float(viscous_lift_coefficient),
     }
 
 
@@ -226,6 +246,72 @@ def solution_summary(
         **{f"force_{key}": value for key, value in force.items()},
         **{f"pressure_drop_{key}": value for key, value in probes.items()},
     }
+
+
+def strouhal_summary(
+    force_history: Iterable[dict],
+    *,
+    reference_length: float,
+    reference_velocity: float,
+    start_time: float | None = None,
+    min_lift_amplitude: float = 1.0e-3,
+    lift_key: str = "lift_coefficient",
+    drag_key: str = "drag_coefficient",
+) -> dict[str, float | int | bool | None]:
+    """Estimate Strouhal data from a lift-coefficient time history."""
+    rows = [
+        row for row in force_history
+        if start_time is None or float(row["time"]) >= float(start_time)
+    ]
+    times = np.asarray([float(row["time"]) for row in rows], dtype=float)
+    lift = np.asarray([float(row[lift_key]) for row in rows], dtype=float)
+    drag = np.asarray([float(row[drag_key]) for row in rows], dtype=float)
+    result = {
+        "valid": False,
+        "samples": int(times.size),
+        "peak_count": 0,
+        "start_time": None if times.size == 0 else float(times[0]),
+        "end_time": None if times.size == 0 else float(times[-1]),
+        "mean_drag_coefficient": None if drag.size == 0 else float(np.mean(drag)),
+        "mean_lift_coefficient": None if lift.size == 0 else float(np.mean(lift)),
+        "lift_amplitude": None,
+        "min_lift_amplitude": float(min_lift_amplitude),
+        "period_mean": None,
+        "period_std": None,
+        "frequency": None,
+        "strouhal_number": None,
+    }
+    if times.size < 3 or reference_length <= 0.0 or reference_velocity <= 0.0:
+        return result
+
+    result["lift_amplitude"] = 0.5 * float(np.max(lift) - np.min(lift))
+    if result["lift_amplitude"] < float(min_lift_amplitude):
+        return result
+
+    peak_mask = (lift[1:-1] > lift[:-2]) & (lift[1:-1] >= lift[2:])
+    peak_times = times[1:-1][peak_mask]
+    result["peak_count"] = int(peak_times.size)
+    if peak_times.size < 2:
+        return result
+
+    periods = np.diff(peak_times)
+    period_mean = float(np.mean(periods))
+    if period_mean <= 0.0:
+        return result
+
+    frequency = 1.0 / period_mean
+    result.update(
+        {
+            "valid": True,
+            "period_mean": period_mean,
+            "period_std": float(np.std(periods)),
+            "frequency": frequency,
+            "strouhal_number": frequency
+            * float(reference_length)
+            / float(reference_velocity),
+        }
+    )
+    return result
 
 
 def plot_cylinder_overview(model, case, output: str | Path) -> None:
@@ -281,6 +367,9 @@ def write_cylinder_outputs(
     output_dir: str | Path,
     *,
     residuals: Iterable[dict] | None = None,
+    force_history: Iterable[dict] | None = None,
+    strouhal_start_time: float | None = None,
+    strouhal_min_lift_amplitude: float = 1.0e-3,
     run_summary: dict | None = None,
     viscous_method: str = "wall_sn_grad",
     fields: tuple[str, ...] = ("velocity", "u", "v", "pressure", "speed"),
@@ -302,6 +391,18 @@ def write_cylinder_outputs(
 
     if residuals is not None:
         write_dict_csv(output_dir / "residual_history.csv", scalarize_rows(residuals))
+    strouhal = None
+    if force_history is not None:
+        force_rows = list(force_history)
+        write_dict_csv(output_dir / "force_history.csv", scalarize_rows(force_rows))
+        strouhal = strouhal_summary(
+            force_rows,
+            reference_length=2.0 * float(case.radius),
+            reference_velocity=abs(float(case.mean_velocity)),
+            start_time=strouhal_start_time,
+            min_lift_amplitude=strouhal_min_lift_amplitude,
+        )
+        write_dict_csv(output_dir / "strouhal_summary.csv", [strouhal])
 
     summary = solution_summary(model, case, viscous_method=viscous_method)
     if residuals is not None:
@@ -317,6 +418,8 @@ def write_cylinder_outputs(
             )
     if run_summary:
         summary.update(run_summary)
+    if strouhal is not None:
+        summary.update({f"strouhal_{key}": value for key, value in strouhal.items()})
 
     force = cylinder_force_coefficients(
         model.mesh,
@@ -339,4 +442,5 @@ def write_cylinder_outputs(
         "summary": summary,
         "force": force,
         "pressure_drop": probes,
+        "strouhal": strouhal,
     }
