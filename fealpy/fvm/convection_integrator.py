@@ -14,13 +14,26 @@ from fealpy.fem.integrator import LinearInt, OpInt, FaceInt, enable_cache
 from .face_interpolation import face_interpolation_owner_weight
 from .fvm_geometry import FVMGeometry
 
-class ConvectionIntegrator(LinearInt, OpInt, FaceInt):
-    """Assemble a face-interpolation convection operator.
 
-    ``coef`` is interpreted as the face velocity field.  The face mass flux is
-    ``coef_f · S_f`` and multiplies the owner-neighbour face interpolation
-    stencil.  Upwinding, limiters, and nonlinear iteration control are outside
-    this low-level integrator.
+class ConvectionIntegrator(LinearInt, OpInt, FaceInt):
+    r"""Assemble the central finite-volume convection operator.
+
+    ``coef`` is a face-wise convection velocity.  In incompressible momentum
+    equations it may already include the density factor, so the face flux used
+    by this integrator is always interpreted as
+
+    .. math::
+
+        \phi_f = \mathbf c_f \cdot \mathbf S_f .
+
+    The ``interpolation`` option only selects the owner/neighbour weights used
+    to reconstruct the central face value.  It does not switch to an upwind,
+    bounded, or limited convection scheme.
+
+    Boundary flux closure is deliberately outside this low-level operator.
+    Dirichlet, Neumann, and natural outlet convection contributions are applied
+    by the boundary-condition layer or by the flow solver that owns the case
+    semantics.
     """
 
     def __init__(self, coef: Optional[CoefLike]=None, q: Optional[int]=None, *,
@@ -43,7 +56,7 @@ class ConvectionIntegrator(LinearInt, OpInt, FaceInt):
                 "interpolation must be 'average' or 'linear'."
             )
         return interpolation
-        
+
     @enable_cache
     def to_global_dof(self, space: _FS) -> TensorLike:
         return space.edge_to_dof()[self.index]
@@ -55,29 +68,25 @@ class ConvectionIntegrator(LinearInt, OpInt, FaceInt):
         if not isinstance(mesh, HomogeneousMesh):
             raise RuntimeError("The ConvectionIntegrator only supports spaces on "
                                f"homogeneous meshes, but {type(mesh).__name__} is"
-                               "not a subclass of HomoMesh.")
+                               " not a subclass of HomoMesh.")
         Sf = FVMGeometry(mesh, index=index).S_f
         q = self.q
-        qf = mesh.quadrature_formula(q, 'face') 
+        qf = mesh.quadrature_formula(q, 'face')
         bcs, ws = qf.get_quadrature_points_and_weights()
         phi = space.basis(bcs, index=index)
         return Sf, index, bcs, phi
 
-    def _owner_weight(self, space: _FS, Sf: TensorLike) -> TensorLike:
-        mesh = getattr(space, "mesh")
-        return face_interpolation_owner_weight(
-            mesh,
-            method=self.interpolation,
-            index=self.index,
-        )
-    
     @variantmethod
     def assembly(self, space: _FS) -> TensorLike:
         coef = self.coef
         Sf, _, _, phi = self.fetch(space)
         D = phi.shape[-1]
         eye_D = bm.eye(D, dtype=space.ftype, device=bm.get_device(space))
-        owner_weight = self._owner_weight(space, Sf)
+        owner_weight = face_interpolation_owner_weight(
+            getattr(space, "mesh"),
+            method=self.interpolation,
+            index=self.index,
+        )
         neighbour_weight = 1.0 - owner_weight
         direction_matrix = bm.stack(
             [
@@ -90,8 +99,11 @@ class ConvectionIntegrator(LinearInt, OpInt, FaceInt):
             "ij,fpq->fipjq", eye_D, direction_matrix
         ).reshape(-1, 2 * D, 2 * D)
         if coef is None:
-            coef = bm.stack([bm.ones_like(Sf[:,0]), bm.zeros_like(Sf[:,0])], axis=1)
-        integrator  = bm.einsum('ij,ij->i', Sf, coef)
+            coef = bm.stack(
+                [bm.ones_like(Sf[:, 0]), bm.zeros_like(Sf[:, 0])],
+                axis=1,
+            )
+        integrator = bm.einsum("ij,ij->i", Sf, coef)
         result = integrator[:, None, None] * base_matrix
 
         return result
