@@ -5,6 +5,10 @@ import pytest
 from fealpy.model.poisson.exp0002 import Exp0002
 from fealpy.mesh import QuadrangleMesh
 from fealpy.fvm import GradientReconstruct
+from fealpy.fvm.gradient_reconstruct import (
+    GreenGaussGradientReconstruct,
+    LSQGradientReconstruct,
+)
 
 
 def test_lsq_recovers_linear_gradient_on_quad_and_tri_meshes():
@@ -89,6 +93,54 @@ def test_extended_lsq_reuses_cached_matrix_without_dirichlet_boundary():
     matrix = reconstruct._extended_lsq_cache[2]
 
     assert matrix is cached_matrix
+
+
+def test_weighted_lsq_reuses_cached_inverse_between_fields(monkeypatch):
+    pde = Exp0002()
+    mesh = pde.init_mesh["uniform_tri"](nx=4, ny=4)
+    points = mesh.entity_barycenter("cell")
+    first_field = points[:, 0] + 2.0 * points[:, 1]
+    second_field = points[:, 0] ** 2 - points[:, 1]
+    reconstruct = GradientReconstruct(mesh, method="weighted_lsq")
+
+    call_count = 0
+    original = LSQGradientReconstruct._invert_lsq_matrix
+
+    def counting_invert(self, A, method):
+        nonlocal call_count
+        call_count += 1
+        return original(self, A, method)
+
+    monkeypatch.setattr(LSQGradientReconstruct, "_invert_lsq_matrix", counting_invert)
+
+    reconstruct.cell_gradient(first_field)
+    reconstruct.cell_gradient(second_field)
+
+    assert call_count == 1
+
+
+def test_green_gauss_variant_delegates_to_green_gauss_reconstructor(monkeypatch):
+    pde = Exp0002()
+    mesh = pde.init_mesh["uniform_quad"](nx=4, ny=4)
+    field = np.ones(mesh.number_of_cells())
+    reconstruct = GradientReconstruct(mesh, method="green_gauss")
+
+    call_count = 0
+
+    def counting_green_gauss(self, U):
+        nonlocal call_count
+        call_count += 1
+        return np.zeros((mesh.number_of_cells(), 2))
+
+    monkeypatch.setattr(
+        GreenGaussGradientReconstruct,
+        "green_gauss",
+        counting_green_gauss,
+    )
+
+    reconstruct.cell_gradient(field)
+
+    assert call_count == 1
 
 
 def test_extended_lsq_uses_dirichlet_boundary_data_when_given():
@@ -319,10 +371,12 @@ def test_gradient_reconstruct_uses_generic_internal_names():
 
 
 def test_lsq_common_helpers_document_normal_equations():
-    source = inspect.getsource(GradientReconstruct)
+    source = inspect.getsource(LSQGradientReconstruct)
 
-    assert hasattr(GradientReconstruct, "_add_lsq_matrix_samples")
-    assert hasattr(GradientReconstruct, "_add_lsq_rhs_samples")
+    assert hasattr(LSQGradientReconstruct, "_add_lsq_matrix_samples")
+    assert hasattr(LSQGradientReconstruct, "_add_lsq_rhs_samples")
+    assert not hasattr(GradientReconstruct, "_add_lsq_matrix_samples")
+    assert not hasattr(GradientReconstruct, "_add_lsq_rhs_samples")
     assert not hasattr(GradientReconstruct, "_weighted_lsq_coefficients")
     assert not hasattr(GradientReconstruct, "_weighted_lsq_geometry")
     assert not hasattr(GradientReconstruct, "_threshold_coordinate_axis")

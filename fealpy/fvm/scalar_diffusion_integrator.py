@@ -49,27 +49,65 @@ class ScalarDiffusionIntegrator(LinearInt, OpInt, FaceInt):
         if not isinstance(mesh, HomogeneousMesh):
             raise RuntimeError("The ScalarDiffusionIntegrator only supports spaces on "
                                f"homogeneous meshes, but {type(mesh).__name__} is"
-                               "not a subclass of HomoMesh.")
+                               " not a subclass of HomoMesh.")
         geometry = FVMGeometry(mesh, index=index)
         q = self.q
-        qf = mesh.quadrature_formula(q, 'face') 
+        qf = mesh.quadrature_formula(q, 'face')
         bcs, ws = qf.get_quadrature_points_and_weights()
         phi = space.basis(bcs, index=index)
         return geometry, index, bcs, phi
-    
+
     @variantmethod
     def assembly(self, space: _FS) -> TensorLike:
         geometry, _, _, phi = self.fetch(space)
-        D = phi.shape[-1]
-        _, Ef_abs, _ = geometry.over_relaxed_decomposition()
-        coef = self.coef
-        if coef is None:
-            coef = bm.ones_like(Ef_abs, dtype=space.ftype)
-        elif type(coef) in [int, float]:
-            coef = bm.full_like(Ef_abs, fill_value=coef, dtype=space.ftype)
-        integrator  = bm.einsum('i,i->i', Ef_abs / geometry.mag_d_f, coef)
-        direction_matrix = bm.array([[1.0, -1.0], [-1.0, 1.0]], dtype=space.ftype)
-        eye_D = bm.eye(D, dtype=space.ftype, device=bm.get_device(space))
-        base_matrix = bm.einsum('ij,pq->ipjq', eye_D, direction_matrix).reshape(2*D, 2*D)
-        local_matrix = bm.einsum('i,ab->iab', integrator, base_matrix)
-        return local_matrix
+        return scalar_diffusion_local_matrix(space, geometry, phi, coef=self.coef)
+
+def scalar_diffusion_local_matrix(
+    space: _FS,
+    geometry: FVMGeometry,
+    phi: TensorLike,
+    *,
+    coef: Optional[CoefLike]=None,
+) -> TensorLike:
+    """Return local two-point matrices for the orthogonal diffusion flux.
+
+    ``coef`` is interpreted as a constant or face-wise diffusion coefficient.
+    Cell-wise coefficients must be interpolated to faces before calling this
+    function.
+
+    Future cleanup directions:
+
+    - Add an explicit face-coefficient construction function if cell-wise or
+      callable diffusion coefficients are needed.  The interpolation strategy
+      should be selected deliberately, for example linear for smooth
+      coefficients or harmonic for jump coefficients.
+    - Keep ``over_relaxed_decomposition`` fixed for the current production
+      route.  If minimum-correction, orthogonal-only, or bounded variants are
+      needed, expose the decomposition strategy as an explicit option.
+    - Revisit the local matrix layout before using this function with 3D,
+      higher-order, or non-two-cell face spaces.
+    - Consider caching ``mag_E_f / mag_d_f`` and the component base matrix only
+      after profiler data shows repeated assembly cost is significant.
+    """
+    D = phi.shape[-1]
+    _, mag_E_f, _ = geometry.over_relaxed_decomposition()
+    if coef is None:
+        face_coef = bm.ones_like(mag_E_f, dtype=space.ftype)
+    elif isinstance(coef, (int, float)):
+        face_coef = bm.full_like(mag_E_f, fill_value=coef, dtype=space.ftype)
+    else:
+        face_coef = bm.array(coef, dtype=space.ftype)
+        if face_coef.shape == ():
+            face_coef = bm.ones_like(mag_E_f, dtype=space.ftype) * face_coef
+        elif face_coef.ndim != 1 or face_coef.shape[0] != mag_E_f.shape[0]:
+            raise ValueError(
+                "coef must be scalar or face-wise for ScalarDiffusionIntegrator."
+            )
+
+    face_strength = bm.einsum("i,i->i", mag_E_f / geometry.mag_d_f, face_coef)
+    direction_matrix = bm.array([[1.0, -1.0], [-1.0, 1.0]], dtype=space.ftype)
+    eye_D = bm.eye(D, dtype=space.ftype, device=bm.get_device(space))
+    base_matrix = bm.einsum(
+        "ij,pq->ipjq", eye_D, direction_matrix
+    ).reshape(2 * D, 2 * D)
+    return bm.einsum("i,ab->iab", face_strength, base_matrix)

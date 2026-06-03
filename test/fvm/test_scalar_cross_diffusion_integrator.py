@@ -115,6 +115,40 @@ def test_face_flux_correction_scatter_vector():
     )
 
 
+def test_integrator_assembly_delegates_face_flux_construction(monkeypatch):
+    import fealpy.fvm.scalar_cross_diffusion_integrator as cross_module
+
+    mesh, space = _box_space(nx=1, ny=1)
+    face_flux = np.linspace(0.2, 1.2, mesh.number_of_edges())
+    calls = []
+
+    def counted_face_flux(space_arg, geometry, face_to_cell, **kwargs):
+        calls.append((space_arg, geometry, face_to_cell, kwargs))
+        return face_flux
+
+    monkeypatch.setattr(
+        cross_module,
+        "scalar_cross_diffusion_face_flux",
+        counted_face_flux,
+    )
+
+    rhs = LinearForm(space).add_integrator(
+        ScalarCrossDiffusionIntegrator(
+            np.zeros(mesh.number_of_cells()),
+            np.ones((mesh.number_of_edges(), mesh.geo_dimension())),
+        )
+    ).assembly()
+
+    assert len(calls) == 1
+    assert calls[0][0] is space
+    np.testing.assert_allclose(
+        np.asarray(rhs),
+        _expected_scalar_scatter(mesh, face_flux),
+        rtol=1.0e-13,
+        atol=1.0e-13,
+    )
+
+
 def test_default_cross_diffusion_matches_bounded_over_relaxed_scatter():
     mesh, space = _box_space(nx=2, ny=1)
     grad_f = np.stack(
