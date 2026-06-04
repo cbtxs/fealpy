@@ -11,7 +11,7 @@ options = {
     'run': 'main',
     'maxit': 1,
     'maxstep': 1000,
-    'tol': 1e-10
+    'tol': 1e-12
 }
 
 bm.set_backend(options['backend'])
@@ -19,14 +19,10 @@ from fealpy.cfd.model.stationary_incompressible_navier_stokes.intracranial_aneur
 pde = IntracranialAneurysm3d()
 model = StationaryIncompressibleNSLFEMModel(pde=pde, mesh = pde.mesh, options = options)
 
-
-
-
 def to_vtk(uh1, ph1, i):
     mesh.nodedata['ph'] = ph1
     mesh.nodedata['uh'] = uh1.reshape(3,-1).T
     mesh.to_vtk(f'stationary_2d{i+1}.vtu')
-
 
 mesh = pde.mesh
 maxit = options['maxit']
@@ -34,7 +30,6 @@ maxstep = options['maxstep']
 tol = options['tol']
 
 for i in range(maxit):
-    print(f"number of cells: {mesh.number_of_cells()}")
     uh0 = model.fem.uspace.function()
     ph0 = model.fem.pspace.function()
     for j in range(maxstep):
@@ -62,25 +57,3 @@ for i in range(maxit):
             break 
         uh0[:] = uh1
         ph0[:] = ph1
-
-
-
-
-
-
-
-
-
-
-
-exit()
-
-
-pde = IntracranialAneurysm3d()
-
-mesh = pde.mesh
-print("num_face", mesh.inlet_face_index.shape)
-mesh.to_vtk("fealpy_mesh.vtu")
-print("流入法向量", mesh.face_unit_normal(mesh.inlet_face_index).shape)
-
-pde.is_inlet_boundary(mesh.node)

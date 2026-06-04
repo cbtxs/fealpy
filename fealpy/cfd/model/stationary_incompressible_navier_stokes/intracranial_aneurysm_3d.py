@@ -41,9 +41,9 @@ class IntracranialAneurysm3d():
         """Compute exact solution of velocity."""
         mesh = self.mesh
         result = bm.zeros(p.shape, dtype=bm.float64)
-        result[0] = 0.14 * 0.05136
-        result[1] = 0.14 * (-0.030365)
-        result[2] = 0.14 * 0.998218
+        result[..., 0] = 0.14 * 0.05136
+        result[..., 1] = 0.14 * (-0.030365)
+        result[..., 2] = 0.14 * 0.998218
         return result
     
     @cartesian
@@ -70,6 +70,9 @@ class IntracranialAneurysm3d():
     @cartesian
     def is_velocity_boundary(self, p):
         is_out = self.is_outlet_boundary(p)
+        is_in = self.is_inlet_boundary(p)
+        is_wall = self.is_wall_boundary(p)
+        # return is_in | is_wall
         return ~is_out
         
     
