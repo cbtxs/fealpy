@@ -1,19 +1,19 @@
-"""Iteration control helpers for the collocated SIMPLE solver."""
+"""Outer-iteration coordination for the collocated SIMPLE solver."""
 
 from .pressure_correction_control import (
     PressureRelaxationConfig,
     PressureRelaxationController,
-    format_pressure_correction_log,
 )
 from .simple_residual import (
     cell_l2_norm,
     collocated_mass_residual,
     relative_l2_update,
 )
+from .solver_diagnostics import log_simple_iteration, simple_iteration_log_message
 
 
 class SimpleIterationControl:
-    """Residual, relaxation, and logging utilities for SIMPLE iterations."""
+    """Coordinate SIMPLE residual records, pressure relaxation, and logging."""
 
     def __init__(self, mesh, logger):
         self.mesh = mesh
@@ -54,34 +54,18 @@ class SimpleIterationControl:
         pressure_correction: float,
     ) -> str:
         """Format one SIMPLE iteration diagnostic line."""
-        return format_pressure_correction_log(
-            iteration=simple_iteration,
+        return simple_iteration_log_message(
+            simple_iteration=simple_iteration,
             nonorthogonal_iterations=nonorthogonal_iterations,
             pressure_criterion=pressure_criterion,
             pressure_relax=pressure_relax,
             mass_residual=mass_residual,
             pressure_correction=pressure_correction,
-            label="SIMPLE",
         )
 
     def log_iteration(self, iteration, residual):
         """Log one SIMPLE pressure-correction diagnostic record."""
-        self.logger.info(
-            self.iteration_log_message(
-                simple_iteration=iteration,
-                nonorthogonal_iterations=residual["nonorthogonal_iterations"],
-                pressure_criterion=residual["pressure_update"],
-                pressure_relax=residual["pressure_relax"],
-                mass_residual=residual["mass"],
-                pressure_correction=residual["pressure_correction"],
-            )
-        )
-        action = residual["pressure_relax_action"]
-        if action in {"reduce", "increase"}:
-            self.logger.info(
-                f"[Iter {iteration}] pressure relaxation {action}d to "
-                f"{residual['pressure_relax']:.2e}"
-            )
+        log_simple_iteration(self.logger, iteration, residual)
 
     @staticmethod
     def tolerances(tol, tol_mass, tol_pressure_update):

@@ -23,20 +23,20 @@ from . import solver_diagnostics
 from .pressure_correction_control import (
     PressureRelaxationConfig,
     PressureRelaxationController,
-    format_pressure_correction_log,
     pressure_correction_converged,
 )
+from .solver_diagnostics import format_pressure_correction_log
 from .fvm_linear_solver import FVMLinearSolver, FVMLinearSolverConfig
 from .engineering_boundary_conditions import (
+    BoundaryConditionData,
     BoundaryCondition,
     BoundaryPatch,
     EngineeringBoundaryConditions,
     PDEBoundaryConditions,
 )
 from .collocated_piso_solver import CollocatedPisoSolver
-from .piso_solver_data import PisoBoundaryConditions, PisoSolverControls
 from .collocated_simple_solver import CollocatedSimpleSolver
-from .simple_solver_data import SimpleBoundaryConditions, SimpleSolverControls
+from .solver_controls import PisoSolverControls, SimpleSolverControls
 from .lid_driven_cavity_case import LidDrivenCavityCase
 from .cylinder_flow_case import CylinderFlowCase
 

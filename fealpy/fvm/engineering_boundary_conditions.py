@@ -33,21 +33,25 @@ def selected_boundary_faces(geometry, threshold):
     return boundary_faces[flag]
 
 
-def apply_face_velocity_constraint(face_velocity, boundary_faces, boundary_velocity, *, default_apply=None):
+def apply_face_velocity_constraint(face_velocity, boundary_faces, boundary_velocity, *, geometry=None):
     """Apply prescribed face velocity on selected boundary faces."""
     if boundary_velocity is None:
         return face_velocity
     if boundary_faces is None:
-        return default_apply(face_velocity, boundary_velocity) if default_apply is not None else face_velocity
+        if geometry is None:
+            return face_velocity
+        boundary_faces = bm.nonzero(geometry.is_boundary)[0]
     return bm.set_at(bm.array(face_velocity), boundary_faces, bm.array(boundary_velocity))
 
 
-def apply_boundary_flux_constraint(flux, boundary_faces, boundary_velocity, face_normal, *, default_apply=None):
+def apply_boundary_flux_constraint(flux, boundary_faces, boundary_velocity, face_normal, *, geometry=None):
     """Apply prescribed owner-oriented normal flux on selected boundary faces."""
     if boundary_velocity is None:
         return flux
     if boundary_faces is None:
-        return default_apply(flux, boundary_velocity) if default_apply is not None else flux
+        if geometry is None:
+            return flux
+        boundary_faces = bm.nonzero(geometry.is_boundary)[0]
     target_flux = bm.einsum("ij,ij->i", bm.array(boundary_velocity), face_normal[boundary_faces])
     return bm.set_at(bm.array(flux), boundary_faces, target_flux)
 
@@ -87,9 +91,10 @@ class PDEBoundaryConditions:
         velocity_natural_threshold=None,
         pressure_dirichlet=None,
         pressure_dirichlet_threshold=None,
+        geometry_class=FVMGeometry,
     ) -> None:
         self.mesh = mesh
-        self.geometry = FVMGeometry(mesh)
+        self.geometry = geometry_class(mesh)
         self.velocity_dirichlet = velocity_dirichlet
         self.velocity_dirichlet_threshold = velocity_dirichlet_threshold
         self.velocity_natural_threshold = velocity_natural_threshold
@@ -142,6 +147,89 @@ class PDEBoundaryConditions:
         else:
             flag = self.velocity_dirichlet_threshold(points)
         return boundary_faces[flag], self.velocity_dirichlet(points)[flag]
+
+    def has_pressure_dirichlet(self) -> bool:
+        """Return whether pressure Dirichlet data are available."""
+        return self.pressure_dirichlet is not None and self.pressure_dirichlet_threshold_value is not None
+
+    def pressure_dirichlet_threshold(self):
+        """Return pressure Dirichlet threshold."""
+        return self.pressure_dirichlet_threshold_value
+
+    def pressure_dirichlet_value(self):
+        """Return pressure Dirichlet values as a callable."""
+        value = self.pressure_dirichlet
+        if callable(value):
+            return value
+
+        def constant(points):
+            return bm.broadcast_to(bm.array(value, dtype=points.dtype), (points.shape[0],))
+
+        return constant
+
+
+@dataclass(frozen=True)
+class BoundaryConditionData:
+    """Mesh-independent PDE boundary data for solver adapters.
+
+    This class preserves the old manufactured-case API where value callables
+    and thresholds are known before the mesh object is passed into the solver.
+    When a mesh is available, ``to_pde_boundary(mesh)`` returns the strict
+    mesh-bound ``PDEBoundaryConditions`` object used by the solver protocol.
+    """
+
+    velocity_dirichlet: object
+    velocity_dirichlet_threshold: object = None
+    velocity_natural_threshold: object = None
+    pressure_dirichlet: object = None
+    pressure_dirichlet_threshold_value: object = None
+
+    def to_pde_boundary(self, mesh):
+        """Return strict PDE boundary data bound to a concrete mesh."""
+        return PDEBoundaryConditions(
+            mesh,
+            velocity_dirichlet=self.velocity_dirichlet,
+            velocity_dirichlet_threshold=self.velocity_dirichlet_threshold,
+            velocity_natural_threshold=self.velocity_natural_threshold,
+            pressure_dirichlet=self.pressure_dirichlet,
+            pressure_dirichlet_threshold=self.pressure_dirichlet_threshold_value,
+        )
+
+    def conditions_for(self, variable: str, kind: str | None = None):
+        """Return non-empty markers matching the available PDE conditions."""
+        if variable == "velocity" and kind in (None, "dirichlet"):
+            return (self,) if self.velocity_dirichlet is not None else ()
+        if variable == "velocity" and kind == "natural":
+            return (self,) if self.velocity_natural_threshold is not None else ()
+        if variable == "pressure" and kind in (None, "dirichlet"):
+            return (self,) if self.has_pressure_dirichlet() else ()
+        return ()
+
+    def dirichlet_value(self, variable: str):
+        """Return the Dirichlet value callable for one variable."""
+        if variable == "velocity" and self.velocity_dirichlet is not None:
+            return self.velocity_dirichlet
+        if variable == "pressure" and self.has_pressure_dirichlet():
+            return self.pressure_dirichlet_value()
+        raise ValueError(f"{variable!r} has no Dirichlet boundary condition.")
+
+    def dirichlet_threshold(self, variable: str):
+        """Return the Dirichlet threshold for one variable."""
+        if variable == "velocity":
+            return self.velocity_dirichlet_threshold
+        if variable == "pressure":
+            return self.pressure_dirichlet_threshold()
+        raise ValueError(f"unsupported boundary variable: {variable!r}.")
+
+    def natural_threshold(self, variable: str):
+        """Return the natural threshold for one variable."""
+        if variable != "velocity":
+            raise ValueError("only velocity natural boundary is supported.")
+        return self.velocity_natural_threshold
+
+    def boundary_face_velocity(self, variable: str = "velocity", *, mesh):
+        """Return selected boundary faces and prescribed velocities."""
+        return self.to_pde_boundary(mesh).boundary_face_velocity(variable)
 
     def has_pressure_dirichlet(self) -> bool:
         """Return whether pressure Dirichlet data are available."""

@@ -248,7 +248,12 @@ def test_simple_face_interpolation_method_controls_response_and_rhie_chow():
     )
     ap = bm.ones(2 * model.NC)
 
-    response = np.asarray(model._pressure_response_face_coefficient(ap))
+    response = np.asarray(
+        model.pressure_response_face_coefficient(
+            ap,
+            model.controls.face_interpolation("pressure_response_interpolation"),
+        )
+    )
     expected = np.asarray(
         model.face_interpolate_cell_scalar(model.cm / ap[: model.NC], method="linear")
     )

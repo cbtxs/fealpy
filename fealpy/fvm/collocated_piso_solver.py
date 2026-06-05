@@ -6,39 +6,29 @@ from typing import Optional, Tuple
 from fealpy.typing import TensorLike
 from fealpy.backend import backend_manager as bm
 from fealpy.fem import BilinearForm, LinearForm
-from fealpy.sparse import CSRTensor, spdiags
 
 from .collocated_ns_fvm_utils import CollocatedNSFVMOperators
-from .convection_integrator import ConvectionIntegrator
 from .deviatoric_stress_source import DeviatoricStressSourceIntegrator
 from .dirichlet_bc import DirichletBC
 from .engineering_boundary_conditions import (
     apply_boundary_flux_constraint,
     apply_face_velocity_constraint,
-    boundary_face_velocity,
     selected_boundary_faces,
 )
 from .face_gradient import reconstruct_face_gradient
-from .piso_solver_data import PisoSolverControls
+from .solver_controls import PisoSolverControls
 from .rhie_chow import RhieChowInterpolation
 from .scalar_cross_diffusion_integrator import ScalarCrossDiffusionIntegrator
 from .scalar_diffusion_integrator import ScalarDiffusionIntegrator
-from .scalar_source_integrator import ScalarSourceIntegrator
-from .solver_diagnostics import attach_corrector_diagnostics, pressure_correction_diagnostics
+from .solver_diagnostics import (
+    pressure_correction_diagnostics,
+    record_piso_corrector_diagnostics,
+)
 from fealpy.decorator import cartesian
 
 
 class CollocatedPisoSolver(CollocatedNSFVMOperators):
     """Algorithm core for 2D transient collocated PISO solves."""
-
-    validate_piso_controls = staticmethod(PisoSolverControls.validate_piso_controls)
-    validate_snapshot_controls = staticmethod(PisoSolverControls.validate_snapshot_controls)
-    validate_face_interpolation_method = staticmethod(PisoSolverControls.validate_face_interpolation_method)
-    validate_transient_flux_correction_limiter = staticmethod(
-        PisoSolverControls.validate_transient_flux_correction_limiter
-    )
-    validate_momentum_explicit_correction = staticmethod(PisoSolverControls.validate_momentum_explicit_correction)
-    validate_nonorthogonal_controls = staticmethod(PisoSolverControls.validate_nonorthogonal_controls)
 
     def __init__(
         self,
@@ -56,59 +46,12 @@ class CollocatedPisoSolver(CollocatedNSFVMOperators):
         log_level="WARNING",
         pbar_log=False,
     ):
-        self._init_piso_solver(
-            mesh=mesh,
-            diffusion_coef=diffusion_coef,
-            convection_coef=convection_coef,
-            source=source,
-            boundary_conditions=boundary_conditions,
-            controls=controls,
-            initial_solution=initial_solution,
-            linear_solver=linear_solver,
-            linear_solver_config=linear_solver_config,
-            logger=logger,
-            log_level=log_level,
-            pbar_log=pbar_log,
-        )
-
-    def _init_piso_solver(
-        self,
-        *,
-        mesh,
-        diffusion_coef,
-        convection_coef,
-        source,
-        boundary_conditions,
-        controls=None,
-        initial_solution=None,
-        linear_solver=None,
-        linear_solver_config=None,
-        logger=None,
-        log_level="WARNING",
-        pbar_log=False,
-    ):
-        """Initialize the reusable PISO algorithm state."""
         self.controls = controls or PisoSolverControls()
         self.logger = logger or self._build_logger(
             self.__class__.__name__,
             pbar_log=pbar_log,
             log_level=log_level,
         )
-        self.duration = tuple(self.controls.duration)
-        self.nt = int(self.controls.nt)
-        self.tau = self.controls.tau
-        self.n_correctors = int(self.controls.n_correctors)
-        self.snapshot_interval = int(self.controls.snapshot_interval)
-        self.snapshot_start_step = int(self.controls.snapshot_start_step)
-        self.use_transient_flux_correction = bool(self.controls.use_transient_flux_correction)
-        self.transient_flux_correction_limiter = self.controls.transient_flux_correction_limiter
-        self.momentum_explicit_correction = self.controls.momentum_explicit_correction
-        self.face_interpolation_method = self.controls.face_interpolation_method
-        self.momentum_nonorthogonal_max_iter = int(self.controls.momentum_nonorthogonal_max_iter)
-        self.momentum_nonorthogonal_tol = float(self.controls.momentum_nonorthogonal_tol)
-        self.pressure_nonorthogonal_max_iter = int(self.controls.pressure_nonorthogonal_max_iter)
-        self.pressure_nonorthogonal_tol = float(self.controls.pressure_nonorthogonal_tol)
-        self.diagnostics_enabled = bool(self.controls.diagnostics_enabled)
         self.corrector_diagnostics = []
         self.mu = self._as_positive_scalar(diffusion_coef, "diffusion_coef")
         self.rho = self._as_positive_scalar(convection_coef, "convection_coef")
@@ -121,9 +64,32 @@ class CollocatedPisoSolver(CollocatedNSFVMOperators):
         self.epoints = self.mesh.entity_barycenter("edge")
         self.NC = self.mesh.number_of_cells()
         self.boundary_conditions = self._validate_boundary_conditions(boundary_conditions)
+        self.velocity_dirichlet_value = self.boundary_conditions.dirichlet_value("velocity")
+        self.velocity_dirichlet_threshold = self.boundary_conditions.dirichlet_threshold(
+            "velocity"
+        )
+        self.velocity_natural_threshold = (
+            self.boundary_conditions.natural_threshold("velocity")
+            if self.boundary_conditions.conditions_for("velocity", "natural")
+            else None
+        )
+        self.pressure_dirichlet_value = None
+        self.pressure_dirichlet_threshold = None
+        if self.boundary_conditions.has_pressure_dirichlet():
+            self.pressure_dirichlet_value = (
+                self.boundary_conditions.pressure_dirichlet_value()
+            )
+            self.pressure_dirichlet_threshold = (
+                self.boundary_conditions.pressure_dirichlet_threshold()
+            )
         self.initial_solution_callback = initial_solution
         self._init_discretization(self.controls.space_degree)
-        self.linear_solver = self._init_solver_backend(linear_solver, linear_solver_config)
+        self.linear_solver = self._init_linear_solver(
+            {
+                "linear_solver": linear_solver,
+                "linear_solver_config": linear_solver_config,
+            }
+        )
 
     @staticmethod
     def _build_logger(name, *, pbar_log=False, log_level="WARNING"):
@@ -148,6 +114,7 @@ class CollocatedPisoSolver(CollocatedNSFVMOperators):
             "conditions_for",
             "dirichlet_threshold",
             "dirichlet_value",
+            "natural_threshold",
             "has_pressure_dirichlet",
             "boundary_face_velocity",
         )
@@ -156,80 +123,39 @@ class CollocatedPisoSolver(CollocatedNSFVMOperators):
             raise TypeError("boundary_conditions must provide " + ", ".join(required))
         return boundary_conditions
 
-    def _init_solver_backend(self, linear_solver, linear_solver_config):
-        """Initialize the linear solver from explicit solver inputs."""
-        if linear_solver is not None and hasattr(linear_solver, "solve"):
-            return linear_solver
-
-        options = {}
-        if linear_solver is not None:
-            options["linear_solver"] = linear_solver
-        if linear_solver_config is not None:
-            options["linear_solver_config"] = linear_solver_config
-        return self._init_linear_solver(options)
-
     def __str__(self) -> str:
         return (
             f"{self.__class__.__name__}:\n"
             f"  Mesh shape: {self.mesh.number_of_cells()} cells\n"
-            f"  Time steps: {self.nt}\n"
-            f"  PISO correctors: {self.n_correctors}\n"
+            f"  Time steps: {self.controls.nt}\n"
+            f"  PISO correctors: {self.controls.n_correctors}\n"
             f"  Momentum nonorthogonal corrections: "
-            f"{self.momentum_nonorthogonal_max_iter}\n"
+            f"{self.controls.momentum_nonorthogonal_max_iter}\n"
             f"  Pressure nonorthogonal corrections: "
-            f"{self.pressure_nonorthogonal_max_iter}\n"
-            f"  Transient flux correction limiter: "
-            f"{self.transient_flux_correction_limiter}\n"
-            f"  Momentum explicit correction: "
-            f"{self.momentum_explicit_correction}\n"
+            f"{self.controls.pressure_nonorthogonal_max_iter}\n"
         )
-
-    def _velocity_dirichlet_data(self):
-        return self.boundary_conditions.dirichlet_value("velocity")
-
-    def _velocity_dirichlet_threshold(self):
-        return self.boundary_conditions.dirichlet_threshold("velocity")
-
-    def _has_pressure_dirichlet(self):
-        return self.boundary_conditions.has_pressure_dirichlet()
-
-    def _pressure_dirichlet_threshold(self):
-        if not self._has_pressure_dirichlet():
-            return None
-        return self.boundary_conditions.pressure_dirichlet_threshold()
-
-    def _pressure_dirichlet_data(self):
-        if not self._has_pressure_dirichlet():
-            return None
-        return self.boundary_conditions.pressure_dirichlet_value()
 
     def set_space(self, degree: int) -> None:
         """Rebuild the collocated discretization with a new polynomial degree."""
         self._init_discretization(degree)
 
     def _init_discretization(self, degree: int) -> None:
-        velocity_dirichlet = self._velocity_dirichlet_data()
-        velocity_dirichlet_threshold = self._velocity_dirichlet_threshold()
-        pressure_dirichlet = self._pressure_dirichlet_data()
-        pressure_dirichlet_threshold = self._pressure_dirichlet_threshold()
         self._init_collocated_discretization(
             degree,
-            velocity_dirichlet,
+            self.velocity_dirichlet_value,
             pressure_gradient_method=self.controls.pressure_gradient_method,
             velocity_gradient_method=self.controls.velocity_gradient_method,
-            velocity_dirichlet_threshold=velocity_dirichlet_threshold,
-            pressure_dirichlet=pressure_dirichlet,
-            pressure_dirichlet_threshold=pressure_dirichlet_threshold,
+            velocity_dirichlet_threshold=self.velocity_dirichlet_threshold,
+            pressure_dirichlet=self.pressure_dirichlet_value,
+            pressure_dirichlet_threshold=self.pressure_dirichlet_threshold,
             with_velocity_dirichlet_bc=True,
         )
         self.rhie_chow = RhieChowInterpolation(
             self.mesh,
-            pressure_gradient_method=(
-                self.controls.rhie_chow_pressure_gradient_method
-            ),
-            velocity_interpolation=self.face_interpolation_method,
-            pressure_dirichlet=pressure_dirichlet,
-            pressure_dirichlet_threshold=pressure_dirichlet_threshold,
+            pressure_gradient_method=self.controls.rhie_chow_pressure_gradient_method,
+            velocity_interpolation=self.controls.face_interpolation_method,
+            pressure_dirichlet=self.pressure_dirichlet_value,
+            pressure_dirichlet_threshold=self.pressure_dirichlet_threshold,
         )
 
     def initial_solution(self) -> Tuple[TensorLike, TensorLike, TensorLike]:
@@ -237,72 +163,56 @@ class CollocatedPisoSolver(CollocatedNSFVMOperators):
             raise NotImplementedError("initial_solution must be supplied.")
         return self.initial_solution_callback()
 
-    def _pressure_gradient_integrator(self, pressure):
-        grad_p = self.pressure_gradient.cell_gradient(pressure)
-        p1 = bm.einsum("i,i->i", grad_p[:, 0], self.cm)
-        p2 = bm.einsum("i,i->i", grad_p[:, 1], self.cm)
-        return bm.concatenate((p1, p2))
-
-    def temporary_velocity(self, U0, Uf0, p0, t, return_matrix=False):
-        bform = BilinearForm(self.velocity_space)
-        bform.add_integrator(ScalarDiffusionIntegrator(q=self.p + 2, coef=self.mu))
-        bform.add_integrator(
-            ConvectionIntegrator(
-                q=self.p + 2,
-                coef=self.rho * Uf0,
-                interpolation=self.face_interpolation_method,
-            )
+    def temporary_velocity(self, U0, Uf0, p0, t):
+        controls = self.controls
+        A = self.momentum_diffusion_matrix(self.mu)
+        A = A + self.momentum_convection_matrix(
+            self.rho * Uf0,
+            controls.face_interpolation_method,
         )
-        A = bform.assembly()
-        A = self._apply_velocity_natural_convection(A, Uf0)
-
-        M = CSRTensor(
-            crow=bm.arange(2*self.NC + 1),
-            col=bm.arange(2*self.NC),
-            values=bm.concatenate([
-                self.rho * self.cm / self.tau,
-                self.rho * self.cm / self.tau,
-            ]),
-            spshape=(2*self.NC, 2*self.NC),
-        )
+        A = self.add_momentum_natural_convection_boundary(A, Uf0)
+        M = self.momentum_time_matrix(self.rho, controls.tau)
 
         @cartesian
         def src(p):
             return self.source(p, t)
 
-        f = LinearForm(self.velocity_space).add_integrator(
-            ScalarSourceIntegrator(src, q=self.p + 2)
-        ).assembly()
-
-        p_grad_integrator = self._pressure_gradient_integrator(p0)
+        f = self.momentum_source_vector(src)
         A = A + M
-        b = f + (U0 * (self.rho * self.cm / self.tau)[:, None]).flatten(order="F")
-        b = b - p_grad_integrator
-        velocity_dirichlet_threshold = self._velocity_dirichlet_threshold()
+        b = f + self.momentum_time_source(U0, self.rho, controls.tau)
+        b = b - self.pressure_gradient_source(p0)
         A, b = self.velocity_dirichlet_bc.DiffusionApply(
             A,
             b,
             coef=self.mu,
-            threshold=velocity_dirichlet_threshold,
+            threshold=self.velocity_dirichlet_threshold,
         )
         b = self.velocity_dirichlet_bc.ConvectionApply(
             b,
             self.rho * Uf0,
-            threshold=velocity_dirichlet_threshold,
+            threshold=self.velocity_dirichlet_threshold,
         )
-        if self.momentum_explicit_correction == "openfoam":
-            b = b + self.boundary_corrected_momentum_explicit_source(U0)
         # FEALPy sparse assembly can leave duplicate entries here.
         A = A.tocoo().coalesce().tocsr()
         a_p = A.diags().values
-        U = self.linear_solver.solve(A, b)
-        if self.momentum_explicit_correction == "current":
-            U = self.correct_momentum_nonorthogonal_diffusion(A, b, U, U0)
-        else:
-            self.last_momentum_nonorthogonal_iterations = 1
-        if return_matrix:
-            return U, a_p, A
-        return U, a_p
+        correction_velocity = U0
+        U = U0
+        for iteration in range(1, controls.momentum_nonorthogonal_max_iter + 1):
+            corrected_rhs = b + self.boundary_corrected_momentum_explicit_source(
+                correction_velocity
+            )
+            old_U = U
+            solution = self.linear_solver.solve(A, corrected_rhs)
+            U = bm.stack([solution[: self.NC], solution[self.NC :]], axis=-1)
+            self.last_momentum_nonorthogonal_iterations = iteration
+            if (
+                iteration > 1
+                and bm.max(bm.abs(U - old_U))
+                < controls.momentum_nonorthogonal_tol
+            ):
+                break
+            correction_velocity = U
+        return U, a_p, A
 
     def boundary_corrected_momentum_explicit_source(self, velocity):
         """Return boundary-corrected explicit viscous RHS for momentum prediction.
@@ -314,12 +224,9 @@ class CollocatedPisoSolver(CollocatedNSFVMOperators):
         sources are assembled.
         """
         face_gradient = self.boundary_corrected_momentum_face_gradient(velocity)
-        cell_velocity = self._cell_velocity(velocity)
-        flat_velocity = self._flatten_velocity(cell_velocity)
         cross_source = LinearForm(self.velocity_space).add_integrator(
             ScalarCrossDiffusionIntegrator(
-                flat_velocity,
-                face_gradient,
+                grad_f=face_gradient,
                 coef=self.mu,
                 geometry=self.fvm_geometry,
                 boundary_policy="zero",
@@ -338,189 +245,111 @@ class CollocatedPisoSolver(CollocatedNSFVMOperators):
 
         Keep this semantic in sync with the pressure non-orthogonal correction
         when comparing solver routes.  Pressure cross flux follows
-        ``face_interpolation_method``; this route deliberately uses linear
-        interpolation and patch normal-gradient boundary correction.  The legacy
-        ``momentum_explicit_correction="current"`` path does not use this
-        boundary-corrected face-gradient construction.
+        ``controls.face_interpolation_method``; this momentum route deliberately uses
+        linear interpolation and patch normal-gradient boundary correction.
         """
-        cell_velocity = self._cell_velocity(velocity)
-        cell_gradient = self.velocity_gradient.cell_gradient(cell_velocity)
+        cell_gradient = self.velocity_gradient.cell_gradient(velocity)
         kwargs = {}
 
-        dirichlet_faces, dirichlet_values = self._boundary_face_velocity()
+        dirichlet_faces, dirichlet_values = self.boundary_conditions.boundary_face_velocity(
+            "velocity",
+            mesh=self.mesh,
+        )
         if dirichlet_faces is not None and dirichlet_faces.shape[0] > 0:
             kwargs["dirichlet_faces"] = dirichlet_faces
             kwargs["dirichlet_values"] = dirichlet_values
 
-        natural_faces = self._velocity_natural_faces()
+        natural_faces = selected_boundary_faces(
+            self.fvm_geometry,
+            self.velocity_natural_threshold,
+        )
         if natural_faces is not None and natural_faces.shape[0] > 0:
             kwargs["neumann_faces"] = natural_faces
             kwargs["neumann_sn_grad"] = bm.zeros(
-                (natural_faces.shape[0], cell_velocity.shape[1]),
-                dtype=cell_velocity.dtype,
+                (natural_faces.shape[0], velocity.shape[1]),
+                dtype=velocity.dtype,
             )
 
         return reconstruct_face_gradient(
             self.mesh,
             cell_gradient,
-            cell_values=cell_velocity,
+            cell_values=velocity,
             interpolation_method="linear",
             **kwargs,
         )
 
-    def _velocity_natural_threshold(self):
-        if self.boundary_conditions is None:
-            return None
-        if not self.boundary_conditions.conditions_for("velocity", "natural"):
-            return None
-        return self.boundary_conditions.natural_threshold("velocity")
-
-    def _velocity_natural_faces(self):
-        return selected_boundary_faces(self.fvm_geometry, self._velocity_natural_threshold())
-
-    def _apply_velocity_natural_convection(self, matrix, face_velocity):
-        """Add zero-gradient velocity outlet convection as owner diagonal."""
-        selected = self._velocity_natural_faces()
-        if selected is None or selected.shape[0] == 0:
-            return matrix
-
-        flux = bm.einsum(
-            "ij,ij->i",
-            self.rho * face_velocity[selected],
-            self.fvm_geometry.S_f[selected],
-        )
-        owner = self.fvm_geometry.owner[selected]
-        diagonal = bm.zeros(self.NC, dtype=flux.dtype)
-        diagonal = bm.index_add(diagonal, owner, flux, axis=0)
-        diagonal = bm.concatenate([diagonal, diagonal], axis=0)
-        return matrix + spdiags(diagonal, 0, matrix.shape[0], matrix.shape[1])
-
-    def correct_momentum_nonorthogonal_diffusion(self, matrix, rhs, velocity, previous_velocity):
-        """Picard-correct the explicit non-orthogonal momentum diffusion RHS."""
-        max_iter = self.momentum_nonorthogonal_max_iter
-        if max_iter == 0:
-            self.last_momentum_nonorthogonal_iterations = 0
-            return velocity
-
-        return self._correct_momentum_nonorthogonal_diffusion(
+    def add_momentum_natural_convection_boundary(self, matrix, face_velocity):
+        """Add the momentum natural-boundary convection contribution."""
+        return self.add_velocity_natural_convection_diagonal(
             matrix,
-            rhs,
-            velocity,
-            previous_velocity,
-            max_iter=max_iter,
-            tol=self.momentum_nonorthogonal_tol,
-            iteration_attr="last_momentum_nonorthogonal_iterations",
+            self.rho * face_velocity,
+            self.velocity_natural_threshold,
         )
-
-    def pressure_response_face_coefficient(self, a_p):
-        """Return face response ``D_f`` used by the PISO pressure-state solve."""
-        dp = self.cm/a_p[:self.NC]
-        return self.face_interpolate_cell_scalar(dp, method=self.face_interpolation_method)
-
-    def solve_pressure_correction(
-        self,
-        rhs,
-        a_p,
-        nonorthogonal_max_iter: Optional[int] = None,
-        nonorthogonal_tol: Optional[float] = None,
-        initial_pressure_state: Optional[TensorLike] = None,
-    ):
-        """Solve the PISO pressure-state equation.
-
-        The historical method name refers to the pressure-corrector step.  The
-        returned array is the corrected pressure state, not a pressure
-        increment ``p'``.
-        """
-        pressure, _, _ = self.solve_pressure_state_equation(
-            rhs,
-            a_p,
-            nonorthogonal_max_iter=nonorthogonal_max_iter,
-            nonorthogonal_tol=nonorthogonal_tol,
-            initial_pressure_state=initial_pressure_state,
-        )
-        return pressure
 
     def _assemble_pressure_state_system(self, rhs, coef, cross_rhs):
         """Assemble the pressure-state linear system for one nonOrth solve."""
         has_dirichlet = (
-            self._pressure_dirichlet_data() is not None
-            and self._pressure_dirichlet_threshold() is not None
+            self.pressure_dirichlet_value is not None
+            and self.pressure_dirichlet_threshold is not None
         )
         if has_dirichlet:
             matrix = BilinearForm(self.space).add_integrator(
                 ScalarDiffusionIntegrator(q=self.p + 2, coef=coef)
             ).assembly()
-            pressure_bc = DirichletBC(self.mesh, self._pressure_dirichlet_data())
+            pressure_bc = DirichletBC(self.mesh, self.pressure_dirichlet_value)
             return pressure_bc.DiffusionApply(
                 matrix,
                 rhs + cross_rhs,
                 coef=self._boundary_face_coefficient(coef),
-                threshold=self._pressure_dirichlet_threshold(),
+                threshold=self.pressure_dirichlet_threshold,
             )
 
         matrix = self._assemble_pressure_gauge_matrix(coef, q=self.p + 2)
         rhs = bm.concatenate([rhs + cross_rhs, bm.zeros(1, dtype=rhs.dtype)], axis=0)
         return matrix, rhs
 
-    def solve_pressure_state_equation(
-        self,
-        rhs,
-        a_p,
-        nonorthogonal_max_iter: Optional[int] = None,
-        nonorthogonal_tol: Optional[float] = None,
-        initial_pressure_state: Optional[TensorLike] = None,
-    ):
+    def solve_pressure_state_equation(self, rhs, a_p, initial_pressure_state: Optional[TensorLike] = None):
         coef = self.pressure_response_face_coefficient(a_p)
-        nonorthogonal_max_iter = (
-            self.pressure_nonorthogonal_max_iter
-            if nonorthogonal_max_iter is None
-            else int(nonorthogonal_max_iter)
-        )
-        nonorthogonal_tol = (
-            self.pressure_nonorthogonal_tol
-            if nonorthogonal_tol is None
-            else float(nonorthogonal_tol)
-        )
-        if nonorthogonal_max_iter < 0:
-            raise ValueError("nonorthogonal_max_iter must be non-negative.")
-        if nonorthogonal_tol <= 0.0:
-            raise ValueError("nonorthogonal_tol must be positive.")
+        max_iter = int(self.controls.pressure_nonorthogonal_max_iter)
+        if max_iter < 1:
+            raise ValueError("pressure_nonorthogonal_max_iter must be positive.")
 
-        # OpenFOAM's nNonOrthogonalCorrectors is a fixed loop count.  The
-        # tolerance is kept as a validated option for API compatibility, but
-        # this PISO route does not stop the final pressure-system sequence early.
-        if nonorthogonal_max_iter > 0 and initial_pressure_state is not None:
-            explicit_cross_flux = self.pressure_correction_cross_flux(initial_pressure_state, coef)
-            cross_rhs = self.divergence_from_flux(explicit_cross_flux)
-        else:
-            cross_rhs = bm.zeros_like(rhs)
-            explicit_cross_flux = bm.zeros(self.mesh.number_of_faces(), dtype=rhs.dtype)
-        pressure = None
-        n_solves = nonorthogonal_max_iter + 1
-        pressure_dirichlet = self._pressure_dirichlet_data()
-        pressure_dirichlet_threshold = self._pressure_dirichlet_threshold()
-        for iteration in range(1, n_solves + 1):
+        correction_pressure = initial_pressure_state
+        pressure = initial_pressure_state
+        explicit_cross_flux = bm.zeros(self.mesh.number_of_faces(), dtype=rhs.dtype)
+        cross_rhs = bm.zeros_like(rhs)
+        for iteration in range(1, max_iter + 1):
+            if correction_pressure is not None:
+                explicit_cross_flux = self._pressure_nonorthogonal_cross_flux(
+                    correction_pressure,
+                    coef,
+                )
+                cross_rhs = self.divergence_from_flux(explicit_cross_flux)
+
             matrix, matrix_rhs = self._assemble_pressure_state_system(rhs, coef, cross_rhs)
             solution = self.linear_solver.solve(matrix, matrix_rhs)
             pressure = solution[: self.NC]
             self.last_pressure_nonorthogonal_iterations = iteration
-            if iteration == n_solves:
+            if iteration == max_iter:
                 break
 
-            explicit_cross_flux = self.pressure_correction_cross_flux(pressure, coef)
-            cross_rhs = self.divergence_from_flux(explicit_cross_flux)
+            correction_pressure = pressure
 
-        orthogonal_flux = self.pressure_correction_orthogonal_flux(pressure, coef)
+        orthogonal_flux = self.pressure_orthogonal_flux(pressure, coef)
         flux_without_boundary = orthogonal_flux - explicit_cross_flux
-        boundary_pressure_flux = self._add_pressure_dirichlet_boundary_flux(
+        boundary_pressure_flux = self.add_pressure_dirichlet_flux(
             bm.zeros_like(orthogonal_flux),
             pressure,
             coef,
+            self.pressure_dirichlet_value,
+            self.pressure_dirichlet_threshold,
         )
-        pressure_flux = self._add_pressure_dirichlet_boundary_flux(
+        pressure_flux = self.add_pressure_dirichlet_flux(
             flux_without_boundary,
             pressure,
             coef,
+            self.pressure_dirichlet_value,
+            self.pressure_dirichlet_threshold,
         )
         flux_parts = {
             "orthogonal_flux": orthogonal_flux,
@@ -528,14 +357,6 @@ class CollocatedPisoSolver(CollocatedNSFVMOperators):
             "boundary_pressure_flux": boundary_pressure_flux,
         }
         return pressure, pressure_flux, flux_parts
-
-    def _boundary_face_velocity(self):
-        return boundary_face_velocity(
-            self.boundary_conditions,
-            "velocity",
-            mesh=self.mesh,
-            fallback=super()._boundary_face_velocity,
-        )
 
     # Local algebra for the PISO pressure-corrector step below.
     #
@@ -549,59 +370,9 @@ class CollocatedPisoSolver(CollocatedNSFVMOperators):
     #     U_new <- U_free - rAU grad(p_new)
     #     phi_new <- phi_free + phi_{p_new}
     #
-    def pressure_correction_flux(self, pressure_state, a_p):
-        """Return the PISO pressure-state flux contribution.
-
-        The method name is retained for compatibility with pressure-corrector
-        diagnostics.  The argument is a pressure state, not an increment.
-        """
-        coef = self.pressure_response_face_coefficient(a_p)
-        return self.pressure_correction_flux_from_coefficient(pressure_state, coef)
-
-    def pressure_correction_flux_from_coefficient(
-        self,
-        pressure_state,
-        coef,
-        explicit_cross_flux=None,
-    ):
-        """Return pressure-state flux from a face response coefficient."""
-        if explicit_cross_flux is None:
-            explicit_cross_flux = self.pressure_correction_cross_flux(pressure_state, coef)
-        flux = self.pressure_correction_orthogonal_flux(pressure_state, coef) - explicit_cross_flux
-        return self._add_pressure_dirichlet_boundary_flux(flux, pressure_state, coef)
-
-    def _add_pressure_dirichlet_boundary_flux(self, flux, pressure, coef):
-        """Add pressure-state flux on pressure Dirichlet boundary faces."""
-        threshold = self._pressure_dirichlet_threshold()
-        pressure_dirichlet = self._pressure_dirichlet_data()
-        if threshold is None or pressure_dirichlet is None:
-            return flux
-
-        selected = selected_boundary_faces(self.fvm_geometry, threshold)
-        if selected is None or selected.shape[0] == 0:
-            return flux
-
-        _, mag_E_f, _ = self.fvm_geometry.over_relaxed_decomposition()
-        coefficient = mag_E_f[selected] / self.fvm_geometry.mag_d_f[selected] * bm.array(coef)[selected]
-        owner = self.fvm_geometry.owner[selected]
-        bd_value = pressure_dirichlet(self.fvm_geometry.face_center[selected])
-        bd_flux = coefficient * (pressure[owner] - bd_value)
-        return bm.set_at(flux, selected, bd_flux)
-
-    def pressure_correction_orthogonal_flux(self, pressure_state, coef):
-        """Return the implicit orthogonal flux induced by a pressure state."""
-        e2c = self.e2c
-        _, ef_abs, _ = self.fvm_geometry.over_relaxed_decomposition()
-        kf = ef_abs / self.fvm_geometry.mag_d_f * coef
-        return kf*(pressure_state[e2c[:, 0]] - pressure_state[e2c[:, 1]])
-
-    def pressure_correction_cross_flux(self, pressure_state, coef):
-        """Return the explicit non-orthogonal flux induced by a pressure state."""
-        return self._pressure_correction_cross_flux(pressure_state, coef)
-
     def rhie_chow_face_velocity(
         self,
-        u_flat,
+        cell_velocity,
         a_p,
         pressure,
         target_flux=None,
@@ -613,7 +384,7 @@ class CollocatedPisoSolver(CollocatedNSFVMOperators):
         if face_response_coefficient is None:
             face_response_coefficient = self.pressure_response_face_coefficient(a_p)
         face_velocity = self.rhie_chow.Interpolation(
-            u_flat,
+            cell_velocity.flatten(order="F"),
             a_p,
             pressure,
             face_response_coefficient=face_response_coefficient,
@@ -624,16 +395,7 @@ class CollocatedPisoSolver(CollocatedNSFVMOperators):
             face_velocity,
             boundary_faces,
             boundary_velocity,
-            default_apply=self.apply_face_velocity_dirichlet,
-        )
-
-    def cell_velocity_face_flux(self, cell_velocity):
-        """Return the face flux from interpolated cell-centred velocity."""
-        return self.face_flux(
-            self.face_interpolate_cell_vector(
-                cell_velocity,
-                method=self.face_interpolation_method,
-            )
+            geometry=self.fvm_geometry,
         )
 
     def pressure_free_flux(self, intermediate_velocity, pressure, a_p):
@@ -645,31 +407,35 @@ class CollocatedPisoSolver(CollocatedNSFVMOperators):
         )
         face_velocity = self.face_interpolate_cell_vector(
             pressure_free_velocity,
-            method=self.face_interpolation_method,
+            method=self.controls.face_interpolation_method,
         )
         return pressure_free_velocity, self.face_flux(face_velocity)
 
     def transient_face_flux_correction(self, previous_cell_velocity, previous_face_velocity, a_p):
         """Return the Euler ``rAU_f * ddtCorr(U, phi)`` face-flux correction."""
         if (
-            not self.use_transient_flux_correction
+            not self.controls.use_transient_flux_correction
             or previous_cell_velocity is None
             or previous_face_velocity is None
         ):
             return bm.zeros(self.mesh.number_of_faces(), dtype=self.cm.dtype)
 
         previous_face_flux = self.face_flux(previous_face_velocity)
-        previous_cell_flux = self.cell_velocity_face_flux(previous_cell_velocity)
+        previous_cell_flux = self.face_flux(
+            self.face_interpolate_cell_vector(
+                previous_cell_velocity,
+                method=self.controls.face_interpolation_method,
+            )
+        )
         flux_correction = previous_face_flux - previous_cell_flux
-        if self.transient_flux_correction_limiter == "openfoam":
-            denominator = bm.abs(previous_face_flux) + 1.0e-300
-            limiter = 1.0 - bm.minimum(bm.abs(flux_correction) / denominator, 1.0)
-            limiter = bm.where(self.fvm_geometry.is_boundary, 0.0, limiter)
-            flux_correction = limiter * flux_correction
+        denominator = bm.abs(previous_face_flux) + 1.0e-300
+        limiter = 1.0 - bm.minimum(bm.abs(flux_correction) / denominator, 1.0)
+        limiter = bm.where(self.fvm_geometry.is_boundary, 0.0, limiter)
+        flux_correction = limiter * flux_correction
         response_coef = self.pressure_response_face_coefficient(a_p)
-        return response_coef * flux_correction / self.tau
+        return response_coef * flux_correction / self.controls.tau
 
-    def operator_splitting_velocity_correction(
+    def piso_neighbour_velocity_correction(
         self, corrected_velocity, predicted_velocity, momentum_matrix, a_p
     ):
         """Add the PISO neighbour-velocity compensation before correction two.
@@ -681,8 +447,14 @@ class CollocatedPisoSolver(CollocatedNSFVMOperators):
             -(A delta_U - diag(A) delta_U) / diag(A).
         """
         delta_u = corrected_velocity - predicted_velocity
-        offdiag_delta = momentum_matrix @ delta_u - a_p * delta_u
-        return corrected_velocity - offdiag_delta / a_p
+        delta_dofs = delta_u.flatten(order="F")
+        offdiag_delta = momentum_matrix @ delta_dofs - a_p * delta_dofs
+        offdiag_cell = bm.stack(
+            [offdiag_delta[: self.NC], offdiag_delta[self.NC :]],
+            axis=-1,
+        )
+        a_p_cell = bm.stack([a_p[: self.NC], a_p[self.NC :]], axis=-1)
+        return corrected_velocity - offdiag_cell / a_p_cell
 
     def pressure_correction_step(
         self,
@@ -698,8 +470,8 @@ class CollocatedPisoSolver(CollocatedNSFVMOperators):
         """Perform one PISO pressure-correction step.
 
         The pressure equation is solved for the pressure state associated with
-        the current pressure-free velocity estimate, matching the OpenFOAM PISO
-        pressure-corrector semantics without exposing an HbyA-style abstraction.
+        the current pressure-free velocity estimate, using the pressure-state
+        PISO corrector form without introducing a separate flux abstraction.
         """
         pressure_free_velocity, flux = self.pressure_free_flux(
             intermediate_velocity,
@@ -717,7 +489,7 @@ class CollocatedPisoSolver(CollocatedNSFVMOperators):
             boundary_faces,
             boundary_velocity,
             self.fvm_geometry.S_f,
-            default_apply=self.apply_boundary_flux_constraint,
+            geometry=self.fvm_geometry,
         )
         free_divergence = self.divergence_from_flux(flux)
         pressure_state, pressure_flux, pressure_flux_parts = (
@@ -738,7 +510,7 @@ class CollocatedPisoSolver(CollocatedNSFVMOperators):
             boundary_faces,
             boundary_velocity,
             self.fvm_geometry.S_f,
-            default_apply=self.apply_boundary_flux_constraint,
+            geometry=self.fvm_geometry,
         )
         if not return_diagnostics:
             return corrected_velocity, pressure_state, corrected_flux
@@ -755,7 +527,7 @@ class CollocatedPisoSolver(CollocatedNSFVMOperators):
         )
         return corrected_velocity, pressure_state, corrected_flux, diagnostics
 
-    def _run_pressure_correctors(
+    def piso_pressure_corrector_loop(
         self,
         predicted_velocity,
         initial_pressure,
@@ -771,27 +543,34 @@ class CollocatedPisoSolver(CollocatedNSFVMOperators):
         time,
         corrector_callback=None,
     ):
-        """Run the PISO pressure-corrector sequence inside one time step."""
-        previous_velocity = predicted_velocity
-        current_velocity = predicted_velocity
-        current_pressure = initial_pressure
+        """Run the repeated PISO pressure-corrector loop inside one time step.
+
+        The first corrector uses the momentum-predicted velocity.  Later
+        correctors first apply the neighbour-velocity compensation, then solve
+        the same pressure-state correction step.
+        """
+        previous_corrector_velocity = predicted_velocity
+        velocity = predicted_velocity
+        pressure = initial_pressure
         phi = None
-        diagnostics_enabled = self.diagnostics_enabled or corrector_callback is not None
+        diagnostics_enabled = (
+            self.controls.diagnostics_enabled or corrector_callback is not None
+        )
         for correction in range(1, n_correctors + 1):
             if correction == 1:
-                intermediate_velocity = current_velocity
+                intermediate_velocity = velocity
                 splitting_linf = 0.0
             else:
-                intermediate_velocity = self.operator_splitting_velocity_correction(
-                    current_velocity, previous_velocity, momentum_matrix, a_p
+                intermediate_velocity = self.piso_neighbour_velocity_correction(
+                    velocity, previous_corrector_velocity, momentum_matrix, a_p
                 )
                 splitting_linf = float(
-                    bm.to_numpy(bm.max(bm.abs(intermediate_velocity - current_velocity)))
+                    bm.to_numpy(bm.max(bm.abs(intermediate_velocity - velocity)))
                 )
 
             correction_result = self.pressure_correction_step(
                 intermediate_velocity,
-                current_pressure,
+                pressure,
                 a_p,
                 boundary_faces,
                 boundary_velocity,
@@ -803,7 +582,8 @@ class CollocatedPisoSolver(CollocatedNSFVMOperators):
                 next_velocity, next_pressure, phi = correction_result
             else:
                 next_velocity, next_pressure, phi, diagnostics = correction_result
-                self._record_corrector_diagnostics(
+                record_piso_corrector_diagnostics(
+                    self.corrector_diagnostics,
                     corrector_callback,
                     diagnostics,
                     step=step,
@@ -811,70 +591,26 @@ class CollocatedPisoSolver(CollocatedNSFVMOperators):
                     correction=correction,
                     n_correctors=n_correctors,
                     splitting_linf=splitting_linf,
-                    current_velocity=current_velocity,
+                    current_velocity=velocity,
                     next_velocity=next_velocity,
-                    current_pressure=current_pressure,
+                    current_pressure=pressure,
                     next_pressure=next_pressure,
                     a_p=a_p,
                     phi=phi,
                     boundary_faces=boundary_faces,
                     boundary_velocity=boundary_velocity,
+                    face_response_coefficient=self.pressure_response_face_coefficient(a_p),
+                    rhie_chow_face_velocity=self.rhie_chow_face_velocity,
+                    face_flux=self.face_flux,
                 )
 
-            previous_velocity = current_velocity
-            current_velocity = next_velocity
-            current_pressure = next_pressure
+            previous_corrector_velocity = velocity
+            velocity = next_velocity
+            pressure = next_pressure
 
-        return current_velocity, current_pressure, phi
+        return velocity, pressure, phi
 
-    def _record_corrector_diagnostics(
-        self,
-        callback,
-        diagnostics,
-        *,
-        step,
-        time,
-        correction,
-        n_correctors,
-        splitting_linf,
-        current_velocity,
-        next_velocity,
-        current_pressure,
-        next_pressure,
-        a_p,
-        phi,
-        boundary_faces,
-        boundary_velocity,
-    ):
-        """Store one corrector diagnostics row and call the optional callback."""
-        target_face_velocity = self.rhie_chow_face_velocity(
-            next_velocity,
-            a_p,
-            next_pressure,
-            phi,
-            boundary_faces=boundary_faces,
-            boundary_velocity=boundary_velocity,
-            face_response_coefficient=self.pressure_response_face_coefficient(a_p),
-        )
-        target_flux_error = self.face_flux(target_face_velocity) - phi
-        row = attach_corrector_diagnostics(
-            diagnostics,
-            step=step,
-            time=time,
-            corrector=correction,
-            n_correctors=n_correctors,
-            splitting_linf=splitting_linf,
-            current_velocity=current_velocity,
-            next_velocity=next_velocity,
-            current_pressure=current_pressure,
-            next_pressure=next_pressure,
-            target_flux_error=target_flux_error,
-        )
-        self.corrector_diagnostics.append(row)
-        if callback is not None:
-            callback(**row)
-
-    def _advance_time_step(
+    def advance_time_step(
         self,
         U0,
         Uf0,
@@ -885,14 +621,18 @@ class CollocatedPisoSolver(CollocatedNSFVMOperators):
         n_correctors,
         corrector_callback=None,
     ):
-        """Advance one time step with momentum prediction and PISO correction."""
+        """Advance one time step through predictor, correctors, and face flux."""
+        tau = self.controls.tau
         previous_cell_velocity = U0
         previous_face_velocity = Uf0
         predicted_velocity, a_p, momentum_matrix = self.temporary_velocity(
-            U0, Uf0, p0, t + self.tau, return_matrix=True
+            U0, Uf0, p0, t + tau
         )
-        boundary_faces, boundary_velocity = self._boundary_face_velocity()
-        current_velocity, current_pressure, phi = self._run_pressure_correctors(
+        boundary_faces, boundary_velocity = self.boundary_conditions.boundary_face_velocity(
+            "velocity",
+            mesh=self.mesh,
+        )
+        current_velocity, current_pressure, phi = self.piso_pressure_corrector_loop(
             predicted_velocity,
             p0,
             a_p,
@@ -903,7 +643,7 @@ class CollocatedPisoSolver(CollocatedNSFVMOperators):
             previous_face_velocity,
             n_correctors=n_correctors,
             step=step,
-            time=t + self.tau,
+            time=t + tau,
             corrector_callback=corrector_callback,
         )
         next_face_velocity = self.rhie_chow_face_velocity(
@@ -915,8 +655,7 @@ class CollocatedPisoSolver(CollocatedNSFVMOperators):
             boundary_velocity=boundary_velocity,
             face_response_coefficient=self.pressure_response_face_coefficient(a_p),
         )
-        next_cell_velocity = bm.stack([current_velocity[:self.NC], current_velocity[self.NC:]], axis=-1)
-        return next_cell_velocity, next_face_velocity, current_pressure, phi, current_velocity
+        return current_velocity, next_face_velocity, current_pressure, phi
 
     def solve(
         self,
@@ -933,26 +672,31 @@ class CollocatedPisoSolver(CollocatedNSFVMOperators):
             U0, Uf0, p0 = self.initial_solution()
         self.corrector_diagnostics = []
 
-        n_correctors = self.n_correctors if n_correctors is None else int(n_correctors)
-        self.validate_piso_controls(n_correctors)
+        controls = self.controls
+        n_correctors = (
+            controls.n_correctors
+            if n_correctors is None
+            else int(n_correctors)
+        )
+        PisoSolverControls.validate_piso_controls(n_correctors)
         snapshot_interval = (
-            self.snapshot_interval
+            controls.snapshot_interval
             if snapshot_interval is None
             else int(snapshot_interval)
         )
         snapshot_start_step = (
-            self.snapshot_start_step
+            controls.snapshot_start_step
             if snapshot_start_step is None
             else int(snapshot_start_step)
         )
-        self.validate_snapshot_controls(snapshot_interval, snapshot_start_step)
+        PisoSolverControls.validate_snapshot_controls(snapshot_interval, snapshot_start_step)
 
         current_velocity = None
         current_pressure = p0
-        for n in range(self.nt):
-            t = self.duration[0] + n * self.tau
+        for n in range(controls.nt):
+            t = controls.duration[0] + n * controls.tau
             step = n + 1
-            U0, Uf0, p0, phi, current_velocity = self._advance_time_step(
+            U0, Uf0, p0, phi = self.advance_time_step(
                 U0,
                 Uf0,
                 p0,
@@ -961,6 +705,7 @@ class CollocatedPisoSolver(CollocatedNSFVMOperators):
                 n_correctors=n_correctors,
                 corrector_callback=corrector_callback,
             )
+            current_velocity = U0
             current_pressure = p0
             if (
                 snapshot_callback is not None
@@ -969,7 +714,7 @@ class CollocatedPisoSolver(CollocatedNSFVMOperators):
             ):
                 snapshot_callback(
                     step=step,
-                    time=t + self.tau,
+                    time=t + controls.tau,
                     model=self,
                     cell_velocity=U0,
                     face_velocity=Uf0,
@@ -977,7 +722,7 @@ class CollocatedPisoSolver(CollocatedNSFVMOperators):
                     flux=phi,
                 )
 
-        self.uh = current_velocity[:self.NC]
-        self.vh = current_velocity[self.NC:]
+        self.uh = current_velocity[:, 0]
+        self.vh = current_velocity[:, 1]
         self.ph = current_pressure
         return self.uh, self.vh, self.ph

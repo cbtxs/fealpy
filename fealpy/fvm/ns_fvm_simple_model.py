@@ -7,8 +7,9 @@ from fealpy.backend import backend_manager as bm
 from fealpy.model import ComputationalModel
 
 from .collocated_simple_solver import CollocatedSimpleSolver
+from .engineering_boundary_conditions import BoundaryConditionData
 from .navier_stokes_model_adapter import NavierStokesModelAdapter
-from .simple_solver_data import SimpleBoundaryConditions, SimpleSolverControls
+from .solver_controls import SimpleSolverControls
 
 
 class NSFVMSimpleModel(ComputationalModel, NavierStokesModelAdapter, CollocatedSimpleSolver):
@@ -31,18 +32,20 @@ class NSFVMSimpleModel(ComputationalModel, NavierStokesModelAdapter, CollocatedS
             and hasattr(boundary_input, "to_pde_boundary")
             else None
         )
-        boundary_conditions = (
-            boundary_input.to_pde_boundary()
-            if hasattr(boundary_input, "to_pde_boundary")
-            else boundary_input
-        )
-        self._init_simple_solver(
+        if isinstance(boundary_input, BoundaryConditionData):
+            boundary_conditions = boundary_input.to_pde_boundary(mesh)
+        elif hasattr(boundary_input, "to_pde_boundary"):
+            boundary_conditions = boundary_input.to_pde_boundary()
+        else:
+            boundary_conditions = boundary_input
+        CollocatedSimpleSolver.__init__(
+            self,
             mesh=mesh,
             diffusion_coef=self.mu,
             convection_coef=self.rho,
             source=pde.source,
             boundary_conditions=boundary_conditions,
-            controls=SimpleSolverControls.from_options(options),
+            controls=self._simple_controls_from_options(options),
             linear_solver=options.get("linear_solver"),
             linear_solver_config=options.get("linear_solver_config"),
             logger=self.logger,
@@ -65,11 +68,29 @@ class NSFVMSimpleModel(ComputationalModel, NavierStokesModelAdapter, CollocatedS
         """Translate model or engineering boundary input to solver boundary data."""
         boundary_conditions = options.get("boundary_conditions")
         if boundary_conditions is None:
-            return SimpleBoundaryConditions(pde.dirichlet_velocity)
+            return BoundaryConditionData(pde.dirichlet_velocity)
 
         if callable(boundary_conditions) and not hasattr(boundary_conditions, "dirichlet_threshold"):
             return self._call_boundary_condition_factory(boundary_conditions, mesh, pde)
         return boundary_conditions
+
+    @staticmethod
+    def _simple_controls_from_options(options):
+        """Translate historical manufactured-model options to SIMPLE controls."""
+        return SimpleSolverControls(
+            space_degree=options.get("space_degree", 0),
+            pressure_gradient_method=options.get("pressure_gradient_method", "extended_lsq"),
+            velocity_gradient_method=options.get("velocity_gradient_method", "extended_lsq"),
+            rhie_chow_pressure_gradient_method=options.get("rhie_chow_pressure_gradient_method", "extended_lsq"),
+            face_interpolation_method=options.get("face_interpolation_method", "average"),
+            momentum_face_interpolation=options.get("momentum_face_interpolation"),
+            pressure_response_interpolation=options.get("pressure_response_interpolation"),
+            rhie_chow_velocity_interpolation=options.get("rhie_chow_velocity_interpolation"),
+            momentum_nonorthogonal_max_iter=options.get("momentum_nonorthogonal_max_iter", 10),
+            momentum_nonorthogonal_tol=options.get("momentum_nonorthogonal_tol", 1.0e-4),
+            pressure_nonorthogonal_max_iter=options.get("pressure_nonorthogonal_max_iter", 10),
+            pressure_nonorthogonal_tol=options.get("pressure_nonorthogonal_tol", 1.0e-5),
+        )
 
     @staticmethod
     def _call_boundary_condition_factory(factory, mesh, pde):

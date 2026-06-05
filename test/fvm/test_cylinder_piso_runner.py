@@ -1,13 +1,22 @@
 from pathlib import Path
+import importlib.util
 
 from fealpy.backend import backend_manager as bm
 
 
+def load_piso_example():
+    path = Path(__file__).parents[2] / "example" / "fvm" / "ns_fvm_cylinder_piso_example.py"
+    spec = importlib.util.spec_from_file_location("ns_fvm_cylinder_piso_example", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def test_piso_cylinder_runner_writes_standard_outputs(tmp_path: Path):
     bm.set_backend("numpy")
-    from fealpy.fvm.ns_fvm_cylinder_piso import create_parser, run_piso_cylinder
+    example = load_piso_example()
 
-    args = create_parser().parse_args(
+    args = example.create_parser().parse_args(
         [
             "--mesh_size",
             "0.18",
@@ -24,8 +33,6 @@ def test_piso_cylinder_runner_writes_standard_outputs(tmp_path: Path):
             "2",
             "--linear_solver",
             "scipy",
-            "--transient_flux_correction_limiter",
-            "none",
             "--vtk_interval",
             "1",
             "--output_dir",
@@ -33,10 +40,10 @@ def test_piso_cylinder_runner_writes_standard_outputs(tmp_path: Path):
         ]
     )
 
-    model, outputs = run_piso_cylinder(args)
+    model, outputs = example.run_piso_cylinder(args)
 
     assert model.mesh.number_of_cells() > 0
-    assert model.transient_flux_correction_limiter == "none"
+    assert not hasattr(model, "transient_flux_correction_limiter")
     assert outputs["output_dir"] == tmp_path
     assert (tmp_path / "solution.vtu").exists()
     assert (tmp_path / "flow_overview.png").exists()
@@ -49,9 +56,9 @@ def test_piso_cylinder_runner_writes_standard_outputs(tmp_path: Path):
 
 
 def test_piso_cylinder_parser_accepts_weighted_lsq_gradient_alias():
-    from fealpy.fvm.ns_fvm_cylinder_piso import create_parser
+    example = load_piso_example()
 
-    args = create_parser().parse_args(
+    args = example.create_parser().parse_args(
         [
             "--pressure_gradient_method",
             "weighted_lsq",
@@ -92,7 +99,10 @@ def test_piso_cylinder_uses_patch_velocity_dirichlet_only():
         }
     )
 
-    selected_faces, selected_velocity = model._boundary_face_velocity()
+    selected_faces, selected_velocity = model.boundary_conditions.boundary_face_velocity(
+        "velocity",
+        mesh=model.mesh,
+    )
     face_centers = model.mesh.entity_barycenter("face")[selected_faces]
 
     assert selected_velocity.shape[0] == selected_faces.shape[0]
@@ -127,7 +137,16 @@ def test_piso_pressure_flux_includes_pressure_dirichlet_outlet():
 
     a_p = bm.ones(2 * model.NC)
     pressure = bm.ones(model.NC)
-    flux = model.pressure_correction_flux(pressure, a_p)
+    coef = model.pressure_response_face_coefficient(a_p)
+    flux = model.pressure_orthogonal_flux(pressure, coef)
+    flux = flux - model._pressure_nonorthogonal_cross_flux(pressure, coef)
+    flux = model.add_pressure_dirichlet_flux(
+        flux,
+        pressure,
+        coef,
+        model.pressure_dirichlet_value,
+        model.pressure_dirichlet_threshold,
+    )
     boundary_faces = model.mesh.boundary_face_index()
     face_centers = model.mesh.entity_barycenter("face")[boundary_faces]
     outlet_faces = boundary_faces[case.is_outlet_boundary(face_centers)]
@@ -163,7 +182,10 @@ def test_piso_cylinder_open_outlet_short_run_stays_bounded():
     )
     model.solve()
     speed = bm.sqrt(model.uh**2 + model.vh**2)
-    _, boundary_velocity = model._boundary_face_velocity()
+    _, boundary_velocity = model.boundary_conditions.boundary_face_velocity(
+        "velocity",
+        mesh=model.mesh,
+    )
     inlet_speed = bm.max(bm.sqrt(boundary_velocity[:, 0] ** 2 + boundary_velocity[:, 1] ** 2))
 
     assert bool(bm.to_numpy(bm.all(bm.isfinite(speed))))
@@ -174,7 +196,7 @@ def test_piso_cylinder_history_reports_outlet_backflow_flux(tmp_path: Path):
     bm.set_backend("numpy")
     import pytest
     from fealpy.fvm import CylinderFlowCase, FVMLinearSolverConfig, NSFVMPISOModel
-    from fealpy.fvm.ns_fvm_cylinder_piso import CylinderPISOHistory
+    CylinderPISOHistory = load_piso_example().CylinderPISOHistory
 
     case = CylinderFlowCase(
         mesh_size=0.18,

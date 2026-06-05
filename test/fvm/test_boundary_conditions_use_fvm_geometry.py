@@ -199,34 +199,32 @@ def test_engineering_boundary_conditions_use_fvm_geometry_for_patch_faces(
     )
 
 
-def test_simple_and_piso_boundary_data_use_fvm_geometry_for_boundary_velocity(
-    monkeypatch,
-):
-    import fealpy.fvm.simple_solver_data as simple_data
-    import fealpy.fvm.piso_solver_data as piso_data
+def test_boundary_condition_data_use_fvm_geometry_for_boundary_velocity():
+    from fealpy.fvm import BoundaryConditionData, PDEBoundaryConditions
 
     mesh = _mesh()
     geometry = ShiftedBoundaryGeometry(mesh)
     boundary_faces = _boundary_faces(geometry)
-    for module, cls in (
-        (simple_data, simple_data.SimpleBoundaryConditions),
-        (piso_data, piso_data.PisoBoundaryConditions),
-    ):
-        monkeypatch.setattr(module, "FVMGeometry", ShiftedBoundaryGeometry, raising=False)
-        bc = cls(
-            velocity_dirichlet=lambda p: bm.ones_like(p),
-            velocity_dirichlet_threshold=lambda p: p[:, 0] > 4.0,
-        )
+    bc = BoundaryConditionData(
+        velocity_dirichlet=lambda p: bm.ones_like(p),
+        velocity_dirichlet_threshold=lambda p: p[:, 0] > 4.0,
+    ).to_pde_boundary(mesh)
+    shifted_bc = PDEBoundaryConditions(
+        mesh,
+        velocity_dirichlet=bc.velocity_dirichlet,
+        velocity_dirichlet_threshold=bc.velocity_dirichlet_threshold,
+        geometry_class=ShiftedBoundaryGeometry,
+    )
 
-        selected_faces, selected_values = bc.boundary_face_velocity(mesh=mesh)
+    selected_faces, selected_values = shifted_bc.boundary_face_velocity()
 
-        np.testing.assert_array_equal(np.asarray(selected_faces), boundary_faces)
-        np.testing.assert_allclose(
-            np.asarray(selected_values),
-            np.ones((boundary_faces.shape[0], mesh.geo_dimension())),
-            rtol=1.0e-13,
-            atol=1.0e-13,
-        )
+    np.testing.assert_array_equal(np.asarray(selected_faces), boundary_faces)
+    np.testing.assert_allclose(
+        np.asarray(selected_values),
+        np.ones((boundary_faces.shape[0], mesh.geo_dimension())),
+        rtol=1.0e-13,
+        atol=1.0e-13,
+    )
 
 
 def test_rhie_chow_pressure_dirichlet_partial_uses_fvm_geometry(monkeypatch):

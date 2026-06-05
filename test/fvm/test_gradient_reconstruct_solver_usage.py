@@ -125,7 +125,7 @@ def test_simple_solver_pressure_gradient_integrator_is_exact_for_linear_pressure
         assert np.linalg.norm(pressure_integrator - expected) < 1.0e-12
 
 
-def test_piso_velocity_pressure_correction_uses_lsq_gradient_and_flat_layout():
+def test_piso_velocity_pressure_correction_uses_lsq_gradient_and_cell_layout():
     model = NSFVMPISOModel({
         "pde": 3,
         "nx": 4,
@@ -138,7 +138,6 @@ def test_piso_velocity_pressure_correction_uses_lsq_gradient_and_flat_layout():
     points = model.mesh.entity_barycenter("cell")
     pressure_rate = linear_pressure(points)
     velocity = linear_velocity(points)
-    u_flat = velocity.flatten(order="F")
     response = 0.25
     a_p = np.concatenate([
         np.asarray(model.cm) / response,
@@ -146,11 +145,11 @@ def test_piso_velocity_pressure_correction_uses_lsq_gradient_and_flat_layout():
     ])
 
     corrected = np.asarray(
-        model.velocity_pressure_correction(u_flat, pressure_rate, a_p)
+        model.velocity_pressure_correction(velocity, pressure_rate, a_p)
     )
 
     expected = np.asarray(velocity) - response * LINEAR_GRAD
-    assert np.linalg.norm(corrected - expected.flatten(order="F")) < 1.0e-12
+    assert np.linalg.norm(corrected - expected) < 1.0e-12
 
 
 def test_rhie_chow_gradient_difference_vanishes_for_linear_internal_pressure():
@@ -198,16 +197,14 @@ def test_cross_diffusion_gradient_path_is_exact_for_linear_velocity():
     assert np.linalg.norm(face_grad - exact_cell_grad) < 1.0e-12
 
 
-def _boundary_all_cross_diffusion(model, uh):
+def _boundary_all_cross_diffusion(model, velocity):
     space = getattr(model, "velocity_space", getattr(model, "uspace", None))
     lform = LinearForm(space)
-    U = np.stack((uh[:model.NC], uh[model.NC:]), axis=1)
-    grad_u = model.velocity_gradient.cell_gradient(U)
+    grad_u = model.velocity_gradient.cell_gradient(velocity)
     grad_f = reconstruct_face_gradient(model.mesh, grad_u)
     lform.add_integrator(
         ScalarCrossDiffusionIntegrator(
-            uh,
-            grad_f,
+            grad_f=grad_f,
             boundary_policy="all",
         )
     )
@@ -240,10 +237,9 @@ def test_collocated_cross_diffusion_keeps_boundary_correction_for_current_bc_lay
         model = model_cls({**options, "pbar_log": False})
         points = model.mesh.entity_barycenter("cell")
         velocity = _cell_velocity_for_model(model, points)
-        uh = np.asarray(velocity).flatten(order="F")
 
-        actual = np.asarray(model.compute_cross_diffusion(uh))
-        expected = _boundary_all_cross_diffusion(model, uh)
+        actual = np.asarray(model.compute_cross_diffusion(velocity))
+        expected = _boundary_all_cross_diffusion(model, velocity)
 
         assert np.linalg.norm(actual - expected) < 1.0e-12
 

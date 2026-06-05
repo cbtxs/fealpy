@@ -1,4 +1,4 @@
-"""Iteration-control helpers for pressure-correction FVM solvers."""
+"""SIMPLE pressure-relaxation and pressure-correction stopping controls."""
 
 from dataclasses import dataclass
 from typing import Optional
@@ -6,7 +6,7 @@ from typing import Optional
 
 @dataclass
 class PressureRelaxationConfig:
-    """Policy parameters for adaptive pressure-correction relaxation."""
+    """Policy parameters for adaptive SIMPLE pressure relaxation."""
 
     min_value: float = 1.0e-4
     max_value: Optional[float] = None
@@ -47,7 +47,7 @@ class PressureRelaxationConfig:
 
 
 class PressureRelaxationController:
-    """Adaptive scalar relaxation controller for pressure corrections.
+    """Adaptive scalar relaxation controller for SIMPLE pressure corrections.
 
     The controller only changes the nonlinear iteration step length.  It does
     not alter the pressure-correction equation, Rhie-Chow interpolation, or
@@ -148,24 +148,3 @@ class PressureRelaxationController:
 def pressure_correction_converged(residual, tol_mass, tol_pressure_update):
     """Return whether pressure-correction residuals satisfy stopping criteria."""
     return residual["mass"] < tol_mass and residual["pressure_update"] < tol_pressure_update
-
-
-def format_pressure_correction_log(
-    *,
-    iteration: int,
-    nonorthogonal_iterations: int,
-    pressure_criterion: float,
-    pressure_relax: float,
-    mass_residual: float,
-    pressure_correction: float,
-    label: str = "SIMPLE",
-) -> str:
-    """Format one pressure-correction iteration diagnostic line."""
-    return (
-        f"[{label} {iteration}] "
-        f"nonorthogonal iterations: {nonorthogonal_iterations}, "
-        f"pressure criterion: {pressure_criterion:.2e}, "
-        f"pressure relax: {pressure_relax:.2e}, "
-        f"mass residual: {mass_residual:.2e}, "
-        f"pressure correction L2: {pressure_correction:.2e}"
-    )

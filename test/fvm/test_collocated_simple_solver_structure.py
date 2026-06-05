@@ -91,8 +91,8 @@ def test_collocated_simple_solver_can_run_without_computational_model_adapter():
     from fealpy.fvm import (
         CollocatedSimpleSolver,
         FVMLinearSolverConfig,
+        BoundaryConditionData,
         LidDrivenCavityCase,
-        SimpleBoundaryConditions,
         SimpleSolverControls,
     )
 
@@ -103,7 +103,7 @@ def test_collocated_simple_solver_can_run_without_computational_model_adapter():
         diffusion_coef=case.mu,
         convection_coef=case.rho,
         source=case.source,
-        boundary_conditions=SimpleBoundaryConditions(case.dirichlet_velocity),
+        boundary_conditions=BoundaryConditionData(case.dirichlet_velocity).to_pde_boundary(mesh),
         controls=SimpleSolverControls(space_degree=0),
         linear_solver_config=FVMLinearSolverConfig(solver="scipy"),
         log_level="ERROR",
