@@ -1,13 +1,22 @@
 from pathlib import Path
+import importlib.util
 
 from fealpy.backend import backend_manager as bm
 
 
+def load_simple_example():
+    path = Path(__file__).parents[2] / "example" / "fvm" / "ns_fvm_cylinder_simple_example.py"
+    spec = importlib.util.spec_from_file_location("ns_fvm_cylinder_simple_example", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def test_cylinder_simple_runner_writes_standard_outputs(tmp_path: Path):
     bm.set_backend("numpy")
-    from fealpy.fvm.ns_fvm_cylinder_simple import create_parser, run_simple_cylinder
+    example = load_simple_example()
 
-    args = create_parser().parse_args(
+    args = example.create_parser().parse_args(
         [
             "--mesh_size",
             "0.16",
@@ -26,7 +35,7 @@ def test_cylinder_simple_runner_writes_standard_outputs(tmp_path: Path):
         ]
     )
 
-    model, outputs = run_simple_cylinder(args)
+    model, outputs = example.run_simple_cylinder(args)
 
     assert model.mesh.number_of_cells() > 0
     assert outputs["output_dir"] == tmp_path

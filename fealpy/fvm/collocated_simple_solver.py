@@ -54,7 +54,9 @@ class CollocatedSimpleSolver(CollocatedNSFVMOperators):
                     logger.addHandler(handler)
         self.logger = logger
         self.diffusion_coef = self._as_positive_scalar(diffusion_coef, "diffusion_coef")
-        self.convection_coef = self._as_positive_scalar(convection_coef, "convection_coef")
+        self.convection_coef = self._as_nonnegative_scalar(
+            convection_coef, "convection_coef"
+        )
         self.source = source
         self.mesh = mesh
         self.cm = self.mesh.entity_measure("cell")
@@ -103,15 +105,11 @@ class CollocatedSimpleSolver(CollocatedNSFVMOperators):
             with_divergence=True,
             with_velocity_dirichlet_bc=True,
         )
+        solver_config = linear_solver_config
+        if solver_config is None and linear_solver is None:
+            solver_config = FVMLinearSolverConfig()
         self.linear_solver = self._init_linear_solver(
-            {
-                "linear_solver": linear_solver,
-                "linear_solver_config": (
-                    FVMLinearSolverConfig()
-                    if linear_solver_config is None
-                    else linear_solver_config
-                ),
-            }
+            {"linear_solver": linear_solver, "linear_solver_config": solver_config}
         )
 
     @staticmethod
@@ -123,19 +121,21 @@ class CollocatedSimpleSolver(CollocatedNSFVMOperators):
         """Solve momentum equation for the intermediate velocity."""
         convection_face_velocity = self.convection_coef * uf
         B = self.momentum_diffusion_matrix(self.diffusion_coef)
-        B = B + self.momentum_convection_matrix(
-            convection_face_velocity,
-            self.controls.face_interpolation("momentum_face_interpolation"),
-        )
-        B = self._apply_velocity_natural_convection(B, uf)
+        if self.convection_coef != 0.0:
+            B = B + self.momentum_convection_matrix(
+                convection_face_velocity,
+                self.controls.face_interpolation("momentum_face_interpolation"),
+            )
+            B = self._apply_velocity_natural_convection(B, uf)
         f = self.momentum_source_vector(self.source)
         threshold = self.velocity_dirichlet_threshold
         B, f = self.velocity_dirichlet_bc.DiffusionApply(
             B, f, coef=self.diffusion_coef, threshold=threshold
         )
-        f = self.velocity_dirichlet_bc.ConvectionApply(
-            f, convection_face_velocity, threshold=threshold
-        )
+        if self.convection_coef != 0.0:
+            f = self.velocity_dirichlet_bc.ConvectionApply(
+                f, convection_face_velocity, threshold=threshold
+            )
         B = B.tocoo().coalesce().tocsr()
         ap = B.diags().values
         f = f - self.pressure_gradient_source(p)

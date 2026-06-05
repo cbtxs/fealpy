@@ -11,11 +11,11 @@ from fealpy.fvm import (
     ScalarDiffusionIntegrator,
     ConvectionIntegrator,
     ScalarSourceIntegrator,
-    StaggeredMeshManager,
     GradientReconstruct,
     DivergenceReconstruct,
     DirichletBC,
 )
+from .staggered_mesh_manager import StaggeredMeshManager
 from fealpy.decorator import cartesian
 
 

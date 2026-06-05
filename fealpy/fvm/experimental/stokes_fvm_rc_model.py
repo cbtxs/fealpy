@@ -21,7 +21,7 @@ from fealpy.fvm import (
     NeumannBC,
     ConvectionIntegrator,
 )
-from .rhie_chow import RhieChowCoupledOperator
+from ..rhie_chow import RhieChowCoupledOperator
 
 
 class StokesFVMRCModel(ComputationalModel):

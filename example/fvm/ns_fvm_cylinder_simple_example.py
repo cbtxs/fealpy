@@ -8,7 +8,7 @@ from pathlib import Path
 from fealpy.backend import backend_manager as bm
 from fealpy.fvm import CylinderFlowCase, FVMLinearSolverConfig, NSFVMSimpleModel
 from fealpy.fvm.cylinder_flow_postprocess import write_cylinder_outputs
-from fealpy.fvm.lid_driven_cavity_runner import re_label
+from fealpy.fvm.benchmark_postprocess import re_label
 
 
 def default_output_dir(

@@ -1,6 +1,6 @@
 import argparse
 from fealpy.backend import backend_manager as bm
-from fealpy.fvm import NSFVMStaggeredModel
+from fealpy.fvm.experimental import NSFVMStaggeredModel
 
 
 def main():

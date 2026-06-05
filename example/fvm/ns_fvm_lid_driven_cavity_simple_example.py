@@ -7,7 +7,7 @@ from pathlib import Path
 
 from fealpy.backend import backend_manager as bm
 from fealpy.fvm import FVMLinearSolverConfig, LidDrivenCavityCase, NSFVMSimpleModel
-from fealpy.fvm.lid_driven_cavity_runner import (
+from fealpy.fvm.lid_driven_cavity_postprocess import (
     default_output_dir,
     write_benchmark_outputs,
 )

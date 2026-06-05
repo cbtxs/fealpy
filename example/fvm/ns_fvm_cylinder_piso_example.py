@@ -25,12 +25,12 @@ from fealpy.fvm.cylinder_flow_postprocess import (
     pressure_drop,
     write_cylinder_outputs,
 )
-from fealpy.fvm.cylinder_openfoam_case import write_fealpy_cylinder_openfoam_case
-from fealpy.fvm.lid_driven_cavity_postprocess import (
+from fealpy.fvm.benchmark_postprocess import (
+    re_label,
+    scalarize_rows,
     write_dict_csv,
     write_solution_vtk,
 )
-from fealpy.fvm.lid_driven_cavity_runner import re_label, scalarize_rows
 
 
 DEFAULT_GRID_LEVELS = (
@@ -409,24 +409,6 @@ def grid_convergence_rows(rows: list[dict], metrics: tuple[str, ...]) -> list[di
     return result
 
 
-def write_openfoam_case_for_level(args, level: dict, output_root: Path, label: str) -> dict:
-    case_args = argparse.Namespace(**vars(args))
-    case_args.mesh_size = level["mesh_size"]
-    case_args.cylinder_mesh_size = level["cylinder_mesh_size"]
-    case_args.wake_mesh_size = level["wake_mesh_size"]
-    case = build_case(case_args)
-    mesh = case.init_mesh["improved_tri"]()
-    return write_fealpy_cylinder_openfoam_case(
-        case,
-        mesh,
-        output_root / "openfoam_cases" / label,
-        thickness=args.openfoam_thickness,
-        grad_scheme=args.openfoam_grad_scheme,
-        div_phi_u=args.openfoam_div_phi_u,
-        sn_grad_scheme=args.openfoam_sn_grad_scheme,
-    )
-
-
 def run_grid_convergence(args) -> dict:
     output_root = Path(args.output_dir or "output/cylinder_flow_piso_grid_convergence")
     output_root.mkdir(parents=True, exist_ok=True)
@@ -450,19 +432,6 @@ def run_grid_convergence(args) -> dict:
             "wake_mesh_size": level["wake_mesh_size"],
             "output_dir": case_args.output_dir,
         }
-        if args.write_openfoam_cases:
-            openfoam_summary = write_openfoam_case_for_level(
-                args, level, output_root, level_label
-            )
-            row.update(
-                {
-                    "openfoam_case_dir": openfoam_summary.get("case_dir", ""),
-                    "openfoam_mesh_path": openfoam_summary.get("mesh_path", ""),
-                    "openfoam_cell2d": openfoam_summary.get("cell2d", ""),
-                    "openfoam_grad_scheme": openfoam_summary.get("grad_scheme", ""),
-                    "openfoam_div_phi_u": openfoam_summary.get("div_phi_u", ""),
-                }
-            )
         try:
             _, outputs = run_piso_cylinder(case_args)
             row["status"] = "ok"
@@ -605,16 +574,6 @@ def create_parser() -> argparse.ArgumentParser:
         default=list(DEFAULT_GRID_METRICS),
         help="Scalar summary metrics used for grid-convergence orders.",
     )
-    parser.add_argument(
-        "--write_openfoam_cases",
-        default=False,
-        action="store_true",
-        help="Write same-grid OpenFOAM case directories; does not run OpenFOAM.",
-    )
-    parser.add_argument("--openfoam_thickness", default=0.01, type=float)
-    parser.add_argument("--openfoam_grad_scheme", default="leastSquares", type=str)
-    parser.add_argument("--openfoam_div_phi_u", default="Gauss linear", type=str)
-    parser.add_argument("--openfoam_sn_grad_scheme", default="corrected", type=str)
     parser.add_argument("--stop_on_failure", default=False, action="store_true")
     parser.add_argument("--backend", default="numpy", type=str)
     parser.add_argument("--device", default="cpu", choices=("cpu", "cuda"))

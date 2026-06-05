@@ -11,8 +11,11 @@ import numpy as np
 from fealpy.backend import backend_manager as bm
 from fealpy.typing import TensorLike
 
-from .lid_driven_cavity_postprocess import write_dict_csv, write_solution_vtk
-from .lid_driven_cavity_runner import scalarize_rows
+from .benchmark_postprocess import (
+    scalarize_rows,
+    write_dict_csv,
+    write_solution_vtk,
+)
 
 
 def _as_numpy(values: TensorLike) -> np.ndarray:

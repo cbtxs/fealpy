@@ -8,19 +8,20 @@ from fealpy.sparse import COOTensor
 from fealpy.functionspace import ScaledMonomialSpace2d
 from fealpy.fem import BilinearForm, LinearForm, BlockForm
 
-from fealpy.solver import spsolve
+from fealpy.solver import spsolve,cg
 
 from fealpy.fvm import (
     ScalarDiffusionIntegrator,
+    ConvectionIntegrator,
     ScalarSourceIntegrator,
     DirichletBC,
-    StaggeredMeshManager
 )
+from .staggered_mesh_manager import StaggeredMeshManager
 
 
-class StokesFVMStaggeredModel(ComputationalModel):
+class NSFVMStaggeredModel(ComputationalModel):
     """
-    2D Stokes equation solver on staggered mesh using Finite Volume Method (FVM).
+    2D NS equation solver on staggered mesh using Finite Volume Method (FVM).
     This computational model first constructs a staggered mesh based on the initial mesh, where the initial mesh stores pressure, and the staggered mesh stores velocity.
     The momentum equations in different directions are discretized on their respective staggered meshes, the continuity equation is discretized on the initial mesh, and the resulting coupled linear system is solved directly to obtain all numerical solutions for the Stokes equation.
 
@@ -54,7 +55,7 @@ class StokesFVMStaggeredModel(ComputationalModel):
 
     def set_pde(self, pde: Union[int, object]) -> None:
         if isinstance(pde, int):
-            self.pde = PDEModelManager("stokes").get_example(pde)
+            self.pde = PDEModelManager("navier_stokes").get_example(pde)
         else:
             self.pde = pde
 
@@ -73,10 +74,16 @@ class StokesFVMStaggeredModel(ComputationalModel):
         self.vspace = ScaledMonomialSpace2d(self.vmesh, 0)
 
 
-    def assemble_diffusion_u(self) -> Tuple[TensorLike, TensorLike]:
-        """Assemble the diffusion matrix A on the u-mesh"""
-        Au = BilinearForm(self.uspace).add_integrator(
-            ScalarDiffusionIntegrator(q=2)).assembly()
+    def assemble_u(self,uf,vf) -> Tuple[TensorLike, TensorLike]:
+        """Assemble the diffusion and convection matrix A on the u-mesh"""
+        bform = BilinearForm(self.uspace).add_integrator(
+            ScalarDiffusionIntegrator(q=2))
+        vf = self.staggered_mesh.map_v_to_u_edges(
+            vf, self.pde.dirichlet_velocity
+        )
+        Uf = bm.stack([uf, vf], axis=1)
+        bform.add_integrator(ConvectionIntegrator(q=2,coef=Uf))
+        Au = bform.assembly()
         fu = LinearForm(self.uspace).add_integrator(
             ScalarSourceIntegrator(self.pde.source_u, q=2)).assembly()
         udbc = DirichletBC(self.umesh, self.pde.dirichlet_velocity_u,
@@ -85,10 +92,16 @@ class StokesFVMStaggeredModel(ComputationalModel):
         Au, fu = udbc.ThresholdApply(Au, fu)
         return Au, fu
 
-    def assemble_diffusion_v(self) -> Tuple[TensorLike, TensorLike]:
-        """Assemble the diffusion matrix B on the v-mesh"""
-        Av = BilinearForm(self.vspace).add_integrator(
-            ScalarDiffusionIntegrator(q=2)).assembly()
+    def assemble_v(self,uf,vf) -> Tuple[TensorLike, TensorLike]:
+        """Assemble the diffusion and convection matrix B on the v-mesh"""
+        bform = BilinearForm(self.vspace).add_integrator(
+            ScalarDiffusionIntegrator(q=2))
+        uf = self.staggered_mesh.map_u_to_v_edges(
+            uf, self.pde.dirichlet_velocity
+        )
+        Uf = bm.stack([uf, vf], axis=1)
+        bform.add_integrator(ConvectionIntegrator(q=2,coef=Uf))
+        Av = bform.assembly()
         fv = LinearForm(self.vspace).add_integrator(
             ScalarSourceIntegrator(self.pde.source_v, q=2)).assembly()
         vdbc = DirichletBC(self.vmesh, self.pde.dirichlet_velocity_v,
@@ -145,15 +158,15 @@ class StokesFVMStaggeredModel(ComputationalModel):
         )
         return M4
 
-    def assemble_system(self) -> Tuple[TensorLike, TensorLike]:
+    def assemble_system(self,uf,vf) -> Tuple[TensorLike, TensorLike]:
         """Main assembly function to combine all matrix blocks into the complete linear system"""
         # Construct the block matrix
         # | A   0   M1^T |
         # | 0   B   M2^T |
         # | M3  M4   0   |
         # Here, M1^T and M2^T represent the discretized pressure gradients, and M3 and M4 represent the discretized divergence
-        A,fu = self.assemble_diffusion_u()
-        B,fv = self.assemble_diffusion_v()
+        A,fu = self.assemble_u(uf,vf)
+        B,fv = self.assemble_v(uf,vf)
         M1 = self.assemble_pressure_gradient_u()
         M2 = self.assemble_pressure_gradient_v()
         M3 = self.assemble_divergence_u()
@@ -174,13 +187,28 @@ class StokesFVMStaggeredModel(ComputationalModel):
         S = BlockForm([[ABC, A1.T], [A1, None]]).assembly_sparse_matrix(format="csr")
         return S,b
 
-    def solve(self) -> Tuple:
-        S, b = self.assemble_system()
-        # sol = spsolve(S, b,"mumps")
-        sol = spsolve(S, b,"scipy")
-        self.uh = sol[:self.UNC]
-        self.vh = sol[self.UNC:self.UNC+self.VNC]
-        self.ph = sol[self.UNC+self.VNC:-1]
+    def solve(self, max_iter: int = 100, tol: float = 1e-6) -> Tuple:
+        UNE = self.umesh.number_of_edges()
+        VNE = self.vmesh.number_of_edges()
+        uf = bm.ones(UNE)
+        vf = bm.ones(VNE)
+        ue2c = self.umesh.edge_to_cell()
+        ve2c = self.vmesh.edge_to_cell()
+        for i in range(max_iter):
+            S, b = self.assemble_system(uf,vf)
+            sol = spsolve(S, b, "scipy")
+            uh = sol[:self.UNC]
+            vh = sol[self.UNC:self.UNC+self.VNC]
+            ph = sol[self.UNC+self.VNC:-1]
+            uf1 = (uh[ue2c[:,0]] + uh[ue2c[:,1]])/2
+            vf1 = (vh[ve2c[:,0]] + vh[ve2c[:,1]])/2
+            res = bm.max(bm.abs(uf1 - uf))
+            uf = uf1
+            vf = vf1
+            self.logger.info(f"Iteration {i+1}, Residual: {res:.6e}")
+            if res < tol:
+                break
+        self.uh, self.vh, self.ph = uh, vh, ph
         return self.uh, self.vh, self.ph
 
     def compute_error(self) -> Tuple:
@@ -191,10 +219,13 @@ class StokesFVMStaggeredModel(ComputationalModel):
         uerror = bm.sqrt(bm.sum(self.umesh.entity_measure("cell") * (self.uh - self.uI)**2))
         verror = bm.sqrt(bm.sum(self.vmesh.entity_measure("cell") * (self.vh - self.vI)**2))
         perror = bm.sqrt(bm.sum(self.pmesh.entity_measure("cell") * (self.ph - self.pI)**2))
-        # uerror = bm.max(bm.abs(self.uh - self.uI))
-        # verror = bm.max(bm.abs(self.vh - self.vI))
-        # perror = bm.max(bm.abs(self.ph - self.pI))
-        return uerror, verror, perror   
+        # err = self.ph - self.pI
+        # print("err[210]:",err[210])
+        # uerr = bm.max(bm.abs(self.uh - self.uI))
+        # verr = bm.max(bm.abs(self.vh - self.vI))
+        # perr = bm.max(bm.abs(self.ph - self.pI))
+        # return uerror, verror, perror
+        return uerror, verror, perror
 
     def plot(self) -> None:
         import matplotlib.pyplot as plt
@@ -205,16 +236,16 @@ class StokesFVMStaggeredModel(ComputationalModel):
         vx, vy = self.vmesh.entity_barycenter("cell").T
 
         ax1 = fig.add_subplot(1, 3, 1, projection="3d")
-        ax1.plot_trisurf(ux, uy, self.uh-self.uI, cmap="viridis")
-        ax1.set_title("Error u")
+        ax1.plot_trisurf(px, py, self.ph-self.pI, cmap="viridis")
+        ax1.set_title("Pressure")
 
         ax2 = fig.add_subplot(1, 3, 2, projection="3d")
-        ax2 .plot_trisurf(vx, vy, self.vh-self.vI, cmap="viridis")
-        ax2.set_title("Error v")
+        ax2.plot_trisurf(ux, uy, self.uh-self.uI, cmap="viridis")
+        ax2.set_title("U velocity")
 
         ax3 = fig.add_subplot(1, 3, 3, projection="3d")
-        ax3.plot_trisurf(px, py, self.ph-self.pI, cmap="viridis")
-        ax3.set_title("Error p")
+        ax3.plot_trisurf(vx, vy, self.vh-self.vI, cmap="viridis")
+        ax3.set_title("V velocity")
 
         plt.tight_layout()
         plt.show()

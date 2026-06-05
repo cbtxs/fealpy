@@ -1,7 +1,7 @@
 import argparse
 
 from fealpy.backend import backend_manager as bm
-from fealpy.fvm import NSFVMStaggeredPISOModel
+from fealpy.fvm.experimental import NSFVMStaggeredPISOModel
 
 
 def main():

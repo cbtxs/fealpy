@@ -1,6 +1,6 @@
 import argparse
 from fealpy.backend import backend_manager as bm
-from fealpy.fvm import NSFVMRCModel
+from fealpy.fvm.experimental import NSFVMRCModel
 
 
 def main():

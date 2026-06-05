@@ -18,7 +18,7 @@ def _boundary_convection_rhs(model, uf):
 
 def test_rc_momentum_rhs_includes_dirichlet_boundary_convection():
     bm.set_backend("numpy")
-    from fealpy.fvm.ns_fvm_rc_model import NSFVMRCModel
+    from fealpy.fvm.experimental.ns_fvm_rc_model import NSFVMRCModel
 
     model = NSFVMRCModel({"pde": 6, "nx": 4, "ny": 4, "log_level": "ERROR"})
     face_center = model.mesh.entity_barycenter("face")
@@ -126,7 +126,8 @@ def test_simple_momentum_rhs_includes_dirichlet_boundary_convection(monkeypatch)
 
 def test_staggered_divergence_includes_signed_boundary_fluxes():
     bm.set_backend("numpy")
-    from fealpy.fvm import DivergenceReconstruct, StaggeredMeshManager
+    from fealpy.fvm import DivergenceReconstruct
+    from fealpy.fvm.experimental import StaggeredMeshManager
     from fealpy.model import PDEModelManager
 
     pde = PDEModelManager("navier_stokes").get_example(6)
@@ -225,7 +226,7 @@ def test_collocated_simple_records_common_residuals(monkeypatch):
 
 def test_staggered_simple_records_common_residuals(monkeypatch):
     bm.set_backend("numpy")
-    import fealpy.fvm.ns_fvm_staggered_simple_model as staggered_model
+    import fealpy.fvm.experimental.ns_fvm_staggered_simple_model as staggered_model
 
     monkeypatch.setattr(staggered_model, "staggered_mass_residual", lambda mesh, edge_velocity: 0.0)
     monkeypatch.setattr(staggered_model, "relative_l2_update", lambda mesh, update, p: 0.0)

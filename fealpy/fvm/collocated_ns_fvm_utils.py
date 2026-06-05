@@ -38,6 +38,18 @@ class CollocatedNSFVMOperators:
             raise ValueError(f"{name} must be positive.")
         return scalar
 
+    @staticmethod
+    def _as_nonnegative_scalar(value, name: str) -> float:
+        if callable(value):
+            value = value()
+        try:
+            scalar = float(value)
+        except TypeError:
+            scalar = float(bm.to_numpy(value))
+        if scalar < 0.0:
+            raise ValueError(f"{name} must be non-negative.")
+        return scalar
+
     def _init_collocated_discretization(
         self,
         degree: int,
