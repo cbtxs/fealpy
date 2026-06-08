@@ -59,7 +59,7 @@ class HyperElasticTangentIntegrator(LinearInt, OpInt, CellInt):
         # -----------------------------
         # Assembly stiffness matrix
         # -----------------------------
-        K = bm.einsum(
+        Ke = bm.einsum(
             'q,c,cqijkl,cqaj,cqbl->caibk',
             ws,
             cm,
@@ -67,25 +67,19 @@ class HyperElasticTangentIntegrator(LinearInt, OpInt, CellInt):
             gphi,
             gphi
         )
-        print("A.shape =", A.shape)
-        print("gphi.shape =", gphi.shape)
-        print("K.shape =", K.shape)
-        # ----------------------------
-        #          (a,    i,  b,    k)
+        
+        Ke = bm.swapaxes(Ke, 1, 2)
+        Ke= bm.swapaxes(Ke, 3, 4)
 
-        K = bm.swapaxes(K, 1, 2)
 
-        # (NC, GD, ldof, ldof, GD)
-        #      i    a    b    k
-
-        NC = K.shape[0]
-        GD = K.shape[1]
-        ldof = K.shape[2]
+        NC = Ke.shape[0]
+        GD = Ke.shape[1]
+        ldof = Ke.shape[2]
 
         tldof = GD * ldof
 
-        K = K.reshape(NC, tldof, tldof)
+        Ke = Ke.reshape(NC, GD*ldof, GD*ldof)
 
-        return K
+        return Ke
 
         

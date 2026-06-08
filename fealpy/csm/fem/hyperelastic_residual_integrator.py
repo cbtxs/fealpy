@@ -9,7 +9,13 @@ class HyperElasticResidualIntegrator(LinearInt, OpInt, CellInt):
         self.space = space
         self.q = q
 
-    def assembly_cell_vector(self, space, uh):
+    def assembly_cell_vector(self, space = None, uh = None):
+
+
+        if space is None:
+            raise ValueError("space must be provided.")
+        if uh is None:
+            raise ValueError("uh must be provided.")
 
         mesh = space.mesh
         # ----------------------------------
@@ -93,7 +99,7 @@ class HyperElasticResidualIntegrator(LinearInt, OpInt, CellInt):
         # ∫ P_ij dNa/dXj dV
         # ----------------------------------
 
-        R = bm.einsum(
+        Re = bm.einsum(
             'q,c,cqij,cqaj->cai',
             ws,
             cm,
@@ -107,9 +113,9 @@ class HyperElasticResidualIntegrator(LinearInt, OpInt, CellInt):
         # Convert to dof_priority=True
         # ----------------------------------
 
-        R = bm.swapaxes(R, 1, 2)
+        Re = bm.swapaxes(Re, 1, 2)
 
         # (NC, GD, ldof)
 
-        R = R.reshape(NC, -1)
-        return R
+        Re = Re.reshape(NC, GD*ldof)
+        return Re

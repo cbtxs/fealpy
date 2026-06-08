@@ -8,6 +8,8 @@ from fealpy.csm.material.hyperelastic_material import HyperElasticMaterial
 from fealpy.csm.fem.hyperelastic_residual_integrator import HyperElasticResidualIntegrator
 from fealpy.csm.fem.hyperelastic_tangent_integrator import HyperElasticTangentIntegrator
 
+from fealpy.csm.fem.hyperelastic_lfem_model import HyperElasticLFEMModel
+from scipy.linalg import solve
 
 # ===============================
 # 1. Mesh
@@ -48,29 +50,61 @@ material = HyperElasticMaterial(
 )
 
 
-# ===============================
-# 5. Operators
-# ===============================
-residual = HyperElasticResidualIntegrator(material,space)
-tangent = HyperElasticTangentIntegrator(material,space)
-# 6. Newton loop
-# ===============================
-for it in range(6):
+# # ===============================
+# # 5. Operators
+# # ===============================
+# residual = HyperElasticResidualIntegrator(material,space)
+# tangent = HyperElasticTangentIntegrator(material,space)
+# # 6. Newton loop
+# # ===============================
+# for it in range(6):
 
-    R = residual.assembly_cell_vector(space, uh)
-    K = tangent.assembly_cell_matrix(space, uh)
+#     R = residual.assembly_cell_vector(space, uh)
+#     K = tangent.assembly_cell_matrix(space, uh)
 
-    R = R.reshape(-1)
-    K = K.reshape(R.size, R.size)
+#     R = R.reshape(-1)
+#     K = K.reshape(R.size, R.size)
 
-    normR = np.linalg.norm(R)
-    print(f"iter {it}, ||R|| = {normR}")
+#     normR = np.linalg.norm(R)
+#     print(f"iter {it}, ||R|| = {normR}")
 
-    if normR < 1e-10:
-        break
+#     if normR < 1e-10:
+#         break
 
-    du = np.linalg.solve(K, -R)
-    uh += bm.array(du)
+#     du = np.linalg.solve(K, -R)
+#     uh += bm.array(du)
 
 
-print("\nuh =", uh)
+# print("\nuh =", uh)
+
+model = HyperElasticLFEMModel(
+    space,
+    material
+)
+
+# print(type(model.uh))
+# print(type(model.residual_integrator))
+# print(type(model.tangent_integrator))
+# R = model.assemble_global_residual()
+
+# print(R.shape)
+# print(R)
+
+# K = model.assemble_global_tangent()
+
+# print(K.shape)
+# print(K)  测试刚度矩阵
+
+from scipy.linalg import solve
+
+# 初始化模型
+model = HyperElasticLFEMModel(space, material)
+
+# 初始位移
+model.solve(tol=1e-6, maxit=10)
+
+# ---------------------------------
+# 3. 输出最终结果
+# ---------------------------------
+print("\nfinal uh:")
+print(model.uh)
