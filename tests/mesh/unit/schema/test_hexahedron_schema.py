@@ -102,6 +102,8 @@ class TestHexahedronSchema:
             "barycenter",
             "bc_to_point",
             "geo_dimension",
+            "shape_function",
+            "grad_shape_function",
             "multi_index",
             "grad_lambda",
             "measure",

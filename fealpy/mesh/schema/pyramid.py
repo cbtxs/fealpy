@@ -1,7 +1,7 @@
 from ...backend import bm
 from ...backend import Index, Tensor
 from ..topology.ipoints import InterpolationPoints
-from .entity_schema import EntityContext, ShapedEntitySchema
+from .entity_schema import EntityContext, ShapedEntitySchema, _require_bcs_tuple
 
 __all__ = ["PyramidSchema"]
 
@@ -20,8 +20,7 @@ class PyramidSchema(ShapedEntitySchema):
 
     @staticmethod
     def _split_bcs(bcs: tuple[Tensor, Tensor, Tensor]) -> tuple[Tensor, ...]:
-        if not isinstance(bcs, tuple) or len(bcs) != 3:
-            raise ValueError("pyramid bcs must be a tuple of three interval barycentric tensors")
+        bcs = _require_bcs_tuple(bcs, "pyramid bcs", 3)
         if bcs[0].shape[-1] != 2 or bcs[1].shape[-1] != 2 or bcs[2].shape[-1] != 2:
             raise ValueError("each pyramid barycentric tensor must have shape (..., 2)")
 
@@ -78,10 +77,52 @@ class PyramidSchema(ShapedEntitySchema):
     @classmethod
     def bc_to_point(cls, ctx: EntityContext, bcs: tuple[Tensor, Tensor, Tensor],
                     index: Index | None) -> Tensor:
+        bcs = _require_bcs_tuple(bcs, "pyramid bc_to_point", 3)
         pyramid = ctx.sector.indices if index is None else ctx.sector.indices[index]
         points = ctx.block.positions[pyramid]
         phi = cls.geometry_shape_function(bcs)
         return bm.einsum("qi,cid->cqd", phi, points)
+
+    @classmethod
+    def shape_function(
+        cls,
+        bcs: tuple[Tensor, ...],
+        p: int = 1,
+        *,
+        index: Index | None = None,
+        variables: str = "u",
+        mi: Tensor | None = None,
+    ) -> Tensor:
+        if p != 1:
+            raise NotImplementedError("pyramid shape_function currently only supports p=1")
+        bcs = _require_bcs_tuple(bcs, "pyramid shape_function", 3)
+        phi = cls.geometry_shape_function(bcs)
+        if variables == "u":
+            return phi
+        if variables == "x":
+            return phi[None, ...]
+        raise ValueError(f"Unsupported variables: {variables!r}")
+
+    @classmethod
+    def grad_shape_function(
+        cls,
+        ctx: EntityContext,
+        bcs: tuple[Tensor, ...],
+        p: int = 1,
+        *,
+        index: Index | None = None,
+        variables: str = "u",
+        mi: Tensor | None = None,
+    ) -> Tensor:
+        if p != 1:
+            raise NotImplementedError("pyramid grad_shape_function currently only supports p=1")
+        bcs = _require_bcs_tuple(bcs, "pyramid grad_shape_function", 3)
+        ref = cls.geometry_grad_shape_function(bcs)
+        if variables == "u":
+            return ref
+        if variables == "x":
+            return cls.transform_grad(ctx, bcs, ref, index)
+        raise ValueError(f"Unsupported variables: {variables!r}")
 
     @classmethod
     def jacobi_matrix(cls, ctx: EntityContext, bcs: tuple[Tensor, Tensor, Tensor],
@@ -120,9 +161,9 @@ class PyramidSchema(ShapedEntitySchema):
             )
             squeeze_q = True
         else:
+            bcs = _require_bcs_tuple(bcs, "pyramid grad_lambda", 3)
             squeeze_q = False
         ref3 = cls.geometry_grad_shape_function(bcs)
-        u, v, w = bcs
         z = bm.zeros((ref3.shape[0], ref3.shape[1], 3), dtype=ref3.dtype)
         ref6 = bm.concatenate([ref3[:, :, 0:1], z[:, :, 0:1], ref3[:, :, 1:2], z[:, :, 1:2], ref3[:, :, 2:3], z[:, :, 2:3]], axis=-1)
         if ref:

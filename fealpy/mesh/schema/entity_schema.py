@@ -167,3 +167,11 @@ class ShapedEntitySchema(EntitySchema):
     def size(cls, ctx: EntityContext) -> int:
         """Number of entities in the sector."""
         return ctx.sector.indices.shape[0]
+
+
+def _require_bcs_tuple(bcs: tuple[Tensor, ...], name: str, n: int | None = None) -> tuple[Tensor, ...]:
+    if not isinstance(bcs, tuple):
+        raise TypeError(f"{name} expects barycentric coordinates as a tuple of tensors, got {type(bcs).__name__}")
+    if n is not None and len(bcs) != n:
+        raise ValueError(f"{name} expects {n} barycentric tensors, got {len(bcs)}")
+    return bcs

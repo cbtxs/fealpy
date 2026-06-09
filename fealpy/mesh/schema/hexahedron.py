@@ -1,6 +1,6 @@
 from ...backend import bm
 from ...backend import Index, Tensor
-from .entity_schema import EntityContext, ShapedEntitySchema
+from .entity_schema import EntityContext, ShapedEntitySchema, _require_bcs_tuple
 
 __all__ = ["HexahedronSchema"]
 
@@ -32,10 +32,7 @@ class HexahedronSchema(ShapedEntitySchema):
 
     @classmethod
     def bc_to_point(cls, ctx: EntityContext, bcs: tuple[Tensor, ...], index: Index | None) -> Tensor:
-        if not isinstance(bcs, tuple):
-            raise TypeError(f"hexahedron barycentric coordinates expect a tuple, got {type(bcs).__name__}")
-        if len(bcs) != 3:
-            raise ValueError(f"hexahedron barycentric coordinates expect three tensors, got {len(bcs)}")
+        bcs = _require_bcs_tuple(bcs, "hexahedron bc_to_point", 3)
         for bc in bcs:
             if bc.shape[-1] != 2:
                 raise ValueError(
@@ -49,6 +46,66 @@ class HexahedronSchema(ShapedEntitySchema):
         points = bm.reshape(points, (-1, 2, 2, 2, cls.geo_dimension(ctx)))
         u, v, w = bcs
         return bm.einsum("ia,jb,kc,nabce->nijke", u, v, w, points)
+
+    @classmethod
+    def shape_function(
+        cls,
+        bcs: tuple[Tensor, ...],
+        p: int = 1,
+        *,
+        index: Index | None = None,
+        variables: str = "u",
+        mi=None,
+    ) -> Tensor:
+        bcs = _require_bcs_tuple(bcs, "hexahedron shape_function", 3)
+        for bc in bcs:
+            if bc.shape[-1] != 2:
+                raise ValueError("hexahedron shape_function expects three interval barycentric tensors")
+        phi = bm.tensorprod(*(bm.simplex_shape_function(bc, p, mi) for bc in bcs))
+        if variables == "u":
+            return phi
+        if variables == "x":
+            return phi[None, ...]
+        raise ValueError(f"Unsupported variables: {variables!r}")
+
+    @classmethod
+    def grad_shape_function(
+        cls,
+        ctx: EntityContext,
+        bcs: tuple[Tensor, ...],
+        p: int = 1,
+        *,
+        index: Index | None = None,
+        variables: str = "u",
+        mi=None,
+    ) -> Tensor:
+        bcs = _require_bcs_tuple(bcs, "hexahedron grad_shape_function", 3)
+        for bc in bcs:
+            if bc.shape[-1] != 2:
+                raise ValueError("hexahedron grad_shape_function expects three interval barycentric tensors")
+
+        phi0, phi1, phi2 = (bm.simplex_shape_function(bc, p, mi) for bc in bcs)
+        R0, R1, R2 = (bm.simplex_grad_shape_function(bc, p, mi) for bc in bcs)
+        Dlambda = bm.asarray([[-1.0], [1.0]], dtype=phi0.dtype)
+        R0 = bm.einsum("...ij,jn->...in", R0, Dlambda)
+        R1 = bm.einsum("...ij,jn->...in", R1, Dlambda)
+        R2 = bm.einsum("...ij,jn->...in", R2, Dlambda)
+        ref = bm.concatenate(
+            [
+                R0[:, None, :, None, None, :] * phi1[None, :, None, :, None, None] * phi2[None, None, None, :, :, None],
+                phi0[:, None, :, None, None, None] * R1[None, :, None, :, None, :] * phi2[None, None, None, :, :, None],
+                phi0[:, None, :, None, None, None] * phi1[None, :, None, :, None, None] * R2[None, None, None, :, :, :],
+            ],
+            axis=-1,
+        ).reshape(-1, phi0.shape[1] * phi1.shape[1] * phi2.shape[1], 3)
+
+        if variables == "u":
+            return ref
+        if variables == "x":
+            if p != 1:
+                raise NotImplementedError("hexahedron grad_shape_function currently only supports p=1 in physical space")
+            return cls.grad_lambda(ctx, index, bcs=bcs, ref=False)
+        raise ValueError(f"Unsupported variables: {variables!r}")
 
     @classmethod
     def geo_dimension(cls, ctx: EntityContext) -> int:

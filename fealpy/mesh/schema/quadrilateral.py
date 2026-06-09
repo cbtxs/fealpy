@@ -1,6 +1,6 @@
 from ...backend import bm
 from ...backend import Index, Tensor
-from .entity_schema import EntityContext, ShapedEntitySchema
+from .entity_schema import EntityContext, ShapedEntitySchema, _require_bcs_tuple
 
 __all__ = ["QuadrilateralSchema"]
 
@@ -60,14 +60,68 @@ class QuadrilateralSchema(ShapedEntitySchema):
 
     @classmethod
     def bc_to_point(cls, ctx: EntityContext, bcs: tuple[Tensor, ...], index: Index | None) -> Tensor:
-        if not isinstance(bcs, tuple) or len(bcs) != 2:
-            raise TypeError("quadrilateral bc_to_point expects a tuple of two tensors")
+        bcs = _require_bcs_tuple(bcs, "quadrilateral bc_to_point", 2)
         quad = ctx.sector.indices if index is None else ctx.sector.indices[index]
         points = ctx.block.positions[quad[:, [0, 2, 1, 3]]]
         bc0 = bcs[0].reshape(-1, 2)
         bc1 = bcs[1].reshape(-1, 2)
         bc = bm.einsum("im,jn->ijmn", bc0, bc1).reshape(-1, 4)
         return bm.einsum("qj,cjd->cqd", bc, points)
+
+    @classmethod
+    def shape_function(
+        cls,
+        bcs: tuple[Tensor, ...],
+        p: int = 1,
+        *,
+        index: Index | None = None,
+        variables: str = "u",
+        mi=None,
+    ) -> Tensor:
+        bcs = _require_bcs_tuple(bcs, "quadrilateral shape_function", 2)
+        if bcs[0].shape[-1] != 2 or bcs[1].shape[-1] != 2:
+            raise ValueError("quadrilateral shape_function expects two interval barycentric tensors")
+        phi = bm.tensorprod(*(bm.simplex_shape_function(bc, p, mi) for bc in bcs))
+        if variables == "u":
+            return phi
+        if variables == "x":
+            return phi[None, ...]
+        raise ValueError(f"Unsupported variables: {variables!r}")
+
+    @classmethod
+    def grad_shape_function(
+        cls,
+        ctx: EntityContext,
+        bcs: tuple[Tensor, ...],
+        p: int = 1,
+        *,
+        index: Index | None = None,
+        variables: str = "u",
+        mi=None,
+    ) -> Tensor:
+        bcs = _require_bcs_tuple(bcs, "quadrilateral grad_shape_function", 2)
+        if bcs[0].shape[-1] != 2 or bcs[1].shape[-1] != 2:
+            raise ValueError("quadrilateral grad_shape_function expects two interval barycentric tensors")
+
+        phi0, phi1 = (bm.simplex_shape_function(bc, p, mi) for bc in bcs)
+        R0, R1 = (bm.simplex_grad_shape_function(bc, p, mi) for bc in bcs)
+        Dlambda = bm.asarray([[-1.0], [1.0]], dtype=phi0.dtype)
+        R0 = bm.einsum("...ij,jn->...in", R0, Dlambda)
+        R1 = bm.einsum("...ij,jn->...in", R1, Dlambda)
+        ref = bm.concatenate(
+            [
+                R0[:, None, :, None, :] * phi1[None, :, None, :, None],
+                phi0[:, None, :, None, None] * R1[None, :, None, :, :],
+            ],
+            axis=-1,
+        ).reshape(-1, phi0.shape[1] * phi1.shape[1], 2)
+        if variables == "u":
+            return ref
+        if variables == "x":
+            if p != 1:
+                raise NotImplementedError("quadrilateral grad_shape_function currently only supports p=1 in physical space")
+            return cls.grad_lambda(ctx, index, bcs=bcs, ref=False)
+        raise ValueError(f"Unsupported variables: {variables!r}")
 
     @classmethod
     def geo_dimension(cls, ctx: EntityContext) -> int:

@@ -1,6 +1,6 @@
 from ...backend import bm
 from ...backend import Index, Tensor
-from .entity_schema import EntityContext, ShapedEntitySchema
+from .entity_schema import EntityContext, ShapedEntitySchema, _require_bcs_tuple
 
 __all__ = ["NodeSchema", "PointQuadrature"]
 
@@ -41,6 +41,46 @@ class NodeSchema(ShapedEntitySchema):
     @classmethod
     def barycenter(cls, ctx: EntityContext, index: Index | None) -> Tensor:
         return ctx.block.positions[cls._indices(ctx, index)]
+
+    @classmethod
+    def shape_function(
+        cls,
+        bcs: tuple[Tensor, ...],
+        p: int = 1,
+        *,
+        index: Index | None = None,
+        variables: str = "u",
+        mi=None,
+    ) -> Tensor:
+        bcs = _require_bcs_tuple(bcs, "node shape_function", 1)
+        if bcs[0].shape[-1] != 1:
+            raise ValueError(f"node shape_function expects last dimension 1, got {bcs[0].shape[-1]}")
+        phi = bm.ones((bcs[0].shape[0], 1), dtype=bcs[0].dtype)
+        if variables == "u":
+            return phi
+        if variables == "x":
+            return phi[None, ...]
+        raise ValueError(f"Unsupported variables: {variables!r}")
+
+    @classmethod
+    def grad_shape_function(
+        cls,
+        ctx: EntityContext,
+        bcs: tuple[Tensor, ...],
+        p: int = 1,
+        *,
+        index: Index | None = None,
+        variables: str = "u",
+        mi=None,
+    ) -> Tensor:
+        node = cls._indices(ctx, index)
+        dim = 1 if variables == "u" else cls.geo_dimension(ctx)
+        grad = bm.zeros((1, 1, dim), dtype=ctx.block.positions.dtype)
+        bcs = _require_bcs_tuple(bcs, "node grad_shape_function", 1)
+        nq = int(bcs[0].shape[0])
+        if variables == "x":
+            return bm.broadcast_to(grad, (node.shape[0], nq, 1, dim))
+        return bm.broadcast_to(grad, (nq, 1, dim))
 
     @classmethod
     def bc_to_point(cls, ctx: EntityContext, bcs: tuple[Tensor, ...], index: Index | None) -> Tensor:

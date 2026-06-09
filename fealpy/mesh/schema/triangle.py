@@ -1,7 +1,7 @@
 from ...backend import bm
 from ...backend import Index, Tensor
 from ..topology.ipoints import InterpolationPoints
-from .entity_schema import EntityContext, ShapedEntitySchema
+from .entity_schema import EntityContext, ShapedEntitySchema, _require_bcs_tuple
 
 __all__ = ["TriangleSchema"]
 
@@ -46,11 +46,51 @@ class TriangleSchema(ShapedEntitySchema):
         return bm.mean(points, axis=1)
 
     @classmethod
+    def shape_function(
+        cls,
+        bcs: tuple[Tensor, ...],
+        p: int = 1,
+        *,
+        index: Index | None = None,
+        variables: str = "u",
+        mi=None,
+    ) -> Tensor:
+        bcs = _require_bcs_tuple(bcs, "triangle shape_function", 1)
+        if bcs[0].shape[-1] != 3:
+            raise ValueError(f"triangle shape_function expects last dimension 3, got {bcs[0].shape[-1]}")
+        phi = bm.simplex_shape_function(bcs[0], p, mi)
+        if variables == "u":
+            return phi
+        if variables == "x":
+            return phi[None, ...]
+        raise ValueError(f"Unsupported variables: {variables!r}")
+
+    @classmethod
+    def grad_shape_function(
+        cls,
+        ctx: EntityContext,
+        bcs: tuple[Tensor, ...],
+        p: int = 1,
+        *,
+        index: Index | None = None,
+        variables: str = "u",
+        mi=None,
+    ) -> Tensor:
+        bcs = _require_bcs_tuple(bcs, "triangle grad_shape_function", 1)
+        if bcs[0].shape[-1] != 3:
+            raise ValueError(f"triangle grad_shape_function expects last dimension 3, got {bcs[0].shape[-1]}")
+        ref = bm.simplex_grad_shape_function(bcs[0], p, mi)
+        if variables == "u":
+            return ref
+        if variables == "x":
+            Dlambda = cls.grad_lambda(ctx, index, ref=False)
+            grad = bm.einsum("...ij, kjm -> k...im", ref, Dlambda)
+            return grad
+        raise ValueError(f"Unsupported variables: {variables!r}")
+
+    @classmethod
     def bc_to_point(cls, ctx: EntityContext, bcs: tuple[Tensor, ...], index: Index | None) -> Tensor:
-        if not isinstance(bcs, tuple):
-            bcs = (bcs,)
-        if len(bcs) != 1:
-            raise ValueError("triangle schema expects a single barycentric tensor")
+        bcs = _require_bcs_tuple(bcs, "triangle bc_to_point", 1)
         bc = bcs[0]
         tri = cls._selected_triangles(ctx, index)
         points = ctx.block.positions[tri]

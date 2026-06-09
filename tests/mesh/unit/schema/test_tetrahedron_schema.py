@@ -111,6 +111,8 @@ class TestTetrahedronSchema:
             "barycenter",
             "bc_to_point",
             "geo_dimension",
+            "shape_function",
+            "grad_shape_function",
             "grad_lambda",
             "multi_index",
             "measure",
