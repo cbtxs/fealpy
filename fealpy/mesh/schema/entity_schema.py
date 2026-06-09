@@ -54,19 +54,14 @@ class EntitySchema:
     ### [Multi-Indices] ###
 
     @classmethod
-    def multi_index(cls, order: int | tuple[int, ...], *, internal: bool = False) -> Tensor:
-        """Multi-index of the entity."""
+    def multi_index(cls, order: tuple[int, ...]) -> Tensor:
+        """Multi-index of the entity, with one column per vertex."""
         raise NotImplementedError()
 
     @classmethod
-    def multi_index_sort(cls, multi_index: Tensor, /) -> Tensor:
-        """Return a stable sort indices of the multi-index."""
-        raise NotImplementedError()
-
-    @classmethod
-    def num_multi_index(cls, order: int | tuple[int, ...], *, internal: bool = False) -> int:
+    def num_multi_index(cls, order: tuple[int, ...]) -> int:
         """Number of multi-indices."""
-        raise NotImplementedError()
+        return int(cls.multi_index(order).shape[0])
 
     ### [Geometric Computations] ###
 

@@ -43,7 +43,7 @@ class PrismSchema(ShapedEntitySchema):
         """
         points = cls._points(ctx, index)
         return bm.mean(points, axis=1)
-    
+
     @classmethod
     def measure(cls, ctx: EntityContext, index: Index | None = None) -> Tensor:
         """Compute the volume of a prism.
@@ -59,7 +59,7 @@ class PrismSchema(ShapedEntitySchema):
     @classmethod
     def geo_dimension(cls, ctx: EntityContext) -> int:
         return int(ctx.block.positions.shape[1])
-    
+
     @classmethod
     def normal(cls, ctx: EntityContext, index: Index | None = None) -> Tensor:
         """Prism volume entities have no normal directions in 3D."""
@@ -73,7 +73,7 @@ class PrismSchema(ShapedEntitySchema):
         prism = cls._entity(ctx, index)
         GD = cls.geo_dimension(ctx)
         return bm.zeros((prism.shape[0], 0, GD), dtype=ctx.block.positions.dtype)
-    
+
     @classmethod
     def tangent(cls, ctx: EntityContext, index: Index | None = None) -> Tensor:
         """Compute tangent directions of prism entities.
@@ -95,7 +95,7 @@ class PrismSchema(ShapedEntitySchema):
         qf0 = TriangleQuadrature(q)
         qf1 = GaussLegendreQuadrature(q)
         return TensorProductQuadrature((qf0, qf1))
-    
+
     # shape function
     @classmethod
     def shape_function(cls, bcs: tuple[Tensor, Tensor], p: int = 1, *, index: Index | None = None,
@@ -129,7 +129,7 @@ class PrismSchema(ShapedEntitySchema):
             return phi[None, ...]
 
         raise ValueError(f"Unsupported variables: {variables!r}")
-    
+
     @classmethod
     def grad_shape_function(cls, ctx: EntityContext, bcs: tuple[Tensor, Tensor], p: int = 1, *,
                             index: Index | None = None, variables: str = "u",
@@ -180,7 +180,7 @@ class PrismSchema(ShapedEntitySchema):
             return bm.einsum("cqkm,cqmn,qln->cqlk", J, G, gphi)
 
         raise ValueError(f"Unsupported variables: {variables!r}")
-    
+
 
     @classmethod
     def grad_lambda(
@@ -216,20 +216,39 @@ class PrismSchema(ShapedEntitySchema):
 
     # ipoint
     @classmethod
-    def multi_index(cls, p: tuple[int, int]) -> Tensor:
+    def multi_index(cls, order: tuple[int, ...]) -> Tensor:
         """Compute the multi-index matrix on reference prism.
 
         Return tensor-product multi-index of triangle and interval.
         """
-        p0, p1 = p
+        if not isinstance(order, tuple):
+            raise TypeError(
+                f"prism multi_index expects a tuple of integers, got {type(order).__name__}"
+            )
+        if len(order) == 1:
+            p0, p1 = order[0], order[0]
+        elif len(order) == 2:
+            p0, p1 = order
+        else:
+            raise ValueError(f"prism multi_index expects one or two order values, got {len(order)}")
+
+        if not isinstance(p0, int):
+            raise TypeError(f"prism multi_index order must be an integer, got {type(p0).__name__}")
+        if not isinstance(p1, int):
+            raise TypeError(f"prism multi_index order must be an integer, got {type(p1).__name__}")
+        if p0 < 0:
+            raise ValueError(f"prism multi_index order must be non-negative, got {p0}")
+        if p1 < 0:
+            raise ValueError(f"prism multi_index order must be non-negative, got {p1}")
+
         mi0 = InterpolationPoints.multi_index_matrix(p0, 3)
         mi1 = InterpolationPoints.multi_index_matrix(p1, 2)
 
         mi0 = bm.repeat(mi0[:, None, :], mi1.shape[0], axis=1)
         mi1 = bm.repeat(mi1[None, :, :], mi0.shape[0], axis=0)
 
-        return bm.concatenate([mi0, mi1], axis=-1).reshape(-1, 5)
-    
+        return bm.concat([mi0, mi1], axis=-1).reshape(-1, 5)
+
     @classmethod
     def bc_to_point(cls, ctx: EntityContext, bcs: tuple[Tensor, Tensor],
                     index: Index | None = None) -> Tensor:

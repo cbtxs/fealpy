@@ -76,7 +76,7 @@ class NodeSchema(ShapedEntitySchema):
             return grad
         nq = int(bcs[0].shape[0])
         return bm.broadcast_to(grad[:, None, :, :], (node.shape[0], nq, 1, dim))
-    
+
     @classmethod
     def quadrature_formula(cls, q: int = None, qtype: str | None = None) -> PointQuadrature:
         if q < 1:
@@ -102,13 +102,13 @@ class NodeSchema(ShapedEntitySchema):
         return bm.zeros((node.shape[0], 0, gd), dtype=ctx.block.positions.dtype)
 
     @classmethod
-    def multi_index(cls, p: tuple[int, ...]) -> Tensor:
-        if not isinstance(p, tuple):
-            raise TypeError(f"node multi_index expects a tuple of integers, got {type(p).__name__}")
-        if len(p) != 1:
-            raise ValueError(f"node multi_index expects one order value, got {len(p)}")
+    def multi_index(cls, order: tuple[int, ...]) -> Tensor:
+        if not isinstance(order, tuple):
+            raise TypeError(f"node multi_index expects a tuple of integers, got {type(order).__name__}")
+        if len(order) != 1:
+            raise ValueError(f"node multi_index expects one order value, got {len(order)}")
 
-        order = p[0]
+        order = order[0]
         if not isinstance(order, int):
             raise TypeError(f"node multi_index order must be an integer, got {type(order).__name__}")
         if order < 0:

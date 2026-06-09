@@ -97,15 +97,15 @@ class TetrahedronSchema(ShapedEntitySchema):
         return bm.abs(bm.linalg.det(jac)) / 6.0
 
     @classmethod
-    def multi_index(cls, p: tuple[int, ...]) -> Tensor:
-        if not isinstance(p, tuple):
+    def multi_index(cls, order: tuple[int, ...]) -> Tensor:
+        if not isinstance(order, tuple):
             raise TypeError(
-                f"tetrahedron multi_index expects a tuple of integers, got {type(p).__name__}"
+                f"tetrahedron multi_index expects a tuple of integers, got {type(order).__name__}"
             )
-        if len(p) != 1:
-            raise ValueError(f"tetrahedron multi_index expects one order value, got {len(p)}")
+        if len(order) != 1:
+            raise ValueError(f"tetrahedron multi_index expects one order value, got {len(order)}")
 
-        order = p[0]
+        order = order[0]
         if not isinstance(order, int):
             raise TypeError(f"tetrahedron multi_index order must be an integer, got {type(order).__name__}")
         if order < 0:

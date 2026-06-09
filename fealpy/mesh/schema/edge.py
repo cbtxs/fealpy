@@ -28,13 +28,13 @@ class EdgeSchema(ShapedEntitySchema):
         return ctx.block.positions[cls._entity(ctx, index)]
 
     @classmethod
-    def _parse_order(cls, p: tuple[int, ...]) -> int:
-        if not isinstance(p, tuple):
-            raise TypeError(f"edge multi_index expects a tuple of integers, got {type(p).__name__}")
-        if len(p) != 1:
-            raise ValueError(f"edge multi_index expects one order value, got {len(p)}")
+    def _parse_order(cls, order: tuple[int, ...]) -> int:
+        if not isinstance(order, tuple):
+            raise TypeError(f"edge multi_index expects a tuple of integers, got {type(order).__name__}")
+        if len(order) != 1:
+            raise ValueError(f"edge multi_index expects one order value, got {len(order)}")
 
-        order = p[0]
+        order = order[0]
         if not isinstance(order, int):
             raise TypeError(f"edge multi_index order must be an integer, got {type(order).__name__}")
         if order < 0:
@@ -42,21 +42,13 @@ class EdgeSchema(ShapedEntitySchema):
         return order
 
     @classmethod
-    def multi_index(cls, p: tuple[int, ...]) -> Tensor:
-        order = cls._parse_order(p)
+    def multi_index(cls, order: tuple[int, ...]) -> Tensor:
+        order = cls._parse_order(order)
         return InterpolationPoints.multi_index_matrix(order, 2)
 
     @classmethod
-    def multi_index_sort(cls, multi_index: Tensor, /) -> Tensor:
-        if len(multi_index.shape) != 2 or multi_index.shape[1] != 2:
-            raise ValueError("edge multi_index_sort expects a tensor of shape (N, 2)")
-        if multi_index.shape[0] == 0:
-            return bm.asarray([], dtype=bm.int32)
-        return bm.lexsort(tuple(reversed(multi_index.T)), axis=0)
-
-    @classmethod
-    def num_multi_index(cls, p: tuple[int, ...]) -> int:
-        order = cls._parse_order(p)
+    def num_multi_index(cls, order: tuple[int, ...]) -> int:
+        order = cls._parse_order(order)
         return order + 1
 
     @classmethod

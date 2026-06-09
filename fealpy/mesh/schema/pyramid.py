@@ -1,5 +1,6 @@
 from ...backend import bm
 from ...backend import Index, Tensor
+from ..topology.ipoints import InterpolationPoints
 from .entity_schema import EntityContext, ShapedEntitySchema
 
 __all__ = ["PyramidSchema"]
@@ -129,6 +130,22 @@ class PyramidSchema(ShapedEntitySchema):
             return grad[:, 0, :, :] if squeeze_q else grad
         grad = cls.transform_grad(ctx, bcs, ref3, index)
         return grad[:, 0, :, :] if squeeze_q else grad
+
+    @classmethod
+    def multi_index(cls, order: tuple[int, ...]) -> Tensor:
+        if not isinstance(order, tuple):
+            raise TypeError(
+                f"pyramid multi_index expects a tuple of integers, got {type(order).__name__}"
+            )
+        if len(order) != 1:
+            raise ValueError(f"pyramid multi_index expects one order value, got {len(order)}")
+
+        p = order[0]
+        if not isinstance(p, int):
+            raise TypeError(f"pyramid multi_index order must be an integer, got {type(p).__name__}")
+        if p < 0:
+            raise ValueError(f"pyramid multi_index order must be non-negative, got {p}")
+        return InterpolationPoints.multi_index_matrix(p, 5) # TODO: not correct
 
     @classmethod
     def quadrature_formula(cls, q: int, qtype: str | None = "legendre"):

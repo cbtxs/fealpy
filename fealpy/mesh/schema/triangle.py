@@ -24,25 +24,20 @@ class TriangleSchema(ShapedEntitySchema):
         return tri
 
     @classmethod
-    def multi_index(cls, order: int | tuple[int, ...], *, internal: bool = False) -> Tensor:
-        if isinstance(order, tuple):
-            if len(order) != 1:
-                raise ValueError("triangle multi-index expects a single order")
-            order = order[0]
-        if internal:
-            return InterpolationPoints.multi_index_inner(order, cls.top_dim + 1)
-        return InterpolationPoints.multi_index_matrix(order, cls.top_dim + 1)
+    def multi_index(cls, order: tuple[int, ...]) -> Tensor:
+        if not isinstance(order, tuple):
+            raise TypeError(
+                f"triangle multi_index expects a tuple of integers, got {type(order).__name__}"
+            )
+        if len(order) != 1:
+            raise ValueError(f"triangle multi_index expects one order value, got {len(order)}")
 
-    @classmethod
-    def multi_index_sort(cls, multi_index: Tensor, /) -> Tensor:
-        columns = [bm.reshape(col, (-1,)) for col in bm.unstack(multi_index, axis=1)]
-        idx = bm.lexsort(tuple(reversed(columns)))
-        return bm.reshape(idx, (-1,))
-
-    @classmethod
-    def num_multi_index(cls, order: int | tuple[int, ...], *, internal: bool = False) -> int:
-        mi = cls.multi_index(order, internal=internal)
-        return int(mi.shape[0])
+        p = order[0]
+        if not isinstance(p, int):
+            raise TypeError(f"triangle multi_index order must be an integer, got {type(p).__name__}")
+        if p < 0:
+            raise ValueError(f"triangle multi_index order must be non-negative, got {p}")
+        return InterpolationPoints.multi_index_matrix(p, cls.top_dim + 1)
 
     @classmethod
     def barycenter(cls, ctx: EntityContext, index: Index | None) -> Tensor:

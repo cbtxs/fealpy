@@ -12,17 +12,26 @@ class QuadrilateralSchema(ShapedEntitySchema):
     ccw = {'edge': [[0, 1], [1, 3], [3, 2], [2, 0]]}
 
     @classmethod
-    def multi_index(cls, p: tuple[int, ...]) -> Tensor:
-        if not isinstance(p, tuple):
-            raise TypeError(f"quadrilateral multi_index expects a tuple of integers, got {type(p).__name__}")
-        if len(p) == 1: px, py = p[0], p[0]
-        elif len(p) == 2: px, py = p
-        else: raise ValueError(f"quadrilateral multi_index expects one or two order values, got {len(p)}")
+    def multi_index(cls, order: tuple[int, ...]) -> Tensor:
+        if not isinstance(order, tuple):
+            raise TypeError(
+                f"quadrilateral multi_index expects a tuple of integers, got {type(order).__name__}"
+            )
+        if len(order) == 1:
+            px, py = order[0], order[0]
+        elif len(order) == 2:
+            px, py = order
+        else:
+            raise ValueError(f"quadrilateral multi_index expects one or two order values, got {len(order)}")
 
-        for value in (px, py):
-            if not isinstance(value, int):
-                raise TypeError(f"quadrilateral multi_index order must be an integer, got {type(value).__name__}")
-            if value < 0: raise ValueError(f"quadrilateral multi_index order must be non-negative, got {value}")
+        if not isinstance(px, int):
+            raise TypeError(f"quadrilateral multi_index order must be an integer, got {type(px).__name__}")
+        if not isinstance(py, int):
+            raise TypeError(f"quadrilateral multi_index order must be an integer, got {type(py).__name__}")
+        if px < 0:
+            raise ValueError(f"quadrilateral multi_index order must be non-negative, got {px}")
+        if py < 0:
+            raise ValueError(f"quadrilateral multi_index order must be non-negative, got {py}")
 
         ix = bm.arange(px + 1, dtype=bm.int32)
         iy = bm.arange(py + 1, dtype=bm.int32)
@@ -38,9 +47,10 @@ class QuadrilateralSchema(ShapedEntitySchema):
         if multi_index.shape[0] == 0: return bm.asarray([], dtype=bm.int32)
         return bm.lexsort(tuple(reversed(multi_index.T)), axis=0)
 
+
     @classmethod
-    def num_multi_index(cls, p: tuple[int, ...]) -> int:
-        return int(cls.multi_index(p).shape[0])
+    def num_multi_index(cls, order: tuple[int, ...]) -> int:
+        return int(cls.multi_index(order).shape[0])
 
     @classmethod
     def barycenter(cls, ctx: EntityContext, index: Index | None) -> Tensor:

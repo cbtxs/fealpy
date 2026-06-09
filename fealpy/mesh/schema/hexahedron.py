@@ -55,23 +55,30 @@ class HexahedronSchema(ShapedEntitySchema):
         return int(ctx.block.positions.shape[1])
 
     @classmethod
-    def multi_index(cls, p: tuple[int, ...]) -> Tensor:
-        if not isinstance(p, tuple):
+    def multi_index(cls, order: tuple[int, ...]) -> Tensor:
+        if not isinstance(order, tuple):
             raise TypeError(
-                f"hexahedron multi_index expects a tuple of integers, got {type(p).__name__}"
+                f"hexahedron multi_index expects a tuple of integers, got {type(order).__name__}"
             )
-        if len(p) == 1:
-            px, py, pz = p[0], p[0], p[0]
-        elif len(p) == 3:
-            px, py, pz = p
+        if len(order) == 1:
+            px, py, pz = order[0], order[0], order[0]
+        elif len(order) == 3:
+            px, py, pz = order
         else:
-            raise ValueError(f"hexahedron multi_index expects one or three order values, got {len(p)}")
+            raise ValueError(f"hexahedron multi_index expects one or three order values, got {len(order)}")
 
-        for value in (px, py, pz):
-            if not isinstance(value, int):
-                raise TypeError(f"hexahedron multi_index order must be an integer, got {type(value).__name__}")
-            if value < 0:
-                raise ValueError(f"hexahedron multi_index order must be non-negative, got {value}")
+        if not isinstance(px, int):
+            raise TypeError(f"hexahedron multi_index order must be an integer, got {type(px).__name__}")
+        if not isinstance(py, int):
+            raise TypeError(f"hexahedron multi_index order must be an integer, got {type(py).__name__}")
+        if not isinstance(pz, int):
+            raise TypeError(f"hexahedron multi_index order must be an integer, got {type(pz).__name__}")
+        if px < 0:
+            raise ValueError(f"hexahedron multi_index order must be non-negative, got {px}")
+        if py < 0:
+            raise ValueError(f"hexahedron multi_index order must be non-negative, got {py}")
+        if pz < 0:
+            raise ValueError(f"hexahedron multi_index order must be non-negative, got {pz}")
 
         ix = bm.arange(px + 1, dtype=bm.int32)
         iy = bm.arange(py + 1, dtype=bm.int32)
