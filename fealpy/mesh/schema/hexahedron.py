@@ -82,6 +82,69 @@ class HexahedronSchema(ShapedEntitySchema):
         multi_index2 = bm.broadcast_to(iz[None, None, :], shape).reshape(-1, 1)
         return bm.concatenate([multi_index0, multi_index1, multi_index2], axis=-1)
 
+
+    @classmethod
+    def grad_lambda(
+        cls,
+        ctx: EntityContext,
+        index: Index | None,
+        bcs: tuple[Tensor, ...] | None = None,
+        *,
+        ref: bool = False,
+    ) -> Tensor:
+        cell = ctx.sector.indices if index is None else ctx.sector.indices[index]
+        if len(cell.shape) == 1:
+            cell = bm.reshape(cell, (1, -1))
+        if bcs is None:
+            bcs = (
+                bm.asarray([[0.5, 0.5]], dtype=ctx.block.positions.dtype),
+                bm.asarray([[0.5, 0.5]], dtype=ctx.block.positions.dtype),
+                bm.asarray([[0.5, 0.5]], dtype=ctx.block.positions.dtype),
+            )
+            squeeze_q = True
+        else:
+            squeeze_q = False
+        u, v, w = bcs
+        u0, u1 = u[:, 0], u[:, 1]
+        v0, v1 = v[:, 0], v[:, 1]
+        w0, w1 = w[:, 0], w[:, 1]
+        z = bm.zeros_like(u0)
+
+        def ref_row(ua, ub, va, vb, wa, wb):
+            return bm.stack([ua, ub, va, vb, wa, wb], axis=-1)
+
+        ref_grad = bm.stack([
+            ref_row(v0*w0, z, u0*w0, z, u0*v0, z),
+            ref_row(z, v0*w0, u1*w0, z, u1*v0, z),
+            ref_row(v1*w0, z, z, u0*w0, u0*v1, z),
+            ref_row(z, v1*w0, z, u1*w0, u1*v1, z),
+            ref_row(v0*w1, z, u0*w1, z, z, u0*v0),
+            ref_row(z, v0*w1, u1*w1, z, z, u1*v0),
+            ref_row(v1*w1, z, z, u0*w1, z, u0*v1),
+            ref_row(z, v1*w1, z, u1*w1, z, u1*v1),
+        ], axis=1)
+        if ref:
+            grad = bm.broadcast_to(ref_grad[None, :, :, :], (cell.shape[0], ref_grad.shape[0], 8, 6))
+            return grad[:, 0, :, :] if squeeze_q else grad
+
+        dphi = bm.stack([
+            bm.stack([-v0*w0, -u0*w0, -u0*v0], axis=-1),
+            bm.stack([ v0*w0, -u1*w0, -u1*v0], axis=-1),
+            bm.stack([-v1*w0,  u0*w0, -u0*v1], axis=-1),
+            bm.stack([ v1*w0,  u1*w0, -u1*v1], axis=-1),
+            bm.stack([-v0*w1, -u0*w1,  u0*v0], axis=-1),
+            bm.stack([ v0*w1, -u1*w1,  u1*v0], axis=-1),
+            bm.stack([-v1*w1,  u0*w1,  u0*v1], axis=-1),
+            bm.stack([ v1*w1,  u1*w1,  u1*v1], axis=-1),
+        ], axis=1)
+        points = ctx.block.positions[cell]
+        J = bm.einsum("qit,cid->cqtd", dphi, points)
+        Jt = bm.einsum("cqtd->cqdt", J)
+        metric = bm.einsum("cqtd,cqsd->cqts", J, J)
+        metric_inv = bm.linalg.inv(metric)
+        grad = bm.einsum("cqdt,cqts,qis->cqid", Jt, metric_inv, dphi)
+        return grad[:, 0, :, :] if squeeze_q else grad
+
     @classmethod
     def measure(cls, ctx: EntityContext, index: Index | None) -> Tensor:
         gd = cls.geo_dimension(ctx)

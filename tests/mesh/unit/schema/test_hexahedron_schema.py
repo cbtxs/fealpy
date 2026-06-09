@@ -103,6 +103,7 @@ class TestHexahedronSchema:
             "bc_to_point",
             "geo_dimension",
             "multi_index",
+            "grad_lambda",
             "measure",
             "normal",
             "quadrature_formula",

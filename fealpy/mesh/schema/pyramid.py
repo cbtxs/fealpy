@@ -98,6 +98,38 @@ class PyramidSchema(ShapedEntitySchema):
         metric_inv = bm.linalg.inv(metric)
         return bm.einsum("cqdk,cqkl,qil->cqid", J, metric_inv, ref_grad)
 
+
+    @classmethod
+    def grad_lambda(
+        cls,
+        ctx: EntityContext,
+        index: Index | None,
+        bcs: tuple[Tensor, Tensor, Tensor] | None = None,
+        *,
+        ref: bool = False,
+    ) -> Tensor:
+        pyramid = ctx.sector.indices if index is None else ctx.sector.indices[index]
+        if len(pyramid.shape) == 1:
+            pyramid = bm.reshape(pyramid, (1, -1))
+        if bcs is None:
+            bcs = (
+                bm.asarray([[0.5, 0.5]], dtype=ctx.block.positions.dtype),
+                bm.asarray([[0.5, 0.5]], dtype=ctx.block.positions.dtype),
+                bm.asarray([[0.5, 0.5]], dtype=ctx.block.positions.dtype),
+            )
+            squeeze_q = True
+        else:
+            squeeze_q = False
+        ref3 = cls.geometry_grad_shape_function(bcs)
+        u, v, w = bcs
+        z = bm.zeros((ref3.shape[0], ref3.shape[1], 3), dtype=ref3.dtype)
+        ref6 = bm.concatenate([ref3[:, :, 0:1], z[:, :, 0:1], ref3[:, :, 1:2], z[:, :, 1:2], ref3[:, :, 2:3], z[:, :, 2:3]], axis=-1)
+        if ref:
+            grad = bm.broadcast_to(ref6[None, :, :, :], (pyramid.shape[0], ref6.shape[0], 5, 6))
+            return grad[:, 0, :, :] if squeeze_q else grad
+        grad = cls.transform_grad(ctx, bcs, ref3, index)
+        return grad[:, 0, :, :] if squeeze_q else grad
+
     @classmethod
     def quadrature_formula(cls, q: int, qtype: str | None = "legendre"):
         if qtype not in (None, "legendre"):

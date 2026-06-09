@@ -66,15 +66,33 @@ class TriangleSchema(ShapedEntitySchema):
         return int(ctx.block.positions.shape[1])
 
     @classmethod
-    def grad_lambda(cls, ctx: EntityContext, index: Index | None) -> Tensor:
+    def grad_lambda(
+        cls,
+        ctx: EntityContext,
+        index: Index | None,
+        bcs: tuple[Tensor, ...] | None = None,
+        *,
+        ref: bool = False,
+    ) -> Tensor:
         tri = cls._selected_triangles(ctx, index)
         node = ctx.block.positions
-        gd = int(node.shape[1])
-        if gd == 2:
-            return bm.triangle_grad_lambda_2d(tri, node)
-        if gd == 3:
-            return bm.triangle_grad_lambda_3d(tri, node)
-        raise ValueError(f"unsupported geometric dimension: {gd}")
+        if ref:
+            grad = bm.broadcast_to(
+                bm.eye(3, dtype=node.dtype)[None, :, :],
+                (tri.shape[0], 3, 3),
+            )
+        else:
+            gd = int(node.shape[1])
+            if gd == 2:
+                grad = bm.triangle_grad_lambda_2d(tri, node)
+            elif gd == 3:
+                grad = bm.triangle_grad_lambda_3d(tri, node)
+            else:
+                raise ValueError(f"unsupported geometric dimension: {gd}")
+        if bcs is None:
+            return grad
+        nq = int(bcs[0].shape[0])
+        return bm.broadcast_to(grad[:, None, :, :], (tri.shape[0], nq, grad.shape[1], grad.shape[2]))
 
     @classmethod
     def quadrature_formula(cls, q: int, qtype: str = "legendre"):

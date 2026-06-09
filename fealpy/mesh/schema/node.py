@@ -61,13 +61,24 @@ class NodeSchema(ShapedEntitySchema):
         return int(ctx.block.positions.shape[1])
 
     @classmethod
-    def grad_lambda(cls, ctx: EntityContext, index: Index | None) -> Tensor:
+    def grad_lambda(
+        cls,
+        ctx: EntityContext,
+        index: Index | None,
+        bcs: tuple[Tensor, ...] | None = None,
+        *,
+        ref: bool = False,
+    ) -> Tensor:
         node = cls._indices(ctx, index)
-        gd = cls.geo_dimension(ctx)
-        return bm.zeros((node.shape[0], 1, gd), dtype=ctx.block.positions.dtype)
+        dim = 1 if ref else cls.geo_dimension(ctx)
+        grad = bm.zeros((node.shape[0], 1, dim), dtype=ctx.block.positions.dtype)
+        if bcs is None:
+            return grad
+        nq = int(bcs[0].shape[0])
+        return bm.broadcast_to(grad[:, None, :, :], (node.shape[0], nq, 1, dim))
     
     @classmethod
-    def quadrature_formula(cls, q: int = None) -> PointQuadrature:
+    def quadrature_formula(cls, q: int = None, qtype: str | None = None) -> PointQuadrature:
         if q < 1:
             raise ValueError(f"node quadrature order must be positive, got {q}")
         return PointQuadrature()

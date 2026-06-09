@@ -91,13 +91,31 @@ class EdgeSchema(ShapedEntitySchema):
         return int(ctx.block.positions.shape[1])
 
     @classmethod
-    def grad_lambda(cls, ctx: EntityContext, index: Index | None) -> Tensor:
+    def grad_lambda(
+        cls,
+        ctx: EntityContext,
+        index: Index | None,
+        bcs: tuple[Tensor, ...] | None = None,
+        *,
+        ref: bool = False,
+    ) -> Tensor:
         points = cls._points(ctx, index)
-        tangent = points[:, 1, :] - points[:, 0, :]
-        sqnorm = bm.sum(tangent * tangent, axis=1, keepdims=True)
-        g1 = tangent / sqnorm
-        g0 = -g1
-        return bm.stack([g0, g1], axis=1)
+        nc = int(points.shape[0])
+        if ref:
+            grad = bm.broadcast_to(
+                bm.eye(2, dtype=ctx.block.positions.dtype)[None, :, :],
+                (nc, 2, 2),
+            )
+        else:
+            tangent = points[:, 1, :] - points[:, 0, :]
+            sqnorm = bm.sum(tangent * tangent, axis=1, keepdims=True)
+            g1 = tangent / sqnorm
+            g0 = -g1
+            grad = bm.stack([g0, g1], axis=1)
+        if bcs is None:
+            return grad
+        nq = int(bcs[0].shape[0])
+        return bm.broadcast_to(grad[:, None, :, :], (nc, nq, grad.shape[1], grad.shape[2]))
 
     @classmethod
     def quadrature_formula(cls, q: int, qtype: str | None = "legendre"):

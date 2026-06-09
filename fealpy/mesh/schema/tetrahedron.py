@@ -44,25 +44,41 @@ class TetrahedronSchema(ShapedEntitySchema):
         return int(ctx.block.positions.shape[1])
 
     @classmethod
-    def grad_lambda(cls, ctx: EntityContext, index: Index | None) -> Tensor:
-        gd = cls.geo_dimension(ctx)
-        if gd != 3:
-            raise ValueError(f"tetrahedron geometry requires GD == 3, got {gd}")
-
+    def grad_lambda(
+        cls,
+        ctx: EntityContext,
+        index: Index | None,
+        bcs: tuple[Tensor, ...] | None = None,
+        *,
+        ref: bool = False,
+    ) -> Tensor:
         tet = ctx.sector.indices if index is None else ctx.sector.indices[index]
         if len(tet.shape) == 1:
             tet = bm.reshape(tet, (1, -1))
-        points = ctx.block.positions[tet]
-        v1 = points[:, 1, :] - points[:, 0, :]
-        v2 = points[:, 2, :] - points[:, 0, :]
-        v3 = points[:, 3, :] - points[:, 0, :]
-        jac = bm.stack([v1, v2, v3], axis=-1)
-        inv_jac = bm.linalg.inv(jac)
-        g1 = inv_jac[:, 0, :]
-        g2 = inv_jac[:, 1, :]
-        g3 = inv_jac[:, 2, :]
-        g0 = -g1 - g2 - g3
-        return bm.stack([g0, g1, g2, g3], axis=1)
+        if ref:
+            grad = bm.broadcast_to(
+                bm.eye(4, dtype=ctx.block.positions.dtype)[None, :, :],
+                (tet.shape[0], 4, 4),
+            )
+        else:
+            gd = cls.geo_dimension(ctx)
+            if gd != 3:
+                raise ValueError(f"tetrahedron geometry requires GD == 3, got {gd}")
+            points = ctx.block.positions[tet]
+            v1 = points[:, 1, :] - points[:, 0, :]
+            v2 = points[:, 2, :] - points[:, 0, :]
+            v3 = points[:, 3, :] - points[:, 0, :]
+            jac = bm.stack([v1, v2, v3], axis=-1)
+            inv_jac = bm.linalg.inv(jac)
+            g1 = inv_jac[:, 0, :]
+            g2 = inv_jac[:, 1, :]
+            g3 = inv_jac[:, 2, :]
+            g0 = -g1 - g2 - g3
+            grad = bm.stack([g0, g1, g2, g3], axis=1)
+        if bcs is None:
+            return grad
+        nq = int(bcs[0].shape[0])
+        return bm.broadcast_to(grad[:, None, :, :], (tet.shape[0], nq, grad.shape[1], grad.shape[2]))
 
     @classmethod
     def measure(cls, ctx: EntityContext, index: Index | None) -> Tensor:

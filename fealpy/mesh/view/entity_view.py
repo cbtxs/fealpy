@@ -55,8 +55,14 @@ class EntityView:
     def geo_dimension(self) -> int:
         return self.schema.geo_dimension(self.context())
 
-    def grad_lambda(self, *, index: Index | None = None) -> Tensor:
-        return self.schema.grad_lambda(self.context(), index)
+    def grad_lambda(
+        self,
+        *,
+        index: Index | None = None,
+        bcs: tuple[Tensor, ...] | None = None,
+        ref: bool = False,
+    ) -> Tensor:
+        return self.schema.grad_lambda(self.context(), index, bcs=bcs, ref=ref)
 
     @property
     def indices(self) -> Tensor:

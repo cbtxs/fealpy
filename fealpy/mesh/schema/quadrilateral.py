@@ -69,18 +69,65 @@ class QuadrilateralSchema(ShapedEntitySchema):
         return QuadrangleQuadrature(q)
 
     @classmethod
-    def grad_lambda(cls, ctx: EntityContext, index: Index | None) -> Tensor:
+    def grad_lambda(
+        cls,
+        ctx: EntityContext,
+        index: Index | None,
+        bcs: tuple[Tensor, ...] | None = None,
+        *,
+        ref: bool = False,
+    ) -> Tensor:
         quad = ctx.sector.indices if index is None else ctx.sector.indices[index]
-        points = ctx.block.positions[quad[:, [0, 1, 3, 2]]]
-        vr = 0.5 * ((points[:, 1, :] - points[:, 0, :]) + (points[:, 2, :] - points[:, 3, :]))
-        vs = 0.5 * ((points[:, 3, :] - points[:, 0, :]) + (points[:, 2, :] - points[:, 1, :]))
-        jac = bm.stack([vr, vs], axis=-1)
-        jac_t = bm.einsum("nij->nji", jac)
-        metric = bm.einsum("nik,nkj->nij", jac_t, jac)
+        if len(quad.shape) == 1:
+            quad = bm.reshape(quad, (1, -1))
+        if bcs is None:
+            if not ref:
+                points = ctx.block.positions[quad[:, [0, 1, 3, 2]]]
+                vr = 0.5 * ((points[:, 1, :] - points[:, 0, :]) + (points[:, 2, :] - points[:, 3, :]))
+                vs = 0.5 * ((points[:, 3, :] - points[:, 0, :]) + (points[:, 2, :] - points[:, 1, :]))
+                jac = bm.stack([vr, vs], axis=-1)
+                jac_t = bm.einsum("nij->nji", jac)
+                metric = bm.einsum("nik,nkj->nij", jac_t, jac)
+                metric_inv = bm.linalg.inv(metric)
+                grads = bm.einsum("nik,nkj->nij", metric_inv, jac_t)
+                ref_grads = bm.asarray([[-0.5, -0.5], [0.5, -0.5], [0.5, 0.5], [-0.5, 0.5]], dtype=points.dtype)
+                return bm.einsum("ld, ndg->nlg", ref_grads, grads)
+            bcs = (
+                bm.asarray([[0.5, 0.5]], dtype=ctx.block.positions.dtype),
+                bm.asarray([[0.5, 0.5]], dtype=ctx.block.positions.dtype),
+            )
+            squeeze_q = True
+        else:
+            squeeze_q = False
+        u, v = bcs
+        u0, u1 = u[:, 0], u[:, 1]
+        v0 = bm.broadcast_to(v[:, 0], u0.shape)
+        v1 = bm.broadcast_to(v[:, 1], u0.shape)
+        z_u = bm.zeros_like(u0)
+        z_v = bm.zeros_like(v0)
+        ref_u = bm.stack([
+            bm.stack([v0, z_u, u0, z_u], axis=-1),
+            bm.stack([z_u, v0, u1, z_u], axis=-1),
+            bm.stack([v1, z_u, z_u, u0], axis=-1),
+            bm.stack([z_u, v1, z_u, u1], axis=-1),
+        ], axis=1)
+        if ref:
+            grad = bm.broadcast_to(ref_u[None, :, :, :], (quad.shape[0], ref_u.shape[0], 4, 4))
+            return grad[:, 0, :, :] if squeeze_q else grad
+
+        dphi_duv = bm.stack([
+            bm.stack([-v0, -u0], axis=-1),
+            bm.stack([ v0, -u1], axis=-1),
+            bm.stack([-v1,  u0], axis=-1),
+            bm.stack([ v1,  u1], axis=-1),
+        ], axis=1)
+        points = ctx.block.positions[quad]
+        J = bm.einsum("qit,cid->cqtd", dphi_duv, points)
+        Jt = bm.einsum("cqtd->cqdt", J)
+        metric = bm.einsum("cqtd,cqsd->cqts", J, J)
         metric_inv = bm.linalg.inv(metric)
-        grads = bm.einsum("nik,nkj->nij", metric_inv, jac_t)
-        ref_grads = bm.asarray([[-0.5, -0.5], [0.5, -0.5], [0.5, 0.5], [-0.5, 0.5]], dtype=points.dtype)
-        return bm.einsum("ld, ndg->nlg", ref_grads, grads)
+        grad = bm.einsum("cqdt,cqts,qis->cqid", Jt, metric_inv, dphi_duv)
+        return grad[:, 0, :, :] if squeeze_q else grad
 
     @classmethod
     def measure(cls, ctx: EntityContext, index: Index | None) -> Tensor:

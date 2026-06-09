@@ -181,6 +181,39 @@ class PrismSchema(ShapedEntitySchema):
 
         raise ValueError(f"Unsupported variables: {variables!r}")
     
+
+    @classmethod
+    def grad_lambda(
+        cls,
+        ctx: EntityContext,
+        index: Index | None = None,
+        bcs: tuple[Tensor, Tensor] | None = None,
+        *,
+        ref: bool = False,
+    ) -> Tensor:
+        prism = ctx.sector.indices if index is None else ctx.sector.indices[index]
+        if len(prism.shape) == 1:
+            prism = bm.reshape(prism, (1, -1))
+        if bcs is None:
+            bcs = (
+                bm.asarray([[1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0]], dtype=ctx.block.positions.dtype),
+                bm.asarray([[0.5, 0.5]], dtype=ctx.block.positions.dtype),
+            )
+            squeeze_q = True
+        else:
+            squeeze_q = False
+        ref3 = cls.grad_shape_function(ctx, bcs, p=1, index=index, variables="u")
+        tri_bc, edge_bc = bcs
+        z3 = bm.zeros((ref3.shape[0], ref3.shape[1], 2), dtype=ref3.dtype)
+        ref5 = bm.concatenate([ref3[:, :, 0:2], z3[:, :, 0:1], ref3[:, :, 2:3], z3[:, :, 1:2]], axis=-1)
+        if ref:
+            grad = bm.broadcast_to(ref5[None, :, :, :], (prism.shape[0], ref5.shape[0], 6, 5))
+            return grad[:, 0, :, :] if squeeze_q else grad
+        G, J = cls.first_fundamental_form(ctx, bcs, index=index, return_jacobi=True)
+        Ginv = bm.linalg.inv(G)
+        grad = bm.einsum("cqdk,cqkl,qil->cqid", J, Ginv, ref3)
+        return grad[:, 0, :, :] if squeeze_q else grad
+
     # ipoint
     @classmethod
     def multi_index(cls, p: tuple[int, int]) -> Tensor:

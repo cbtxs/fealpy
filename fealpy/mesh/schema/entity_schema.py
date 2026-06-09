@@ -86,8 +86,24 @@ class EntitySchema:
         raise NotImplementedError()
 
     @classmethod
-    def grad_lambda(cls, ctx: EntityContext, index: Index | None) -> Tensor:
-        """Gradient of barycentric coordinates."""
+    def grad_lambda(
+        cls,
+        ctx: EntityContext,
+        index: Index | None,
+        bcs: tuple[Tensor, ...] | None = None,
+        *,
+        ref: bool = False,
+    ) -> Tensor:
+        """Gradient of lowest-order shape functions.
+
+        If ref is False, return gradients with respect to physical Cartesian
+        coordinates. With bcs=None the shape is (NC, ldof, GD); with bcs set
+        the shape is (NC, NQ, ldof, GD).
+
+        If ref is True, return gradients with respect to the reference
+        barycentric coordinates. With bcs=None the shape is (NC, ldof, num_bc);
+        with bcs set the shape is (NC, NQ, ldof, num_bc).
+        """
         raise NotImplementedError()
 
     @classmethod
