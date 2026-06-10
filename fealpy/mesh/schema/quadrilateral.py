@@ -47,11 +47,6 @@ class QuadrilateralSchema(ShapedEntitySchema):
         if multi_index.shape[0] == 0: return bm.asarray([], dtype=bm.int32)
         return bm.lexsort(tuple(reversed(multi_index.T)), axis=0)
 
-
-    @classmethod
-    def num_multi_index(cls, order: tuple[int, ...]) -> int:
-        return int(cls.multi_index(order).shape[0])
-
     @classmethod
     def barycenter(cls, ctx: EntityContext, index: Index | None) -> Tensor:
         quad = ctx.sector.indices if index is None else ctx.sector.indices[index]
@@ -122,10 +117,6 @@ class QuadrilateralSchema(ShapedEntitySchema):
                 raise NotImplementedError("quadrilateral grad_shape_function currently only supports p=1 in physical space")
             return cls.grad_lambda(ctx, index, bcs=bcs, ref=False)
         raise ValueError(f"Unsupported variables: {variables!r}")
-
-    @classmethod
-    def geo_dimension(cls, ctx: EntityContext) -> int:
-        return int(ctx.block.positions.shape[1])
 
     @classmethod
     def quadrature_formula(cls, q: int, qtype: str | None = None):

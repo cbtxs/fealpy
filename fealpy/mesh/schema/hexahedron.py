@@ -108,10 +108,6 @@ class HexahedronSchema(ShapedEntitySchema):
         raise ValueError(f"Unsupported variables: {variables!r}")
 
     @classmethod
-    def geo_dimension(cls, ctx: EntityContext) -> int:
-        return int(ctx.block.positions.shape[1])
-
-    @classmethod
     def multi_index(cls, order: tuple[int, ...]) -> Tensor:
         if not isinstance(order, tuple):
             raise TypeError(

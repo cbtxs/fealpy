@@ -125,21 +125,29 @@ class PyramidSchema(ShapedEntitySchema):
         raise ValueError(f"Unsupported variables: {variables!r}")
 
     @classmethod
-    def jacobi_matrix(cls, ctx: EntityContext, bcs: tuple[Tensor, Tensor, Tensor],
-                      index: Index | None) -> Tensor:
+    def jacobi_matrix(
+        cls,
+        ctx: EntityContext,
+        bcs: tuple[Tensor, Tensor, Tensor],
+        index: Index | None
+    ) -> Tensor:
         pyramid = ctx.sector.indices if index is None else ctx.sector.indices[index]
         points = ctx.block.positions[pyramid]
         gphi = cls.geometry_grad_shape_function(bcs)
         return bm.einsum("cid,qik->cqdk", points, gphi)
 
     @classmethod
-    def transform_grad(cls, ctx: EntityContext, bcs: tuple[Tensor, Tensor, Tensor],
-                       ref_grad: Tensor, index: Index | None) -> Tensor:
+    def transform_grad(
+        cls,
+        ctx: EntityContext,
+        bcs: tuple[Tensor, Tensor, Tensor],
+        ref_grad: Tensor,
+        index: Index | None
+    ) -> Tensor:
         J = cls.jacobi_matrix(ctx, bcs, index)
         metric = bm.einsum("cqdk,cqdl->cqkl", J, J)
         metric_inv = bm.linalg.inv(metric)
         return bm.einsum("cqdk,cqkl,qil->cqid", J, metric_inv, ref_grad)
-
 
     @classmethod
     def grad_lambda(
@@ -203,10 +211,6 @@ class PyramidSchema(ShapedEntitySchema):
         pyramid = ctx.sector.indices if index is None else ctx.sector.indices[index]
         points = ctx.block.positions[pyramid]
         return bm.mean(points, axis=1)
-
-    @classmethod
-    def geo_dimension(cls, ctx: EntityContext) -> int:
-        return int(ctx.block.positions.shape[1])
 
     @classmethod
     def measure(cls, ctx: EntityContext, index: Index | None) -> Tensor:

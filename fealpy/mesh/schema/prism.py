@@ -57,10 +57,6 @@ class PrismSchema(ShapedEntitySchema):
         return 0.5 * bm.einsum("q,cq->c", ws, l)
 
     @classmethod
-    def geo_dimension(cls, ctx: EntityContext) -> int:
-        return int(ctx.block.positions.shape[1])
-
-    @classmethod
     def normal(cls, ctx: EntityContext, index: Index | None = None) -> Tensor:
         """Prism volume entities have no normal directions in 3D."""
         prism = cls._entity(ctx, index)
@@ -188,7 +184,6 @@ class PrismSchema(ShapedEntitySchema):
             return cls.transform_grad(ctx, bcs, ref, index)
         raise ValueError(f"Unsupported variables: {variables!r}")
 
-
     @classmethod
     def grad_lambda(
         cls,
@@ -268,8 +263,13 @@ class PrismSchema(ShapedEntitySchema):
 
     # jacobi
     @classmethod
-    def jacobi_matrix(cls, ctx: EntityContext, bcs: tuple[Tensor, ...], index: Index | None = None,
-                    etype: str = "cell", ftype=None, return_grad: bool = False) -> Tensor:
+    def jacobi_matrix(
+        cls,
+        ctx: EntityContext,
+        bcs: tuple[Tensor, ...],
+        index: Index | None = None,
+        return_grad: bool = False
+    ) -> Tensor:
         """Compute the Jacobian matrix of the reference-to-physical prism map.
 
         For p = 1, x(eta, zeta, xi) = sum_i phi_i x_i, where
@@ -304,9 +304,14 @@ class PrismSchema(ShapedEntitySchema):
         return J
 
     @classmethod
-    def first_fundamental_form(cls, ctx: EntityContext, bcs: tuple[Tensor, ...], index: Index | None = None,
-                             etype: str = "cell", ftype=None, return_jacobi: bool = False,
-                             return_grad: bool = False):
+    def first_fundamental_form(
+        cls,
+        ctx: EntityContext,
+        bcs: tuple[Tensor, ...],
+        index: Index | None = None,
+        return_jacobi: bool = False,
+        return_grad: bool = False
+    ):
         """Compute the first fundamental form of the Lagrange prism.
 
         G = J^T J, where J is the Jacobian matrix of the reference-to-physical map.

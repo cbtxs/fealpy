@@ -57,16 +57,6 @@ class EdgeSchema(ShapedEntitySchema):
         return bm.mean(points, axis=1)
 
     @classmethod
-    def barycentric(cls, ctx: EntityContext, index: Index | None, func):
-        points = cls._points(ctx, index)
-
-        def wrapper(bc: Tensor) -> Tensor:
-            x = bm.einsum("...j,cjd->c...d", bc, points)
-            return func(x)
-
-        return wrapper
-
-    @classmethod
     def bc_to_point(cls, ctx: EntityContext, bcs: tuple[Tensor, ...], index: Index | None) -> Tensor:
         bcs = _require_bcs_tuple(bcs, "edge bc_to_point", 1)
         if bcs[0].shape[-1] != 2:
@@ -118,10 +108,6 @@ class EdgeSchema(ShapedEntitySchema):
             grad = bm.einsum("...ij, kjm -> k...im", ref, Dlambda)
             return grad
         raise ValueError(f"Unsupported variables: {variables!r}")
-
-    @classmethod
-    def geo_dimension(cls, ctx: EntityContext) -> int:
-        return int(ctx.block.positions.shape[1])
 
     @classmethod
     def grad_lambda(

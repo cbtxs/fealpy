@@ -80,10 +80,6 @@ class TetrahedronSchema(ShapedEntitySchema):
         return bm.einsum("...j,cjd->c...d", bcs[0], points)
 
     @classmethod
-    def geo_dimension(cls, ctx: EntityContext) -> int:
-        return int(ctx.block.positions.shape[1])
-
-    @classmethod
     def grad_lambda(
         cls,
         ctx: EntityContext,

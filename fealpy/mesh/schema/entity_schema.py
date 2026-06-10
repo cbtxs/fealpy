@@ -1,12 +1,14 @@
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import ClassVar, Literal, ParamSpec
+from typing import ClassVar, Literal, ParamSpec, TYPE_CHECKING
 
-from ...backend import bm
-from ...backend import Tensor, Index
+from ...backend import bm, Tensor, Index
 from ..storage import EntitySector, MeshBlock, Relation
 from ..topology.boundary import BoundaryInfo
+
+if TYPE_CHECKING:
+    from ...quadrature import Quadrature
 
 __all__ = [
     "EntitySchema",
@@ -76,6 +78,11 @@ class EntitySchema:
         raise NotImplementedError()
 
     @classmethod
+    def bc_to_point(cls, ctx: EntityContext, index: Index | None, bcs: tuple[Tensor, ...]) -> Tensor:
+        """Convert barycentric coordinates to physical points."""
+        raise NotImplementedError()
+
+    @classmethod
     def geo_dimension(cls, ctx: EntityContext) -> int:
         """Geometric dimension of the cell."""
         raise NotImplementedError()
@@ -102,8 +109,27 @@ class EntitySchema:
         raise NotImplementedError()
 
     @classmethod
+    def grad_shape_function(
+        cls,
+        ctx: EntityContext,
+        bcs: tuple[Tensor, ...],
+        p: int = 1,
+        *,
+        index: Index | None = None,
+        variables: str = "u",
+        mi: Tensor | None = None,
+    ) -> Tensor:
+        """Gradient of shape functions."""
+        raise NotImplementedError()
+
+    @classmethod
     def integral(cls, ctx: EntityContext, index: Index | None, func: Callable[[Tensor], Tensor], q: int) -> Tensor:
         """Integral of a barycentric function."""
+        raise NotImplementedError()
+
+    @classmethod
+    def jacobi_matrix(cls, ctx: EntityContext, bcs: tuple[Tensor, ...], index: Index | None) -> Tensor:
+        """Jacobi matrix of the transformation from reference to physical element."""
         raise NotImplementedError()
 
     @classmethod
@@ -114,6 +140,24 @@ class EntitySchema:
     @classmethod
     def normal(cls, ctx: EntityContext, index: Index | None) -> Tensor:
         """Compute the normal vector of the entity."""
+        raise NotImplementedError()
+
+    @classmethod
+    def quadrature_formula(cls, q: int, qtype: str | None = "legendre") -> "Quadrature":
+        """Quadrature formula for the entity."""
+        raise NotImplementedError()
+
+    @classmethod
+    def shape_function(
+        cls,
+        bcs: tuple[Tensor, ...],
+        p: int = 1,
+        *,
+        index: Index | None = None,
+        variables: str = "u",
+        mi: Tensor | None = None,
+    ) -> Tensor:
+        """Shape functions."""
         raise NotImplementedError()
 
     @classmethod
@@ -167,6 +211,31 @@ class ShapedEntitySchema(EntitySchema):
     def size(cls, ctx: EntityContext) -> int:
         """Number of entities in the sector."""
         return ctx.sector.indices.shape[0]
+
+    ### [Geometric Computations] ###
+
+    @classmethod
+    def barycentric(cls, ctx: EntityContext, index: Index | None, func: Callable[[Tensor], Tensor]) -> Callable[[Tensor], Tensor]:
+        """Compute the barycentric coordinates of the entity."""
+        from functools import wraps
+        @wraps(func)
+        def wrapper(bcs: tuple[Tensor, ...]) -> Tensor:
+            points = cls.bc_to_point(ctx, index, bcs) # [NC, NQ, GD]
+            return func(points)
+        return wrapper
+
+    @classmethod
+    def geo_dimension(cls, ctx: EntityContext) -> int:
+        return int(ctx.block.positions.shape[1])
+
+    @classmethod
+    def integral(cls, ctx: EntityContext, index: Index | None, func: Callable[[Tensor], Tensor], q: int) -> Tensor:
+        """Integral of a barycentric function."""
+        quadrature = cls.quadrature_formula(q)
+        bcs, ws = quadrature.get_quadrature_points_and_weights()
+        points = cls.bc_to_point(ctx, index, bcs) # [NC, NQ, GD]
+        values = func(points)
+        return bm.einsum("cq..., q -> c...", values, ws)
 
 
 def _require_bcs_tuple(bcs: tuple[Tensor, ...], name: str, n: int | None = None) -> tuple[Tensor, ...]:
