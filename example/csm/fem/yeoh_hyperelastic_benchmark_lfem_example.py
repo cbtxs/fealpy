@@ -1,6 +1,9 @@
+import csv
+from pathlib import Path
+
 import numpy as np
 import matplotlib.pyplot as plt
-from fealpy.backend import backend_manager as bm
+
 from fealpy.mesh import HexahedronMesh
 from fealpy.functionspace import LagrangeFESpace, TensorFunctionSpace
 
@@ -8,87 +11,88 @@ from fealpy.csm.material.hyperelastic_material import HyperElasticMaterial
 from fealpy.csm.fem.hyperelastic_lfem_model import HyperElasticLFEMModel
 
 
-# =====================================================
-# 1. DOF helper
-# =====================================================
+OUTPUT_DIR = Path("/home/joey/下载")
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
 
 def dof(node, direction, NN):
-
     return direction * NN + node
 
-def compute_D1_from_poisson(C10, nu):
 
+def compute_D1_from_poisson(C10, nu):
     inv_D1 = 2.0 * C10 * (1.0 + nu) / (3.0 * (1.0 - 2.0 * nu))
     return 1.0 / inv_D1
 
-def make_yeoh_material(nu):
+
+def make_material(nu):
     C10 = 0.18
     C20 = -2.0e-3
     C30 = 5.0e-5
-
     D1 = compute_D1_from_poisson(C10, nu)
 
-    material = HyperElasticMaterial(
+    return HyperElasticMaterial(
         C10=C10,
         C20=C20,
         C30=C30,
         D1=D1,
+    ), D1
+
+
+def yeoh_analytical_stress(stretch):
+    """
+    Incompressible Yeoh analytical engineering stress.
+
+    lambda = stretch
+    sigma = 2 * (lambda - lambda^(-2)) * dW/dI1
+    """
+    C10 = 0.18
+    C20 = -2.0e-3
+    C30 = 5.0e-5
+
+    lam = np.asarray(stretch, dtype=float)
+    I1 = lam**2 + 2.0 / lam
+    x = I1 - 3.0
+
+    dWdI1 = C10 + 2.0 * C20 * x + 3.0 * C30 * x * x
+
+    return 2.0 * (lam - lam**(-2.0)) * dWdI1
+
+
+def create_mesh_and_space():
+    node = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0],
+            [0.0, 1.0, 1.0],
+        ],
+        dtype=np.float64,
     )
 
-    return material, D1
-
-# =====================================================
-# 2. Mesh and space
-# =====================================================
-
-def create_one_hex_mesh_and_space():
-
-    node = bm.array([
-        [0.0, 0.0, 0.0],
-        [1.0, 0.0, 0.0],
-        [1.0, 1.0, 0.0],
-        [0.0, 1.0, 0.0],
-        [0.0, 0.0, 1.0],
-        [1.0, 0.0, 1.0],
-        [1.0, 1.0, 1.0],
-        [0.0, 1.0, 1.0],
-    ], dtype=bm.float64)
-
-    cell = bm.array([
-        [0, 1, 2, 3, 4, 5, 6, 7]
-    ], dtype=bm.int8)
+    cell = np.array([[0, 1, 2, 3, 4, 5, 6, 7]], dtype=np.int64)
 
     mesh = HexahedronMesh(node, cell)
-
-    p = 1
-    scalar_space = LagrangeFESpace(mesh, p=p)
-
+    scalar_space = LagrangeFESpace(mesh, p=1)
     GD = mesh.geo_dimension()
-
-    space = TensorFunctionSpace(
-        scalar_space,
-        shape=(GD, -1)
-    )
+    space = TensorFunctionSpace(scalar_space, shape=(GD, -1))
 
     return mesh, scalar_space, space
 
 
-# =====================================================
-# 3. Boundary condition
-# =====================================================
-
-def make_displacement_bc(mesh, scalar_space, ubar):
-
-    ipoints = scalar_space.interpolation_points()
+def make_displacement_bc(scalar_space, ubar):
+    ipoints = np.asarray(scalar_space.interpolation_points(), dtype=float)
     NN = scalar_space.number_of_global_dofs()
-
     tol = 1.0e-12
 
     left_nodes = []
     right_nodes = []
 
     for i in range(NN):
-        x = float(ipoints[i, 0])
+        x = ipoints[i, 0]
 
         if abs(x - 0.0) < tol:
             left_nodes.append(i)
@@ -98,127 +102,34 @@ def make_displacement_bc(mesh, scalar_space, ubar):
 
     dbc = {}
 
-    # -------------------------------
-    # Main displacement loading
-    # -------------------------------
-
-    # Left face: ux = 0
     for n in left_nodes:
         dbc[dof(n, 0, NN)] = 0.0
 
-    # Right face: ux = ubar
     for n in right_nodes:
         dbc[dof(n, 0, NN)] = ubar
 
-    # -------------------------------
-    # Minimal constraints
-    # remove rigid body motion
-    # -------------------------------
-
-    # node 0: uy = 0
+    # minimal constraints to remove rigid body motion
     dbc[dof(0, 1, NN)] = 0.0
-
-    # node 0: uz = 0
     dbc[dof(0, 2, NN)] = 0.0
-
-    # node 3: uz = 0
     dbc[dof(3, 2, NN)] = 0.0
 
-    return dbc
+    return dbc, right_nodes
 
 
-# =====================================================
-# 4. Right-face reaction helper
-# =====================================================
-
-def get_right_x_dofs(scalar_space):
-    """
-    Find x-direction dofs on the right face X = 1.
-    """
-
-    ipoints = scalar_space.interpolation_points()
-    NN = scalar_space.number_of_global_dofs()
-
-    tol = 1.0e-12
-
-    right_nodes = []
-
-    for i in range(NN):
-        x = float(ipoints[i, 0])
-        if abs(x - 1.0) < tol:
-            right_nodes.append(i)
-
-    right_x_dofs = [dof(n, 0, NN) for n in right_nodes]
-
-    return right_nodes, right_x_dofs
-
-
-# =====================================================
-# 5. Run one benchmark case
-# =====================================================
-
-def run_one_case(ubar, nu=0.495, q=2, nsteps=None, verbose=False):
-    """
-    Run one displacement-controlled Yeoh benchmark case.
-
-    Parameters
-    ----------
-    ubar : float
-        Prescribed x displacement on right face.
-    nu : float
-        Poisson ratio used to compute D1.
-    q : int
-        Quadrature order.
-    nsteps : int or None
-        Load steps. If None, chosen automatically.
-    verbose : bool
-        Print Newton iteration information.
-
-    Returns
-    -------
-    result : dict
-    """
-
-    # -----------------------------
-    # Mesh and finite element space
-    # -----------------------------
-    mesh = make_one_hex_mesh()
-
-    scalar_space = LagrangeFESpace(mesh, p=1)
-
-    # 注意：这里保持你当前已经验证过的自由度顺序
-    # 即 ux: 0~NN-1, uy: NN~2NN-1, uz: 2NN~3NN-1
-    space = TensorFunctionSpace(scalar_space, shape=(3, -1))
+def run_one_case(stretch, nu, q=2, verbose=False):
+    mesh, scalar_space, space = create_mesh_and_space()
 
     NN = scalar_space.number_of_global_dofs()
+    ubar = stretch - 1.0
 
-    # -----------------------------
-    # Material
-    # -----------------------------
-    material, D1 = make_yeoh_material(nu)
+    material, D1 = make_material(nu)
+    dbc, right_nodes = make_displacement_bc(scalar_space, ubar)
 
-    # -----------------------------
-    # Boundary condition
-    # -----------------------------
-    dbc, left_nodes, right_nodes = make_displacement_bc(
-        mesh=mesh,
-        scalar_space=scalar_space,
-        ubar=ubar,
-    )
+    nsteps = max(5, int(abs(ubar) / 0.05) + 1)
 
-    # -----------------------------
-    # Load step choice
-    # -----------------------------
-    if nsteps is None:
-        nsteps = max(5, int(abs(ubar) / 0.05) + 1)
+    if nu > 0.499:
+        nsteps = max(nsteps, 40)
 
-        # 非常接近不可压缩时更难收敛，多给一些 load step
-        if nu > 0.499:
-            nsteps = max(nsteps, 20)
-
-    # -----------------------------
-    # Nonlinear model
-    # -----------------------------
     model = HyperElasticLFEMModel(
         space=space,
         material=material,
@@ -229,145 +140,181 @@ def run_one_case(ubar, nu=0.495, q=2, nsteps=None, verbose=False):
     converged, uh = model.solve(
         nsteps=nsteps,
         tol=1.0e-8,
-        maxit=30,
+        maxit=40,
         line_search=True,
         verbose=verbose,
     )
 
-    # -----------------------------
-    # Reaction force
-    # -----------------------------
-    reaction = model.reaction_force()
+    reaction = np.asarray(model.reaction_force(), dtype=float)
+    right_ux_dofs = [dof(n, 0, NN) for n in right_nodes]
 
-    right_ux_dofs = [dof(node, 0, NN) for node in right_nodes]
+    force_x = float(np.sum(reaction[right_ux_dofs]))
 
-    Fx = float(np.sum(np.asarray(reaction)[right_ux_dofs]))
-
-    # 初始截面积 A0 = 1 mm * 1 mm = 1 mm^2
     A0 = 1.0
-    nominal_stress = Fx / A0
+    engineering_stress = force_x / A0
+    engineering_strain = stretch - 1.0
 
-    # 初始长度 L0 = 1 mm
-    L0 = 1.0
-    stretch = 1.0 + ubar / L0
+    analytical_stress = float(yeoh_analytical_stress(stretch))
+    abs_error = abs(engineering_stress - analytical_stress)
+
+    if abs(analytical_stress) > 1.0e-14:
+        rel_error = abs_error / abs(analytical_stress)
+    else:
+        rel_error = 0.0
+
+    F, _, _ = model.compute_F(uh)
+    J = np.asarray(material.compute_J(F), dtype=float)
 
     return {
         "nu": nu,
         "D1": D1,
-        "ubar": ubar,
         "stretch": stretch,
-        "reaction_force": Fx,
-        "nominal_stress": nominal_stress,
+        "engineering_strain": engineering_strain,
+        "reaction_force": force_x,
+        "engineering_stress": engineering_stress,
+        "analytical_stress": analytical_stress,
+        "abs_error": abs_error,
+        "rel_error": rel_error,
         "converged": converged,
         "nsteps": nsteps,
+        "J_min": float(np.min(J)),
+        "J_max": float(np.max(J)),
+        "J_mean": float(np.mean(J)),
     }
 
-def run_sweep_for_two_nu():
+
+def run_sweep():
     nus = [0.495, 0.49999]
 
-    stretch_values = np.linspace(0.7, 1.3, 13)
-    # 后面稳定以后再改成：
-    # stretch_values = np.linspace(0.5, 1.5, 21)
+    # Altair benchmark reproduction range
+    stretch_values = np.linspace(0.5, 3.0, 51)
 
-    all_results = []
+    results = []
 
     for nu in nus:
-        print(f"\n==============================")
+        print("\n==============================")
         print(f"Running sweep for nu = {nu}")
-        print(f"==============================")
+        print("==============================")
 
         for stretch in stretch_values:
-            ubar = stretch - 1.0
-
-            result = run_one_case(
-                ubar=ubar,
-                nu=nu,
-                q=2,
-                nsteps=None,
-                verbose=False,
-            )
-
-            all_results.append(result)
+            r = run_one_case(stretch=stretch, nu=nu, q=2, verbose=False)
+            results.append(r)
 
             print(
-                f"nu = {nu:.5f}, "
-                f"stretch = {result['stretch']:.6f}, "
-                f"stress = {result['nominal_stress']:.12e}, "
-                f"converged = {result['converged']}"
+                f"nu={nu:.5f}, "
+                f"strain={r['engineering_strain']:.4f}, "
+                f"stress={r['engineering_stress']:.12e}, "
+                f"ana={r['analytical_stress']:.12e}, "
+                f"rel_err={r['rel_error']:.3e}, "
+                f"J={r['J_mean']:.12e}, "
+                f"conv={r['converged']}, "
+                f"nsteps={r['nsteps']}"
             )
 
-    return all_results
+    return results
 
-def save_results_to_csv(results, filename="yeoh_one_element_two_nu_sweep.csv"):
-    import csv
 
+def save_csv(results, filename):
     fieldnames = [
         "nu",
         "D1",
-        "ubar",
         "stretch",
+        "engineering_strain",
         "reaction_force",
-        "nominal_stress",
+        "engineering_stress",
+        "analytical_stress",
+        "abs_error",
+        "rel_error",
         "converged",
         "nsteps",
+        "J_min",
+        "J_max",
+        "J_mean",
     ]
 
     with open(filename, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
-
-        for row in results:
-            writer.writerow(row)
+        writer.writerows(results)
 
     print(f"\nSaved csv to: {filename}")
 
 
-def plot_results(results, filename="yeoh_one_element_two_nu_stress_stretch.png"):
-    import matplotlib.pyplot as plt
+def plot_stress_strain(results, filename):
+    plt.figure(figsize=(8, 5.5))
 
-    nus = sorted(set(row["nu"] for row in results))
-
-    plt.figure(figsize=(7, 5))
-
-    for nu in nus:
-        rows = [row for row in results if row["nu"] == nu]
-        rows = sorted(rows, key=lambda r: r["stretch"])
-
-        x = [row["stretch"] for row in rows]
-        y = [row["nominal_stress"] for row in rows]
-
-        plt.plot(
-            x,
-            y,
-            marker="o",
-            label=f"nu = {nu}",
+    for nu in sorted(set(r["nu"] for r in results)):
+        rows = sorted(
+            [r for r in results if r["nu"] == nu],
+            key=lambda r: r["engineering_strain"],
         )
 
-    plt.axhline(0.0, linewidth=0.8)
-    plt.axvline(1.0, linewidth=0.8)
+        x = [r["engineering_strain"] for r in rows]
+        y = [r["engineering_stress"] for r in rows]
 
-    plt.xlabel("Stretch ratio")
-    plt.ylabel("Nominal stress")
-    plt.title("Yeoh one-element tension/compression benchmark")
+        plt.plot(x, y, marker="o", label=f"FEALPy, nu = {nu}")
+
+    strain_min = min(r["engineering_strain"] for r in results)
+    strain_max = max(r["engineering_strain"] for r in results)
+
+    strain_ref = np.linspace(strain_min, strain_max, 400)
+    stretch_ref = 1.0 + strain_ref
+    stress_ref = yeoh_analytical_stress(stretch_ref)
+
+    plt.plot(
+        strain_ref,
+        stress_ref,
+        "k--",
+        linewidth=2.0,
+        label="Analytical incompressible Yeoh",
+    )
+
+    plt.axhline(0.0, linewidth=0.8)
+    plt.axvline(0.0, linewidth=0.8)
+
+    plt.xlabel("Engineering strain")
+    plt.ylabel("Engineering stress")
+    plt.title("RD-V: 0210 Yeoh Hyperelastic Material Benchmark")
     plt.grid(True)
     plt.legend()
     plt.tight_layout()
-
     plt.savefig(filename, dpi=300)
+
     print(f"Saved figure to: {filename}")
-# =====================================================
-# 6. Main test
-# =====================================================
+
+
+def plot_J(results, filename):
+    plt.figure(figsize=(8, 5.5))
+
+    for nu in sorted(set(r["nu"] for r in results)):
+        rows = sorted(
+            [r for r in results if r["nu"] == nu],
+            key=lambda r: r["engineering_strain"],
+        )
+
+        x = [r["engineering_strain"] for r in rows]
+        y = [max(abs(r["J_mean"] - 1.0), 1.0e-12) for r in rows]
+
+        plt.semilogy(x, y, marker="o", label=f"FEALPy, nu = {nu}")
+
+    plt.xlabel("Engineering strain")
+    plt.ylabel("|J_mean - 1|")
+    plt.title("Volume change check")
+    plt.grid(True)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(filename, dpi=300)
+
+    print(f"Saved figure to: {filename}")
+
 
 if __name__ == "__main__":
-    results = run_sweep_for_two_nu()
+    results = run_sweep()
 
-    save_results_to_csv(
-        results,
-        filename="yeoh_one_element_two_nu_sweep.csv",
-    )
+    csv_file = OUTPUT_DIR / "yeoh_altair_rd_v_0210_results.csv"
+    stress_fig = OUTPUT_DIR / "yeoh_altair_rd_v_0210_stress_strain.png"
+    J_fig = OUTPUT_DIR / "yeoh_altair_rd_v_0210_J_check.png"
 
-    plot_results(
-        results,
-        filename="yeoh_one_element_two_nu_stress_stretch.png",
-    )
+    save_csv(results, csv_file)
+    plot_stress_strain(results, stress_fig)
+    plot_J(results, J_fig)
