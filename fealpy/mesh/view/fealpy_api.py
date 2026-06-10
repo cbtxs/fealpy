@@ -11,7 +11,7 @@ from .mesh import Mesh
 __all__ = ["FEALPyMesh"]
 
 
-@dataclass(slots=True)
+@dataclass
 class FEALPyMesh(Mesh):
     """Provides a view of the mesh compatible with FEALPy's API."""
     def __post_init__(self):
@@ -211,7 +211,7 @@ class FEALPyMesh(Mesh):
         local_f2e = face_sec.schema.local_entity("edge")
         n = [item[0] for item in local_f2e]
 
-        for i in range(3):
+        for i in range(len(n)):
             sign[:, i] = face_sec.indices[:, n[i]] == edge_sec.indices[f2e[:, i], 0]
 
         return sign

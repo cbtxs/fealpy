@@ -15,7 +15,7 @@ class AdjointRelation(NamedTuple):
     tgt_indices: Tensor
 
 
-@dataclass(slots=True)
+@dataclass
 class Mesh:
     block: MeshBlock
 
@@ -83,9 +83,9 @@ class Mesh:
     def geo_dimension(self) -> int:
         return int(self.block.positions.shape[1])
 
-    def legacy(self):
+    def fealpy_api(self):
         """Provides a view of the mesh compatible with FEALPy's API."""
-        from .fealpy_legacy import FEALPyMesh
+        from .fealpy_api import FEALPyMesh
         return FEALPyMesh(self.block)
 
     def sector(self, name: str, /) -> EntityView:

@@ -37,6 +37,9 @@ class EntityView:
     def barycenter(self, *, index: Index | None = None) -> Tensor:
         return self.schema.barycenter(self.context(), index)
 
+    def bc_to_point(self, bc: Tensor, *, index: Index | None = None) -> Tensor:
+        return self.schema.bc_to_point(self.context(), bc, index)
+
     def boundary(self) -> "BoundaryInfo":
         """Infer the boundary entities of this entity, and return a mapping from
         boundary name to its information.
@@ -58,21 +61,66 @@ class EntityView:
     def grad_lambda(
         self,
         *,
-        index: Index | None = None,
         bcs: tuple[Tensor, ...] | None = None,
+        index: Index | None = None,
         ref: bool = False,
     ) -> Tensor:
         return self.schema.grad_lambda(self.context(), index, bcs=bcs, ref=ref)
+
+    def grad_shape_function(
+        self,
+        *,
+        bcs: tuple[Tensor, ...] | None = None,
+        p: int = 1,
+        index: Index | None = None,
+        variables: str = "u",
+        mi = None
+    ) -> Tensor:
+        return self.schema.grad_shape_function(
+            self.context(), bcs=bcs, p=p, index=index, variables=variables, mi=mi
+        )
 
     @property
     def indices(self) -> Tensor:
         return self.sector.indices
 
+    def integral(self, func: Callable[[Tensor], Tensor], /, *, index: Index | None = None, q: int = 3) -> Tensor:
+        return self.schema.integral(self.context(), index, func, q)
+
+    def jacobi_matrix(self, *, index: Index | None = None) -> Tensor:
+        return self.schema.jacobi_matrix(self.context(), index)
+
     def measure(self, *, index: Index | None = None) -> Tensor:
         return self.schema.measure(self.context(), index)
 
+    def multi_index_matrix(self, order: int | tuple[int, ...]):
+        if isinstance(order, int):
+            order = (order,)
+        return self.schema.multi_index(order)
+
     def normal(self, *, index: Index | None = None) -> Tensor:
         return self.schema.normal(self.context(), index)
+
+    def num_multi_index(self, order: int | tuple[int, ...]) -> int:
+        if isinstance(order, int):
+            order = (order,)
+        return self.schema.num_multi_index(order)
+
+    def quadrature_formula(self, q: int = 3, qtype: str = "legendre") -> tuple[Tensor, Tensor]:
+        return self.schema.quadrature_formula(q, qtype)
+
+    def shape_function(
+        self,
+        bcs: tuple[Tensor, ...],
+        p: int = 1,
+        *,
+        index: Index | None = None,
+        variables: str = "u",
+        mi = None
+    ) -> Tensor:
+        return self.schema.shape_function(
+            self.context(), bcs, p, index, variables=variables, mi=mi
+        )
 
     def size(self) -> int:
         return self.schema.size(self.context())
