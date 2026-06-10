@@ -1,6 +1,11 @@
 from ...backend import bm
 from ...backend import Index, Tensor
-from .entity_schema import EntityContext, ShapedEntitySchema, _require_bcs_tuple
+from .entity_schema import (
+    EntityContext,
+    ShapedEntitySchema,
+    _require_bcs_tuple,
+    _require_order_tuple,
+)
 
 __all__ = ["QuadrilateralSchema"]
 
@@ -12,30 +17,17 @@ class QuadrilateralSchema(ShapedEntitySchema):
     ccw = {'edge': [[0, 1], [1, 3], [3, 2], [2, 0]]}
 
     @classmethod
-    def multi_index(cls, order: tuple[int, ...]) -> Tensor:
-        if not isinstance(order, tuple):
-            raise TypeError(
-                f"quadrilateral multi_index expects a tuple of integers, got {type(order).__name__}"
-            )
-        if len(order) == 1:
-            px, py = order[0], order[0]
-        elif len(order) == 2:
-            px, py = order
+    def multi_index(cls, order: tuple[int, ...], *, internal: bool = False) -> Tensor:
+        px, py = _require_order_tuple(order, "quadrilateral multi_index", 2)
+
+        if internal:
+            ix = bm.arange(1, px, dtype=bm.int32)
+            iy = bm.arange(1, py, dtype=bm.int32)
+            shape = (max(px - 1, 0), max(py - 1, 0))
         else:
-            raise ValueError(f"quadrilateral multi_index expects one or two order values, got {len(order)}")
-
-        if not isinstance(px, int):
-            raise TypeError(f"quadrilateral multi_index order must be an integer, got {type(px).__name__}")
-        if not isinstance(py, int):
-            raise TypeError(f"quadrilateral multi_index order must be an integer, got {type(py).__name__}")
-        if px < 0:
-            raise ValueError(f"quadrilateral multi_index order must be non-negative, got {px}")
-        if py < 0:
-            raise ValueError(f"quadrilateral multi_index order must be non-negative, got {py}")
-
-        ix = bm.arange(px + 1, dtype=bm.int32)
-        iy = bm.arange(py + 1, dtype=bm.int32)
-        shape = (px + 1, py + 1)
+            ix = bm.arange(px + 1, dtype=bm.int32)
+            iy = bm.arange(py + 1, dtype=bm.int32)
+            shape = (px + 1, py + 1)
         multi_index0 = bm.broadcast_to(ix[:, None], shape).reshape(-1, 1)
         multi_index1 = bm.broadcast_to(iy[None, :], shape).reshape(-1, 1)
         return bm.concatenate([multi_index0, multi_index1], axis=1)
@@ -66,17 +58,19 @@ class QuadrilateralSchema(ShapedEntitySchema):
     @classmethod
     def shape_function(
         cls,
+        ctx: EntityContext,
         bcs: tuple[Tensor, ...],
-        p: int = 1,
+        p: tuple[int, ...],
         *,
         index: Index | None = None,
         variables: str = "u",
         mi=None,
     ) -> Tensor:
         bcs = _require_bcs_tuple(bcs, "quadrilateral shape_function", 2)
+        p = _require_order_tuple(p, "quadrilateral shape_function", 2)
         if bcs[0].shape[-1] != 2 or bcs[1].shape[-1] != 2:
             raise ValueError("quadrilateral shape_function expects two interval barycentric tensors")
-        phi = bm.tensorprod(*(bm.simplex_shape_function(bc, p, mi) for bc in bcs))
+        phi = bm.tensorprod(*(bm.simplex_shape_function(bc, p, mi) for bc, p in zip(bcs, p)))
         if variables == "u":
             return phi
         if variables == "x":
@@ -88,40 +82,45 @@ class QuadrilateralSchema(ShapedEntitySchema):
         cls,
         ctx: EntityContext,
         bcs: tuple[Tensor, ...],
-        p: int = 1,
+        p: tuple[int, ...],
         *,
         index: Index | None = None,
         variables: str = "u",
         mi=None,
     ) -> Tensor:
         bcs = _require_bcs_tuple(bcs, "quadrilateral grad_shape_function", 2)
+        p = _require_order_tuple(p, "quadrilateral grad_shape_function", 2)
         if bcs[0].shape[-1] != 2 or bcs[1].shape[-1] != 2:
             raise ValueError("quadrilateral grad_shape_function expects two interval barycentric tensors")
 
-        phi0, phi1 = (bm.simplex_shape_function(bc, p, mi) for bc in bcs)
-        R0, R1 = (bm.simplex_grad_shape_function(bc, p, mi) for bc in bcs)
-        Dlambda = bm.asarray([[-1.0], [1.0]], dtype=phi0.dtype)
-        R0 = bm.einsum("...ij,jn->...in", R0, Dlambda)
-        R1 = bm.einsum("...ij,jn->...in", R1, Dlambda)
-        ref = bm.concatenate(
-            [
-                R0[:, None, :, None, :] * phi1[None, :, None, :, None],
-                phi0[:, None, :, None, None] * R1[None, :, None, :, :],
-            ],
-            axis=-1,
-        ).reshape(-1, phi0.shape[1] * phi1.shape[1], 2)
+        Dlambda = bm.asarray([-1, 1], device=bm.get_device(bcs[0]), dtype=bm.float64)
+        phi0 = bm.simplex_shape_function(bcs[0], p=p[0], mi=mi)
+        phi1 = bm.simplex_shape_function(bcs[1], p=p[1], mi=mi)
+        R0 = bm.simplex_grad_shape_function(bcs[0], p=p[0], mi=mi)
+        R1 = bm.simplex_grad_shape_function(bcs[1], p=p[1], mi=mi)
+        dphi0 = bm.einsum('...ij, j->...i', R0, Dlambda)
+        dphi1 = bm.einsum('...ij, j->...i', R1, Dlambda)
+        ldof = cls.num_multi_index(p)
+
+        gphi0 = bm.einsum('im, jn -> ijmn', dphi0, phi1).reshape(-1, ldof, 1)
+        gphi1 = bm.einsum('im, jn -> ijmn', phi0, dphi1).reshape(-1, ldof, 1)
+        gphi = bm.concatenate((gphi0, gphi1), axis=-1)
         if variables == "u":
-            return ref
+            return gphi
         if variables == "x":
-            if p != 1:
-                raise NotImplementedError("quadrilateral grad_shape_function currently only supports p=1 in physical space")
-            return cls.grad_lambda(ctx, index, bcs=bcs, ref=False)
+            J = cls.jacobi_matrix(ctx, bcs, index=index)           # (NC, NQ, GD, GD)
+            G = cls.first_fundamental_form(J)                      # (NC, NQ, GD, GD)
+            G = bm.linalg.inv(G)
+            gphi = bm.einsum('cqkm, cqmn, qln -> cqlk', J, G, gphi) # (NC, NQ, ldof, GD)
+
+            return gphi
         raise ValueError(f"Unsupported variables: {variables!r}")
 
     @classmethod
-    def quadrature_formula(cls, q: int, qtype: str | None = None):
-        from ...quadrature import QuadrangleQuadrature
-        return QuadrangleQuadrature(q)
+    def quadrature_formula(cls, q: int, qtype: str | None = "legendre", device=None):
+        from ...quadrature import GaussLegendreQuadrature, TensorProductQuadrature
+        qf = GaussLegendreQuadrature(q, device=device)
+        return TensorProductQuadrature((qf, qf))
 
     @classmethod
     def grad_lambda(
@@ -153,6 +152,7 @@ class QuadrilateralSchema(ShapedEntitySchema):
             )
             squeeze_q = True
         else:
+            bcs = _require_bcs_tuple(bcs, "quadrilateral grad_lambda", 2)
             squeeze_q = False
         u, v = bcs
         u0, u1 = u[:, 0], u[:, 1]
@@ -183,6 +183,21 @@ class QuadrilateralSchema(ShapedEntitySchema):
         metric_inv = bm.linalg.inv(metric)
         grad = bm.einsum("cqdt,cqts,qis->cqid", Jt, metric_inv, dphi_duv)
         return grad[:, 0, :, :] if squeeze_q else grad
+
+    @classmethod
+    def jacobi_matrix(
+        cls,
+        ctx: EntityContext,
+        bcs: tuple[Tensor, ...] | None = None,
+        index: Index | None = None,
+    ) -> Tensor:
+        bcs = _require_bcs_tuple(bcs, "quadrilateral jacobi_matrix", 2)
+        node = ctx.block.positions
+        cell = ctx.sector.indices
+        gphi = cls.grad_shape_function(ctx, bcs, p=(1, 1), variables='u', index=index) # (NQ, ldof, GD)
+        J = bm.einsum('cim, qin -> cqmn', node[cell], gphi) # (NC, NQ, GD, GD)
+
+        return J
 
     @classmethod
     def measure(cls, ctx: EntityContext, index: Index | None) -> Tensor:

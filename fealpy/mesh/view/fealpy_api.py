@@ -103,6 +103,62 @@ class FEALPyMesh(Mesh):
         block = self.entity_view(top_dim)
         return block.barycenter(index=index)
 
+    # [Shape functions]
+
+    def shape_function(
+        self,
+        bcs: Tensor | tuple[Tensor, ...],
+        p: int | tuple[int, ...] = 1,
+        *,
+        index: Index | None = None,
+        variables: str = "u",
+        mi=None
+    ) -> Tensor:
+        return self.entity_view(-1).shape_function(
+            bcs, p=p, index=index, variables=variables, mi=mi
+        )
+
+    cell_shape_function = shape_function
+
+    def face_shape_function(
+        self,
+        bcs: Tensor | tuple[Tensor, ...],
+        p: int | tuple[int, ...] = 1,
+        *,
+        index: Index | None = None,
+        variables: str = "u",
+        mi=None
+    ) -> Tensor:
+        return self.entity_view(-2).shape_function(
+            bcs, p=p, index=index, variables=variables, mi=mi
+        )
+
+    def edge_shape_function(
+        self,
+        bcs: Tensor | tuple[Tensor, ...],
+        p: int | tuple[int, ...] = 1,
+        *,
+        index: Index | None = None,
+        variables: str = "u",
+        mi=None
+    ) -> Tensor:
+        return self.entity_view(1).shape_function(
+            bcs, p=p, index=index, variables=variables, mi=mi
+        )
+
+    def grad_shape_function(
+        self,
+        bcs: Tensor | tuple[Tensor, ...],
+        p: int | tuple[int, ...] = 1,
+        *,
+        index: Index | None = None,
+        variables: str = "u",
+        mi=None
+    ) -> Tensor:
+        return self.entity_view(-1).grad_shape_function(
+            bcs, p=p, index=index, variables=variables, mi=mi
+        )
+
     def number_of_cells(self) -> int:
         return self.entity_view(self.top_dimension()).size()
 
@@ -115,37 +171,24 @@ class FEALPyMesh(Mesh):
     def number_of_nodes(self) -> int:
         return self.block.positions.shape[0]
 
-    def multi_index_matrix(self, p: int, etype: int):
+    def number_of_global_ipoints(self, p: int | tuple[int, ...]) -> int:
+        total = 0
+        for name in self.block.sectors:
+            sector_view = self.sector(name)
+            total += sector_view.num_multi_index(p, internal=True) * sector_view.size()
+        return total
+
+    def number_of_local_ipoints(self, p: int | tuple[int, ...], iptype: str | int = "cell") -> int:
+        return self.entity_view(iptype).num_multi_index(p)
+
+    def multi_index_matrix(self, p: int | tuple[int, ...], etype: int):
         """Returns the multi-index matrix for polynomial degree p and number of nodes n."""
-        from ..topology.ipoints import InterpolationPoints
-        return InterpolationPoints.multi_index_matrix(p, etype + 1)
+        sec = self.entity_view(etype)
+        return sec.multi_index_matrix(p)
 
     def quadrature_formula(self, q: int, etype: str | int = "cell", qtype: str = "legendre"):
         """Returns FEALPy quadrature object for simplex entities."""
-        etype = self._etype_to_dim(etype)
-        td = self.top_dimension()
-
-        if etype == 1:
-            from fealpy.quadrature import GaussLegendreQuadrature
-            return GaussLegendreQuadrature(q)
-
-        if etype == 2:
-            from fealpy.quadrature import TriangleQuadrature
-            if q > 9:
-                from fealpy.quadrature.stroud_quadrature import StroudQuadrature
-                return StroudQuadrature(2, q)
-            return TriangleQuadrature(q)
-
-        if etype == 3:
-            if td != 3:
-                raise ValueError(f"Entity dim 3 requires a 3D mesh, got top dimension {td}")
-            if q > 7:
-                from fealpy.quadrature.stroud_quadrature import StroudQuadrature
-                return StroudQuadrature(3, q)
-            from fealpy.quadrature import TetrahedronQuadrature
-            return TetrahedronQuadrature(q)
-
-        raise ValueError(f"Unsupported entity dimension for quadrature: {etype}")
+        return self.entity_view(etype).quadrature_formula(q, qtype)
 
     # Topology
 

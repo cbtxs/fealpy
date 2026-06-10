@@ -1,7 +1,12 @@
 from ...backend import bm
 from ...backend import Index, Tensor
 from ..topology.ipoints import InterpolationPoints
-from .entity_schema import EntityContext, ShapedEntitySchema, _require_bcs_tuple
+from .entity_schema import (
+    EntityContext,
+    ShapedEntitySchema,
+    _require_bcs_tuple,
+    _require_order_tuple,
+)
 
 __all__ = ["PyramidSchema"]
 
@@ -75,7 +80,7 @@ class PyramidSchema(ShapedEntitySchema):
         return bm.stack([g0, g1, g2, g3, g4], axis=1)
 
     @classmethod
-    def bc_to_point(cls, ctx: EntityContext, bcs: tuple[Tensor, Tensor, Tensor],
+    def bc_to_point(cls, ctx: EntityContext, bcs: tuple[Tensor, ...],
                     index: Index | None) -> Tensor:
         bcs = _require_bcs_tuple(bcs, "pyramid bc_to_point", 3)
         pyramid = ctx.sector.indices if index is None else ctx.sector.indices[index]
@@ -87,15 +92,16 @@ class PyramidSchema(ShapedEntitySchema):
     def shape_function(
         cls,
         bcs: tuple[Tensor, ...],
-        p: int = 1,
+        p: tuple[int, ...],
         *,
         index: Index | None = None,
         variables: str = "u",
         mi: Tensor | None = None,
     ) -> Tensor:
-        if p != 1:
-            raise NotImplementedError("pyramid shape_function currently only supports p=1")
         bcs = _require_bcs_tuple(bcs, "pyramid shape_function", 3)
+        p = _require_order_tuple(p, "pyramid shape_function", 1)
+        if p[0] != 1:
+            raise NotImplementedError("pyramid shape_function currently only supports p=1")
         phi = cls.geometry_shape_function(bcs)
         if variables == "u":
             return phi
@@ -108,15 +114,16 @@ class PyramidSchema(ShapedEntitySchema):
         cls,
         ctx: EntityContext,
         bcs: tuple[Tensor, ...],
-        p: int = 1,
+        p: tuple[int, ...],
         *,
         index: Index | None = None,
         variables: str = "u",
         mi: Tensor | None = None,
     ) -> Tensor:
-        if p != 1:
+        bcs = _require_bcs_tuple(bcs, "pyramid grad_shape_function", 1)
+        p = _require_order_tuple(p, "pyramid grad_shape_function", 1)
+        if p[0] != 1:
             raise NotImplementedError("pyramid grad_shape_function currently only supports p=1")
-        bcs = _require_bcs_tuple(bcs, "pyramid grad_shape_function", 3)
         ref = cls.geometry_grad_shape_function(bcs)
         if variables == "u":
             return ref
@@ -182,22 +189,11 @@ class PyramidSchema(ShapedEntitySchema):
 
     @classmethod
     def multi_index(cls, order: tuple[int, ...]) -> Tensor:
-        if not isinstance(order, tuple):
-            raise TypeError(
-                f"pyramid multi_index expects a tuple of integers, got {type(order).__name__}"
-            )
-        if len(order) != 1:
-            raise ValueError(f"pyramid multi_index expects one order value, got {len(order)}")
-
-        p = order[0]
-        if not isinstance(p, int):
-            raise TypeError(f"pyramid multi_index order must be an integer, got {type(p).__name__}")
-        if p < 0:
-            raise ValueError(f"pyramid multi_index order must be non-negative, got {p}")
+        p = _require_order_tuple(order, "pyramid multi_index", 1)[0]
         return InterpolationPoints.multi_index_matrix(p, 5) # TODO: not correct
 
     @classmethod
-    def quadrature_formula(cls, q: int, qtype: str | None = "legendre"):
+    def quadrature_formula(cls, q: int, qtype: str | None = "legendre", device=None):
         if qtype not in (None, "legendre"):
             raise ValueError(f"unsupported pyramid quadrature type: {qtype!r}")
         from fealpy.quadrature import GaussLegendreQuadrature, TensorProductQuadrature

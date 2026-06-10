@@ -78,6 +78,29 @@ class Mesh:
             for tgt in self.entity_views(tgt_etype):
                 yield src.to(tgt)
 
+    ## Checkers
+
+    def is_simplex_mesh(self) -> bool:
+        """Check if the mesh is a simplex mesh."""
+        for name in self.block.sectors.keys():
+            if name not in {"node", "edge", "tri", "tet"}:
+                return False
+        return True
+
+    def is_tensor_mesh(self) -> bool:
+        """Check if the mesh is a tensor mesh."""
+        for name in self.block.sectors.keys():
+            if name not in {"node", "edge", "quad", "hex"}:
+                return False
+        return True
+
+    def is_elemental(self, entity_name: str | None = None, /) -> bool:
+        """Check if the mesh has only one root entity type."""
+        is_one_root = len(self.block.root_entity_names) == 1
+        if entity_name is None:
+            return is_one_root
+        return is_one_root and self.block.root_entity_names[0] == entity_name
+
     ## Other getters
 
     def geo_dimension(self) -> int:

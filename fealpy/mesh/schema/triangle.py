@@ -1,7 +1,12 @@
 from ...backend import bm
 from ...backend import Index, Tensor
 from ..topology.ipoints import InterpolationPoints
-from .entity_schema import EntityContext, ShapedEntitySchema, _require_bcs_tuple
+from .entity_schema import (
+    EntityContext,
+    ShapedEntitySchema,
+    _require_bcs_tuple,
+    _require_order_tuple,
+)
 
 __all__ = ["TriangleSchema"]
 
@@ -24,20 +29,12 @@ class TriangleSchema(ShapedEntitySchema):
         return tri
 
     @classmethod
-    def multi_index(cls, order: tuple[int, ...]) -> Tensor:
-        if not isinstance(order, tuple):
-            raise TypeError(
-                f"triangle multi_index expects a tuple of integers, got {type(order).__name__}"
-            )
-        if len(order) != 1:
-            raise ValueError(f"triangle multi_index expects one order value, got {len(order)}")
-
-        p = order[0]
-        if not isinstance(p, int):
-            raise TypeError(f"triangle multi_index order must be an integer, got {type(p).__name__}")
-        if p < 0:
-            raise ValueError(f"triangle multi_index order must be non-negative, got {p}")
-        return InterpolationPoints.multi_index_matrix(p, cls.top_dim + 1)
+    def multi_index(cls, order: tuple[int, ...], *, internal: bool = False) -> Tensor:
+        p = _require_order_tuple(order, "triangle multi_index", 1)[0]
+        if internal:
+            return InterpolationPoints.multi_index_inner(p, 3)
+        else:
+            return InterpolationPoints.multi_index_matrix(p, 3)
 
     @classmethod
     def barycenter(cls, ctx: EntityContext, index: Index | None) -> Tensor:
@@ -49,16 +46,17 @@ class TriangleSchema(ShapedEntitySchema):
     def shape_function(
         cls,
         bcs: tuple[Tensor, ...],
-        p: int = 1,
+        p: tuple[int, ...],
         *,
         index: Index | None = None,
         variables: str = "u",
         mi=None,
     ) -> Tensor:
         bcs = _require_bcs_tuple(bcs, "triangle shape_function", 1)
+        p = _require_order_tuple(p, "triangle shape_function", 1)
         if bcs[0].shape[-1] != 3:
             raise ValueError(f"triangle shape_function expects last dimension 3, got {bcs[0].shape[-1]}")
-        phi = bm.simplex_shape_function(bcs[0], p, mi)
+        phi = bm.simplex_shape_function(bcs[0], p[0], mi)
         if variables == "u":
             return phi
         if variables == "x":
@@ -70,16 +68,17 @@ class TriangleSchema(ShapedEntitySchema):
         cls,
         ctx: EntityContext,
         bcs: tuple[Tensor, ...],
-        p: int = 1,
+        p: tuple[int, ...],
         *,
         index: Index | None = None,
         variables: str = "u",
         mi=None,
     ) -> Tensor:
         bcs = _require_bcs_tuple(bcs, "triangle grad_shape_function", 1)
+        p = _require_order_tuple(p, "triangle grad_shape_function", 1)
         if bcs[0].shape[-1] != 3:
             raise ValueError(f"triangle grad_shape_function expects last dimension 3, got {bcs[0].shape[-1]}")
-        ref = bm.simplex_grad_shape_function(bcs[0], p, mi)
+        ref = bm.simplex_grad_shape_function(bcs[0], p[0], mi)
         if variables == "u":
             return ref
         if variables == "x":
@@ -122,18 +121,19 @@ class TriangleSchema(ShapedEntitySchema):
                 raise ValueError(f"unsupported geometric dimension: {gd}")
         if bcs is None:
             return grad
+        bcs = _require_bcs_tuple(bcs, "triangle grad_lambda", 1)
         nq = int(bcs[0].shape[0])
         return bm.broadcast_to(grad[:, None, :, :], (tri.shape[0], nq, grad.shape[1], grad.shape[2]))
 
     @classmethod
-    def quadrature_formula(cls, q: int, qtype: str = "legendre"):
+    def quadrature_formula(cls, q: int, qtype: str = "legendre", device=None):
         if qtype != "legendre":
             raise ValueError(f"unsupported quadrature type: {qtype}")
         if q > 9:
             from ...quadrature.stroud_quadrature import StroudQuadrature
             return StroudQuadrature(2, q)
         from ...quadrature import TriangleQuadrature
-        return TriangleQuadrature(q)
+        return TriangleQuadrature(q, device=device)
 
     @classmethod
     def measure(cls, ctx: EntityContext, index: Index | None) -> Tensor:

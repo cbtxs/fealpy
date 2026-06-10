@@ -60,22 +60,26 @@ class EntityView:
 
     def grad_lambda(
         self,
-        *,
         bcs: tuple[Tensor, ...] | None = None,
         index: Index | None = None,
+        *,
         ref: bool = False,
     ) -> Tensor:
         return self.schema.grad_lambda(self.context(), index, bcs=bcs, ref=ref)
 
     def grad_shape_function(
         self,
+        bcs: Tensor | tuple[Tensor, ...],
+        p: int | tuple[int, ...] = 1,
         *,
-        bcs: tuple[Tensor, ...] | None = None,
-        p: int = 1,
         index: Index | None = None,
         variables: str = "u",
         mi = None
     ) -> Tensor:
+        if isinstance(bcs, Tensor):
+            bcs = (bcs,)
+        if isinstance(p, int):
+            p = (p,)
         return self.schema.grad_shape_function(
             self.context(), bcs=bcs, p=p, index=index, variables=variables, mi=mi
         )
@@ -93,31 +97,35 @@ class EntityView:
     def measure(self, *, index: Index | None = None) -> Tensor:
         return self.schema.measure(self.context(), index)
 
-    def multi_index_matrix(self, order: int | tuple[int, ...]):
+    def multi_index_matrix(self, order: int | tuple[int, ...], *, internal: bool = False):
         if isinstance(order, int):
             order = (order,)
-        return self.schema.multi_index(order)
+        return self.schema.multi_index(order, internal=internal)
 
     def normal(self, *, index: Index | None = None) -> Tensor:
         return self.schema.normal(self.context(), index)
 
-    def num_multi_index(self, order: int | tuple[int, ...]) -> int:
+    def num_multi_index(self, order: int | tuple[int, ...], *, internal: bool = False) -> int:
         if isinstance(order, int):
             order = (order,)
-        return self.schema.num_multi_index(order)
+        return self.schema.num_multi_index(order, internal=internal)
 
     def quadrature_formula(self, q: int = 3, qtype: str = "legendre") -> tuple[Tensor, Tensor]:
         return self.schema.quadrature_formula(q, qtype)
 
     def shape_function(
         self,
-        bcs: tuple[Tensor, ...],
-        p: int = 1,
+        bcs: Tensor | tuple[Tensor, ...],
+        p: int | tuple[int, ...] = 1,
         *,
         index: Index | None = None,
         variables: str = "u",
         mi = None
     ) -> Tensor:
+        if isinstance(bcs, Tensor):
+            bcs = (bcs,)
+        if isinstance(p, int):
+            p = (p,)
         return self.schema.shape_function(
             self.context(), bcs, p, index, variables=variables, mi=mi
         )

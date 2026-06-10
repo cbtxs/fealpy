@@ -1,7 +1,12 @@
 from ...backend import bm
 from ...backend import Index, Tensor
 from ..topology.ipoints import InterpolationPoints
-from .entity_schema import EntityContext, ShapedEntitySchema, _require_bcs_tuple
+from .entity_schema import (
+    EntityContext,
+    ShapedEntitySchema,
+    _require_bcs_tuple,
+    _require_order_tuple,
+)
 
 __all__ = ["EdgeSchema"]
 
@@ -28,27 +33,17 @@ class EdgeSchema(ShapedEntitySchema):
         return ctx.block.positions[cls._entity(ctx, index)]
 
     @classmethod
-    def _parse_order(cls, order: tuple[int, ...]) -> int:
-        if not isinstance(order, tuple):
-            raise TypeError(f"edge multi_index expects a tuple of integers, got {type(order).__name__}")
-        if len(order) != 1:
-            raise ValueError(f"edge multi_index expects one order value, got {len(order)}")
-
-        order = order[0]
-        if not isinstance(order, int):
-            raise TypeError(f"edge multi_index order must be an integer, got {type(order).__name__}")
-        if order < 0:
-            raise ValueError(f"edge multi_index order must be non-negative, got {order}")
-        return order
-
-    @classmethod
-    def multi_index(cls, order: tuple[int, ...]) -> Tensor:
-        order = cls._parse_order(order)
+    def multi_index(cls, order: tuple[int, ...], *, internal: bool = False) -> Tensor:
+        order = _require_order_tuple(order, "edge multi_index", 1)[0]
+        if internal:
+            return InterpolationPoints.multi_index_inner(order, 2)
         return InterpolationPoints.multi_index_matrix(order, 2)
 
     @classmethod
-    def num_multi_index(cls, order: tuple[int, ...]) -> int:
-        order = cls._parse_order(order)
+    def num_multi_index(cls, order: tuple[int, ...], *, internal: bool = False) -> int:
+        order = _require_order_tuple(order, "edge num_multi_index", 1)[0]
+        if internal:
+            return order - 1 if order > 1 else 0
         return order + 1
 
     @classmethod
@@ -69,16 +64,17 @@ class EdgeSchema(ShapedEntitySchema):
     def shape_function(
         cls,
         bcs: tuple[Tensor, ...],
-        p: int = 1,
+        p: tuple[int, ...],
         *,
         index: Index | None = None,
         variables: str = "u",
         mi=None,
     ) -> Tensor:
         bcs = _require_bcs_tuple(bcs, "edge shape_function", 1)
+        p = _require_order_tuple(p, "edge shape_function", 1)
         if bcs[0].shape[-1] != 2:
             raise ValueError(f"edge shape_function expects last dimension 2, got {bcs[0].shape[-1]}")
-        phi = bm.simplex_shape_function(bcs[0], p, mi)
+        phi = bm.simplex_shape_function(bcs[0], p[0], mi)
         if variables == "u":
             return phi
         if variables == "x":
@@ -90,16 +86,17 @@ class EdgeSchema(ShapedEntitySchema):
         cls,
         ctx: EntityContext,
         bcs: tuple[Tensor, ...],
-        p: int = 1,
+        p: tuple[int, ...],
         *,
         index: Index | None = None,
         variables: str = "u",
         mi=None,
     ) -> Tensor:
         bcs = _require_bcs_tuple(bcs, "edge grad_shape_function", 1)
+        p = _require_order_tuple(p, "edge grad_shape_function", 1)
         if bcs[0].shape[-1] != 2:
             raise ValueError(f"edge grad_shape_function expects last dimension 2, got {bcs[0].shape[-1]}")
-        ref = bm.simplex_grad_shape_function(bcs[0], p, mi)
+        ref = bm.simplex_grad_shape_function(bcs[0], p[0], mi)
 
         if variables == "u":
             return ref
@@ -133,15 +130,16 @@ class EdgeSchema(ShapedEntitySchema):
             grad = bm.stack([g0, g1], axis=1)
         if bcs is None:
             return grad
+        bcs = _require_bcs_tuple(bcs, "edge grad_lambda", 1)
         nq = int(bcs[0].shape[0])
         return bm.broadcast_to(grad[:, None, :, :], (nc, nq, grad.shape[1], grad.shape[2]))
 
     @classmethod
-    def quadrature_formula(cls, q: int, qtype: str | None = "legendre"):
+    def quadrature_formula(cls, q: int, qtype: str | None = "legendre", device=None):
         if qtype not in (None, "legendre"):
             raise ValueError(f"unsupported edge quadrature type: {qtype!r}")
         from fealpy.quadrature import GaussLegendreQuadrature
-        return GaussLegendreQuadrature(q)
+        return GaussLegendreQuadrature(q, device=device)
 
     @classmethod
     def measure(cls, ctx: EntityContext, index: Index | None) -> Tensor:

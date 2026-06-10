@@ -1,7 +1,12 @@
 from ...backend import bm
 from ...backend import Index, Tensor
-from .entity_schema import EntityContext, ShapedEntitySchema, _require_bcs_tuple
 from ..topology.ipoints import InterpolationPoints
+from .entity_schema import (
+    EntityContext,
+    ShapedEntitySchema,
+    _require_bcs_tuple,
+    _require_order_tuple,
+)
 
 __all__ = ["PrismSchema"]
 
@@ -81,15 +86,15 @@ class PrismSchema(ShapedEntitySchema):
 
     # quadrature
     @classmethod
-    def quadrature_formula(cls, q: int, qtype: str = "legendre"):
+    def quadrature_formula(cls, q: int, qtype: str = "legendre", device=None):
         from ...quadrature import (
             GaussLegendreQuadrature,
             TensorProductQuadrature,
             TriangleQuadrature,
         )
 
-        qf0 = TriangleQuadrature(q)
-        qf1 = GaussLegendreQuadrature(q)
+        qf0 = TriangleQuadrature(q, device=device)
+        qf1 = GaussLegendreQuadrature(q, device=device)
         return TensorProductQuadrature((qf0, qf1))
 
     # shape function
@@ -97,34 +102,15 @@ class PrismSchema(ShapedEntitySchema):
     def shape_function(
         cls,
         bcs: tuple[Tensor, ...],
-        p: int = 1,
+        p: tuple[int, ...],
         *,
         index: Index | None = None,
         variables: str = "u",
         mi: Tensor | None = None
     ) -> Tensor:
-        """Compute the shape function values on the reference prism.
-
-        Parameters
-            bcs : tuple[Tensor, Tensor]
-                Tuple of barycentric coordinates on triangle and interval.
-            p : int, default=1
-                Polynomial degree.
-            index : Index | None, optional
-                Reserved for interface compatibility.
-            variables : str, default='u'
-                Variable space, either 'u' or 'x'.
-            mi : Tensor | None, optional
-                Multi-index matrix.
-
-        Returns
-            Tensor
-                Shape function values.
-                'u': (NQ, ldof).
-                'x': (1, NQ, ldof).
-        """
         bcs = _require_bcs_tuple(bcs, "prism shape_function", 2)
-        raw_phi = [bm.simplex_shape_function(bc, p, mi) for bc in bcs]
+        p = _require_order_tuple(p, "prism shape_function", 2)
+        raw_phi = [bm.simplex_shape_function(bc, p, mi) for bc, p in zip(bcs, p)]
         phi = bm.tensorprod(*raw_phi)
 
         if variables == "u":
@@ -139,37 +125,20 @@ class PrismSchema(ShapedEntitySchema):
         cls,
         ctx: EntityContext,
         bcs: tuple[Tensor, ...],
-        p: int = 1,
+        p: tuple[int, ...],
         *,
         index: Index | None = None, variables: str = "u",
         mi: Tensor | None = None
     ) -> Tensor:
-        """Compute the gradient of shape functions with respect to reference variables.
-
-        Parameters
-            bcs : tuple[Tensor, Tensor]
-                Tuple of barycentric coordinates on triangle and interval.
-            p : int, default=1
-                Polynomial degree.
-            index : Index | None, optional
-                Reserved for interface compatibility.
-            variables : str, default='u'
-                Variable space. Currently only 'u' is supported.
-            mi : Tensor | None, optional
-                Multi-index matrix.
-
-        Returns
-            Tensor
-                'u': (NQ, ldof, 3).
-        """
         bcs = _require_bcs_tuple(bcs, "prism grad_shape_function", 2)
+        p = _require_order_tuple(p, "prism grad_shape_function", 2)
         Dlambda0 = bm.array([[-1, -1], [1, 0], [0, 1]], dtype=bcs[0].dtype)
         Dlambda1 = bm.array([[-1], [1]], dtype=bcs[1].dtype)
 
-        phi0 = bm.simplex_shape_function(bcs[0], p, mi)
-        phi1 = bm.simplex_shape_function(bcs[1], p, mi)
-        R0 = bm.simplex_grad_shape_function(bcs[0], p, mi)
-        R1 = bm.simplex_grad_shape_function(bcs[1], p, mi)
+        phi0 = bm.simplex_shape_function(bcs[0], p[0], mi)
+        phi1 = bm.simplex_shape_function(bcs[1], p[1], mi)
+        R0 = bm.simplex_grad_shape_function(bcs[0], p[0], mi)
+        R1 = bm.simplex_grad_shape_function(bcs[1], p[1], mi)
 
         gphi0 = bm.einsum("...ij,jn->...in", R0, Dlambda0)
         gphi1 = bm.einsum("...ij,jn->...in", R1, Dlambda1)
@@ -189,7 +158,7 @@ class PrismSchema(ShapedEntitySchema):
         cls,
         ctx: EntityContext,
         index: Index | None = None,
-        bcs: tuple[Tensor, Tensor] | None = None,
+        bcs: tuple[Tensor, ...] | None = None,
         *,
         ref: bool = False,
     ) -> Tensor:
@@ -203,8 +172,9 @@ class PrismSchema(ShapedEntitySchema):
             )
             squeeze_q = True
         else:
+            bcs = _require_bcs_tuple(bcs, "prism grad_lambda", 2)
             squeeze_q = False
-        ref3 = cls.grad_shape_function(ctx, bcs, p=1, index=index, variables="u")
+        ref3 = cls.grad_shape_function(ctx, bcs, p=(1, 1), index=index, variables="u")
         z3 = bm.zeros((ref3.shape[0], ref3.shape[1], 2), dtype=ref3.dtype)
         ref5 = bm.concatenate([ref3[:, :, 0:2], z3[:, :, 0:1], ref3[:, :, 2:3], z3[:, :, 1:2]], axis=-1)
         if ref:
@@ -217,33 +187,19 @@ class PrismSchema(ShapedEntitySchema):
 
     # ipoint
     @classmethod
-    def multi_index(cls, order: tuple[int, ...]) -> Tensor:
+    def multi_index(cls, order: tuple[int, ...], *, internal: bool = False) -> Tensor:
         """Compute the multi-index matrix on reference prism.
 
         Return tensor-product multi-index of triangle and interval.
         """
-        if not isinstance(order, tuple):
-            raise TypeError(
-                f"prism multi_index expects a tuple of integers, got {type(order).__name__}"
-            )
-        if len(order) == 1:
-            p0, p1 = order[0], order[0]
-        elif len(order) == 2:
-            p0, p1 = order
+        p0, p1 = _require_order_tuple(order, "prism multi_index", 2)
+
+        if internal:
+            mi0 = InterpolationPoints.multi_index_inner(p0, 3)
+            mi1 = InterpolationPoints.multi_index_inner(p1, 2)
         else:
-            raise ValueError(f"prism multi_index expects one or two order values, got {len(order)}")
-
-        if not isinstance(p0, int):
-            raise TypeError(f"prism multi_index order must be an integer, got {type(p0).__name__}")
-        if not isinstance(p1, int):
-            raise TypeError(f"prism multi_index order must be an integer, got {type(p1).__name__}")
-        if p0 < 0:
-            raise ValueError(f"prism multi_index order must be non-negative, got {p0}")
-        if p1 < 0:
-            raise ValueError(f"prism multi_index order must be non-negative, got {p1}")
-
-        mi0 = InterpolationPoints.multi_index_matrix(p0, 3)
-        mi1 = InterpolationPoints.multi_index_matrix(p1, 2)
+            mi0 = InterpolationPoints.multi_index_matrix(p0, 3)
+            mi1 = InterpolationPoints.multi_index_matrix(p1, 2)
 
         mi0 = bm.repeat(mi0[:, None, :], mi1.shape[0], axis=1)
         mi1 = bm.repeat(mi1[None, :, :], mi0.shape[0], axis=0)
@@ -251,8 +207,12 @@ class PrismSchema(ShapedEntitySchema):
         return bm.concat([mi0, mi1], axis=-1).reshape(-1, 5)
 
     @classmethod
-    def bc_to_point(cls, ctx: EntityContext, bcs: tuple[Tensor, ...],
-                    index: Index | None = None) -> Tensor:
+    def bc_to_point(
+        cls,
+        ctx: EntityContext,
+        bcs: tuple[Tensor, ...],
+        index: Index | None = None
+    ) -> Tensor:
         """Convert barycentric coordinates to Cartesian coordinates.
 
         x = sum_i phi_i x_i on the physical prism.

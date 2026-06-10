@@ -1,6 +1,11 @@
 from ...backend import bm
 from ...backend import Index, Tensor
-from .entity_schema import EntityContext, ShapedEntitySchema, _require_bcs_tuple
+from .entity_schema import (
+    EntityContext,
+    ShapedEntitySchema,
+    _require_bcs_tuple,
+    _require_order_tuple,
+)
 
 __all__ = ["NodeSchema", "PointQuadrature"]
 
@@ -46,13 +51,14 @@ class NodeSchema(ShapedEntitySchema):
     def shape_function(
         cls,
         bcs: tuple[Tensor, ...],
-        p: int = 1,
+        p: tuple[int, ...],
         *,
         index: Index | None = None,
         variables: str = "u",
         mi=None,
     ) -> Tensor:
         bcs = _require_bcs_tuple(bcs, "node shape_function", 1)
+        p = _require_order_tuple(p, "node shape_function", 1)
         if bcs[0].shape[-1] != 1:
             raise ValueError(f"node shape_function expects last dimension 1, got {bcs[0].shape[-1]}")
         phi = bm.ones((bcs[0].shape[0], 1), dtype=bcs[0].dtype)
@@ -67,7 +73,7 @@ class NodeSchema(ShapedEntitySchema):
         cls,
         ctx: EntityContext,
         bcs: tuple[Tensor, ...],
-        p: int = 1,
+        p: tuple[int, ...],
         *,
         index: Index | None = None,
         variables: str = "u",
@@ -77,6 +83,7 @@ class NodeSchema(ShapedEntitySchema):
         dim = 1 if variables == "u" else cls.geo_dimension(ctx)
         grad = bm.zeros((1, 1, dim), dtype=ctx.block.positions.dtype)
         bcs = _require_bcs_tuple(bcs, "node grad_shape_function", 1)
+        _ = _require_order_tuple(p, "node grad_shape_function", 1)
         nq = int(bcs[0].shape[0])
         if variables == "x":
             return bm.broadcast_to(grad, (node.shape[0], nq, 1, dim))
@@ -110,6 +117,7 @@ class NodeSchema(ShapedEntitySchema):
         grad = bm.zeros((node.shape[0], 1, dim), dtype=ctx.block.positions.dtype)
         if bcs is None:
             return grad
+        bcs = _require_bcs_tuple(bcs, "node grad_lambda", 1)
         nq = int(bcs[0].shape[0])
         return bm.broadcast_to(grad[:, None, :, :], (node.shape[0], nq, 1, dim))
 
@@ -138,15 +146,9 @@ class NodeSchema(ShapedEntitySchema):
         return bm.zeros((node.shape[0], 0, gd), dtype=ctx.block.positions.dtype)
 
     @classmethod
-    def multi_index(cls, order: tuple[int, ...]) -> Tensor:
-        if not isinstance(order, tuple):
-            raise TypeError(f"node multi_index expects a tuple of integers, got {type(order).__name__}")
-        if len(order) != 1:
-            raise ValueError(f"node multi_index expects one order value, got {len(order)}")
+    def multi_index(cls, order: tuple[int, ...], *, internal: bool = False) -> Tensor:
+        order = _require_order_tuple(order, "node multi_index", 1)[0]
 
-        order = order[0]
-        if not isinstance(order, int):
-            raise TypeError(f"node multi_index order must be an integer, got {type(order).__name__}")
-        if order < 0:
-            raise ValueError(f"node multi_index order must be non-negative, got {order}")
+        if internal:
+            return bm.asarray([[order]], dtype=bm.int32)
         return bm.asarray([[order]], dtype=bm.int32)

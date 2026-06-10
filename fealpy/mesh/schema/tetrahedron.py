@@ -1,7 +1,12 @@
 from ...backend import bm
 from ...backend import Index, Tensor
 from ..topology.ipoints import InterpolationPoints
-from .entity_schema import EntityContext, ShapedEntitySchema, _require_bcs_tuple
+from .entity_schema import (
+    EntityContext,
+    ShapedEntitySchema,
+    _require_bcs_tuple,
+    _require_order_tuple,
+)
 
 __all__ = ["TetrahedronSchema"]
 
@@ -28,16 +33,17 @@ class TetrahedronSchema(ShapedEntitySchema):
     def shape_function(
         cls,
         bcs: tuple[Tensor, ...],
-        p: int = 1,
+        p: tuple[int, ...],
         *,
         index: Index | None = None,
         variables: str = "u",
         mi=None,
     ) -> Tensor:
         bcs = _require_bcs_tuple(bcs, "tetrahedron shape_function", 1)
+        p = _require_order_tuple(p, "tetrahedron shape_function", 1)
         if bcs[0].shape[-1] != 4:
             raise ValueError(f"tetrahedron shape_function expects last dimension 4, got {bcs[0].shape[-1]}")
-        phi = bm.simplex_shape_function(bcs[0], p, mi)
+        phi = bm.simplex_shape_function(bcs[0], p[0], mi)
         if variables == "u":
             return phi
         if variables == "x":
@@ -49,16 +55,17 @@ class TetrahedronSchema(ShapedEntitySchema):
         cls,
         ctx: EntityContext,
         bcs: tuple[Tensor, ...],
-        p: int = 1,
+        p: tuple[int, ...],
         *,
         index: Index | None = None,
         variables: str = "u",
         mi=None,
     ) -> Tensor:
         bcs = _require_bcs_tuple(bcs, "tetrahedron grad_shape_function", 1)
+        p = _require_order_tuple(p, "tetrahedron grad_shape_function", 1)
         if bcs[0].shape[-1] != 4:
             raise ValueError(f"tetrahedron grad_shape_function expects last dimension 4, got {bcs[0].shape[-1]}")
-        ref = bm.simplex_grad_shape_function(bcs[0], p, mi)
+        ref = bm.simplex_grad_shape_function(bcs[0], p[0], mi)
         if variables == "u":
             return ref
         if variables == "x":
@@ -113,6 +120,7 @@ class TetrahedronSchema(ShapedEntitySchema):
             grad = bm.stack([g0, g1, g2, g3], axis=1)
         if bcs is None:
             return grad
+        bcs = _require_bcs_tuple(bcs, "tetrahedron grad_lambda", 1)
         nq = int(bcs[0].shape[0])
         return bm.broadcast_to(grad[:, None, :, :], (tet.shape[0], nq, grad.shape[1], grad.shape[2]))
 
@@ -133,20 +141,13 @@ class TetrahedronSchema(ShapedEntitySchema):
         return bm.abs(bm.linalg.det(jac)) / 6.0
 
     @classmethod
-    def multi_index(cls, order: tuple[int, ...]) -> Tensor:
-        if not isinstance(order, tuple):
-            raise TypeError(
-                f"tetrahedron multi_index expects a tuple of integers, got {type(order).__name__}"
-            )
-        if len(order) != 1:
-            raise ValueError(f"tetrahedron multi_index expects one order value, got {len(order)}")
+    def multi_index(cls, order: tuple[int, ...], *, internal: bool = False) -> Tensor:
+        order = _require_order_tuple(order, "tetrahedron multi_index", 1)[0]
 
-        order = order[0]
-        if not isinstance(order, int):
-            raise TypeError(f"tetrahedron multi_index order must be an integer, got {type(order).__name__}")
-        if order < 0:
-            raise ValueError(f"tetrahedron multi_index order must be non-negative, got {order}")
-        return InterpolationPoints.multi_index_matrix(order, 4)
+        if internal:
+            return InterpolationPoints.multi_index_inner(order, 4)
+        else:
+            return InterpolationPoints.multi_index_matrix(order, 4)
 
     @classmethod
     def normal(cls, ctx: EntityContext, index: Index | None) -> Tensor:
@@ -160,14 +161,14 @@ class TetrahedronSchema(ShapedEntitySchema):
         return bm.zeros((tet.shape[0], 0, 3), dtype=ctx.block.positions.dtype)
 
     @classmethod
-    def quadrature_formula(cls, q: int, qtype: str | None = "legendre"):
+    def quadrature_formula(cls, q: int, qtype: str | None = "legendre", device=None):
         if qtype not in (None, "legendre"):
             raise ValueError(f"unsupported tetrahedron quadrature type: {qtype!r}")
         if q > 7:
             from fealpy.quadrature.stroud_quadrature import StroudQuadrature
             return StroudQuadrature(3, q)
         from fealpy.quadrature import TetrahedronQuadrature
-        return TetrahedronQuadrature(q)
+        return TetrahedronQuadrature(q, device=device)
 
     @classmethod
     def tangent(cls, ctx: EntityContext, index: Index | None) -> Tensor:

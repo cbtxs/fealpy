@@ -1,6 +1,11 @@
 from ...backend import bm
 from ...backend import Index, Tensor
-from .entity_schema import EntityContext, ShapedEntitySchema, _require_bcs_tuple
+from .entity_schema import (
+    EntityContext,
+    ShapedEntitySchema,
+    _require_bcs_tuple,
+    _require_order_tuple,
+)
 
 __all__ = ["HexahedronSchema"]
 
@@ -51,17 +56,18 @@ class HexahedronSchema(ShapedEntitySchema):
     def shape_function(
         cls,
         bcs: tuple[Tensor, ...],
-        p: int = 1,
+        p: tuple[int, ...],
         *,
         index: Index | None = None,
         variables: str = "u",
         mi=None,
     ) -> Tensor:
         bcs = _require_bcs_tuple(bcs, "hexahedron shape_function", 3)
+        p = _require_order_tuple(p, "hexahedron shape_function", 3)
         for bc in bcs:
             if bc.shape[-1] != 2:
                 raise ValueError("hexahedron shape_function expects three interval barycentric tensors")
-        phi = bm.tensorprod(*(bm.simplex_shape_function(bc, p, mi) for bc in bcs))
+        phi = bm.tensorprod(*(bm.simplex_shape_function(bc, p, mi) for bc, p in zip(bcs, p)))
         if variables == "u":
             return phi
         if variables == "x":
@@ -73,19 +79,20 @@ class HexahedronSchema(ShapedEntitySchema):
         cls,
         ctx: EntityContext,
         bcs: tuple[Tensor, ...],
-        p: int = 1,
+        p: tuple[int, ...],
         *,
         index: Index | None = None,
         variables: str = "u",
         mi=None,
     ) -> Tensor:
         bcs = _require_bcs_tuple(bcs, "hexahedron grad_shape_function", 3)
+        p = _require_order_tuple(p, "hexahedron grad_shape_function", 3)
         for bc in bcs:
             if bc.shape[-1] != 2:
                 raise ValueError("hexahedron grad_shape_function expects three interval barycentric tensors")
 
-        phi0, phi1, phi2 = (bm.simplex_shape_function(bc, p, mi) for bc in bcs)
-        R0, R1, R2 = (bm.simplex_grad_shape_function(bc, p, mi) for bc in bcs)
+        phi0, phi1, phi2 = (bm.simplex_shape_function(bc, p, mi) for bc, p in zip(bcs, p))
+        R0, R1, R2 = (bm.simplex_grad_shape_function(bc, p, mi) for bc, p in zip(bcs, p))
         Dlambda = bm.asarray([[-1.0], [1.0]], dtype=phi0.dtype)
         R0 = bm.einsum("...ij,jn->...in", R0, Dlambda)
         R1 = bm.einsum("...ij,jn->...in", R1, Dlambda)
@@ -108,35 +115,20 @@ class HexahedronSchema(ShapedEntitySchema):
         raise ValueError(f"Unsupported variables: {variables!r}")
 
     @classmethod
-    def multi_index(cls, order: tuple[int, ...]) -> Tensor:
-        if not isinstance(order, tuple):
-            raise TypeError(
-                f"hexahedron multi_index expects a tuple of integers, got {type(order).__name__}"
-            )
-        if len(order) == 1:
-            px, py, pz = order[0], order[0], order[0]
-        elif len(order) == 3:
-            px, py, pz = order
+    def multi_index(cls, order: tuple[int, ...], *, internal: bool = False) -> Tensor:
+        order = _require_order_tuple(order, "hexahedron multi_index", 3)
+        px, py, pz = order
+
+        if internal:
+            ix = bm.arange(1, px, dtype=bm.int32)
+            iy = bm.arange(1, py, dtype=bm.int32)
+            iz = bm.arange(1, pz, dtype=bm.int32)
+            shape = (max(px - 1, 0), max(py - 1, 0), max(pz - 1, 0))
         else:
-            raise ValueError(f"hexahedron multi_index expects one or three order values, got {len(order)}")
-
-        if not isinstance(px, int):
-            raise TypeError(f"hexahedron multi_index order must be an integer, got {type(px).__name__}")
-        if not isinstance(py, int):
-            raise TypeError(f"hexahedron multi_index order must be an integer, got {type(py).__name__}")
-        if not isinstance(pz, int):
-            raise TypeError(f"hexahedron multi_index order must be an integer, got {type(pz).__name__}")
-        if px < 0:
-            raise ValueError(f"hexahedron multi_index order must be non-negative, got {px}")
-        if py < 0:
-            raise ValueError(f"hexahedron multi_index order must be non-negative, got {py}")
-        if pz < 0:
-            raise ValueError(f"hexahedron multi_index order must be non-negative, got {pz}")
-
-        ix = bm.arange(px + 1, dtype=bm.int32)
-        iy = bm.arange(py + 1, dtype=bm.int32)
-        iz = bm.arange(pz + 1, dtype=bm.int32)
-        shape = (px + 1, py + 1, pz + 1)
+            ix = bm.arange(px + 1, dtype=bm.int32)
+            iy = bm.arange(py + 1, dtype=bm.int32)
+            iz = bm.arange(pz + 1, dtype=bm.int32)
+            shape = (px + 1, py + 1, pz + 1)
         multi_index0 = bm.broadcast_to(ix[:, None, None], shape).reshape(-1, 1)
         multi_index1 = bm.broadcast_to(iy[None, :, None], shape).reshape(-1, 1)
         multi_index2 = bm.broadcast_to(iz[None, None, :], shape).reshape(-1, 1)
@@ -163,6 +155,7 @@ class HexahedronSchema(ShapedEntitySchema):
             )
             squeeze_q = True
         else:
+            bcs = _require_bcs_tuple(bcs, "hexahedron grad_lambda", 3)
             squeeze_q = False
         u, v, w = bcs
         u0, u1 = u[:, 0], u[:, 1]
@@ -244,12 +237,12 @@ class HexahedronSchema(ShapedEntitySchema):
         return bm.zeros((cell.shape[0], 0, 3), dtype=ctx.block.positions.dtype)
 
     @classmethod
-    def quadrature_formula(cls, q: int, qtype: str | None = "legendre"):
+    def quadrature_formula(cls, q: int, qtype: str | None = "legendre", device=None):
         if qtype not in (None, "legendre"):
             raise ValueError(f"unsupported hexahedron quadrature type: {qtype!r}")
         from fealpy.quadrature import GaussLegendreQuadrature, TensorProductQuadrature
 
-        qf = GaussLegendreQuadrature(q)
+        qf = GaussLegendreQuadrature(q, device=device)
         return TensorProductQuadrature((qf, qf, qf))
 
     @classmethod

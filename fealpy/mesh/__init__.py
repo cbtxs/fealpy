@@ -9,3 +9,6 @@ from .view import *
 from .vtk_writter import write_mesh_to_vtu
 
 from .factory import *
+
+# legacy imports
+from .mesh_base import *

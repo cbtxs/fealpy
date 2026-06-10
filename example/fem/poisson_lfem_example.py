@@ -20,7 +20,7 @@ bm.set_backend(args.backend)
 from fealpy.fem import PoissonLFEMModel
 
 model = PoissonLFEMModel()
-model.set_pde()
+model.set_pde(2)
 model.set_init_mesh(nx=20, ny=20)
 model.set_space_degree()
 model.solve.set('cg')
