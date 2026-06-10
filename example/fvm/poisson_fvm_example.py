@@ -10,14 +10,17 @@ def main():
     parser.add_argument('--pde', default=2, type=int,
                         help='PDE example ID from Poisson PDE manager.')
 
-    parser.add_argument('--nx', default=10, type=int,
+    parser.add_argument('--nx', default=40, type=int,
                         help='Number of cells in x-direction.')
     
-    parser.add_argument('--ny', default=10, type=int,
+    parser.add_argument('--ny', default=40, type=int,
                         help='Number of cells in y-direction.')
 
     parser.add_argument('--space_degree', default=0, type=int,
                         help='Polynomial degree of ScaledMonomialSpace.')
+
+    parser.add_argument('--mesh_type', default='uniform_tri', type=str,
+                        help="Mesh variant exposed by the PDE example, e.g. 'uniform_tri' or 'complex_tri'.")
 
     parser.add_argument('--backend',default='numpy', type=str,
                         help="the backend of fealpy, can be 'numpy', 'torch', 'tensorflow' or 'jax'.")
@@ -29,7 +32,7 @@ def main():
                         default='INFO', type=str,
                         help='Log level, default is INFO, options are DEBUG, INFO, WARNING, ERROR, CRITICAL')
 
-    parser.add_argument('--max_iter', default=6, type=int,
+    parser.add_argument('--max_iter', default=9, type=int,
                         help='Maximum number of nonlinear iterations.')
     
     parser.add_argument('--tol', default=1e-7, type=float,
@@ -48,7 +51,7 @@ def main():
     model.solve(max_iter=options["max_iter"], tol=options["tol"])
     l2_error = model.compute_error()
     print(f"L2 error = {l2_error}")
-    model.plot()
+    # model.plot()
     if options["plot"]:
         model.plot()
 

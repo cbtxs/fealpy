@@ -1,3 +1,5 @@
+"""Finite-volume convection integrator for face-velocity fluxes."""
+
 from typing import Optional
 
 from fealpy.backend import backend_manager as bm
@@ -9,18 +11,49 @@ from fealpy.functionspace.space import FunctionSpace as _FS
 
 from fealpy.fem.integrator import LinearInt, OpInt, FaceInt, enable_cache
 
+from .fvm_geometry import FVMGeometry, face_interpolation_owner_weight
+
+
 class ConvectionIntegrator(LinearInt, OpInt, FaceInt):
+    r"""Assemble the central finite-volume convection operator.
+
+    ``coef`` is a face-wise convection velocity.  In incompressible momentum
+    equations it may already include the density factor, so the face flux used
+    by this integrator is always interpreted as
+
+    .. math::
+
+        \phi_f = \mathbf c_f \cdot \mathbf S_f .
+
+    The ``interpolation`` option only selects the owner/neighbour weights used
+    to reconstruct the central face value.  It does not switch to an upwind,
+    bounded, or limited convection scheme.
+
+    Boundary flux closure is deliberately outside this low-level operator.
+    Dirichlet, Neumann, and natural outlet convection contributions are applied
+    by the boundary-condition layer or by the flow solver that owns the case
+    semantics.
+    """
+
     def __init__(self, coef: Optional[CoefLike]=None, q: Optional[int]=None, *,
+                 interpolation: str="average",
                  index: Index=_S,
                  batched: bool=False,
                  method: Optional[str]=None) -> None:
         super().__init__()
         self.coef = coef
         self.q = q
+        self.interpolation = self._validate_interpolation(interpolation)
         self.index = index
         self.batched = batched
         self.assembly.set(method)
-        
+
+    @staticmethod
+    def _validate_interpolation(interpolation: str) -> str:
+        if interpolation not in {"average", "linear"}:
+            raise ValueError("interpolation must be 'average' or 'linear'.")
+        return interpolation
+
     @enable_cache
     def to_global_dof(self, space: _FS) -> TensorLike:
         return space.edge_to_dof()[self.index]
@@ -30,32 +63,36 @@ class ConvectionIntegrator(LinearInt, OpInt, FaceInt):
         index = self.index
         mesh = getattr(space, 'mesh', None)
         if not isinstance(mesh, HomogeneousMesh):
-            raise RuntimeError("The ScalarMassIntegrator only support spaces on"
+            raise RuntimeError("The ConvectionIntegrator only supports spaces on "
                                f"homogeneous meshes, but {type(mesh).__name__} is"
-                               "not a subclass of HomoMesh.")
-        n = mesh.face_unit_normal(index=index)
-        facemeasure = mesh.entity_measure('face', index=index)
-        Sf = facemeasure[:, None] * n  # (NE, 2)
+                               " not a subclass of HomoMesh.")
+        Sf = FVMGeometry(mesh, index=index).S_f
         q = self.q
-        qf = mesh.quadrature_formula(q, 'face') 
+        qf = mesh.quadrature_formula(q, 'face')
         bcs, ws = qf.get_quadrature_points_and_weights()
         phi = space.basis(bcs, index=index)
         return Sf, index, bcs, phi
-    
+
     @variantmethod
     def assembly(self, space: _FS) -> TensorLike:
         coef = self.coef
-        mesh = getattr(space, 'mesh', None)
-        Sf, index, bcs, phi = self.fetch(space)
+        Sf, _, _, phi = self.fetch(space)
         D = phi.shape[-1]
-        # val = process_coef_func(coef, bcs=bcs, mesh=mesh, etype='cell', index=index)
         eye_D = bm.eye(D, dtype=space.ftype, device=bm.get_device(space))
-        direction_matrix = bm.array([[0.5, 0.5], [-0.5, -0.5]])
-        base_matrix = bm.einsum('ij,pq->ipjq', eye_D, direction_matrix).reshape(2*D, 2*D)
+        mesh = getattr(space, "mesh")
+        owner_weight = face_interpolation_owner_weight(mesh, method=self.interpolation, index=self.index)
+        neighbour_weight = 1.0 - owner_weight
+        direction_matrix = bm.stack(
+            [
+                bm.stack([owner_weight, neighbour_weight], axis=-1),
+                bm.stack([-owner_weight, -neighbour_weight], axis=-1),
+            ],
+            axis=1,
+        )
+        base_matrix = bm.einsum("ij,fpq->fipjq", eye_D, direction_matrix).reshape(-1, 2 * D, 2 * D)
         if coef is None:
-            coef = bm.stack([bm.ones_like(Sf[:,0]), bm.zeros_like(Sf[:,0])], axis=1)
-        integrator  = bm.einsum('ij,ij->i', Sf, coef)
-        result = bm.einsum("i,jk->ijk", integrator, base_matrix)  # (NE, 2, 2)
-        
+            coef = bm.stack([bm.ones_like(Sf[:, 0]), bm.zeros_like(Sf[:, 0])], axis=1)
+        integrator = bm.einsum("ij,ij->i", Sf, coef)
+        result = integrator[:, None, None] * base_matrix
+
         return result
-    

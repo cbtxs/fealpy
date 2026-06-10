@@ -25,3 +25,4 @@ from .perforated_square_plate_lfem_model import PerforatedSquarePlateFEMModel
 from .channel_beam_model import ChannelBeamModel
 from .truss_tower_model import TrussTowerModel
 from .truss_model import TrussModel
+from .hydraulic_pipe_lfem_model import HydraulicPipeLFEMModel

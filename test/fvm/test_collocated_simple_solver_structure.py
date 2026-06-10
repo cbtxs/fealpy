@@ -1,0 +1,94 @@
+import inspect
+
+
+def _cavity_solver(convection_coef=None, *, linear_solver=None):
+    from fealpy.fvm import (
+        BoundaryConditionData,
+        CollocatedSimpleSolver,
+        FVMLinearSolverConfig,
+        LidDrivenCavityCase,
+        SimpleSolverControls,
+    )
+
+    case = LidDrivenCavityCase(re=10.0)
+    mesh = case.init_mesh["uniform_quad"](nx=2, ny=2)
+    solver_kwargs = {}
+    if linear_solver is None:
+        solver_kwargs["linear_solver_config"] = FVMLinearSolverConfig(solver="scipy")
+    else:
+        solver_kwargs["linear_solver"] = linear_solver
+
+    return CollocatedSimpleSolver(
+        mesh=mesh,
+        diffusion_coef=case.mu,
+        convection_coef=case.rho if convection_coef is None else convection_coef,
+        source=case.source,
+        boundary_conditions=BoundaryConditionData(case.dirichlet_velocity).to_pde_boundary(mesh),
+        controls=SimpleSolverControls(space_degree=0),
+        log_level="ERROR",
+        **solver_kwargs,
+    )
+
+
+def test_collocated_simple_solver_is_public_algorithm_core():
+    from fealpy.fvm import CollocatedSimpleSolver, NSFVMSimpleModel
+    from fealpy.fvm.collocated_ns_fvm_utils import CollocatedNSFVMOperators
+
+    assert issubclass(CollocatedSimpleSolver, CollocatedNSFVMOperators)
+    assert issubclass(NSFVMSimpleModel, CollocatedSimpleSolver)
+
+
+def test_collocated_simple_solver_interface_uses_discrete_inputs():
+    from fealpy.fvm import CollocatedSimpleSolver
+
+    parameters = inspect.signature(CollocatedSimpleSolver).parameters
+    for name in ("mesh", "diffusion_coef", "convection_coef", "source", "boundary_conditions"):
+        assert name in parameters
+        assert parameters[name].default is inspect.Parameter.empty
+
+    assert "controls" in parameters
+    assert "pde" not in parameters
+    assert "options" not in parameters
+
+
+def test_collocated_simple_solver_default_pressure_relaxation_is_conservative():
+    from fealpy.fvm import CollocatedSimpleSolver
+
+    solve_parameters = inspect.signature(CollocatedSimpleSolver.solve).parameters
+    assert solve_parameters["relax"].default == 0.03
+
+
+def test_collocated_simple_solver_runs_without_model_adapter():
+    solver = _cavity_solver()
+
+    uh, vh, ph = solver.solve(max_iter=1, tol=1.0e-3)
+
+    assert not hasattr(solver, "pde")
+    assert uh.shape == (solver.NC,)
+    assert vh.shape == (solver.NC,)
+    assert ph.shape == (solver.NC,)
+    assert len(solver.residuals) == 1
+    assert solver.residuals[0]["pressure_relax"] == 0.03
+
+
+def test_collocated_simple_solver_accepts_zero_convection_for_stokes_limit():
+    solver = _cavity_solver(convection_coef=0.0)
+
+    uh, vh, ph = solver.solve(max_iter=1, tol=1.0e-3)
+
+    assert uh.shape == (solver.NC,)
+    assert vh.shape == (solver.NC,)
+    assert ph.shape == (solver.NC,)
+    assert len(solver.residuals) == 1
+
+
+def test_collocated_simple_solver_accepts_string_linear_solver_choice():
+    solver = _cavity_solver(convection_coef=0.0, linear_solver="scipy")
+
+    assert solver.linear_solver.config.solver == "scipy"
+
+
+def test_stokes_simple_model_reuses_collocated_simple_solver_core():
+    from fealpy.fvm import CollocatedSimpleSolver, StokesFVMSimpleModel
+
+    assert issubclass(StokesFVMSimpleModel, CollocatedSimpleSolver)

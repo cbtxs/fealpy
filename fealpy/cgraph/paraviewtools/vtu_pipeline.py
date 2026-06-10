@@ -346,7 +346,8 @@ class TO_VTK(CNodeType):
 
         export_dir = Path(path).expanduser().resolve()
         export_dir.mkdir(parents=True, exist_ok=True)
-        mesh.nodedata["uh"] = uh
+        if uh is not None:
+            mesh.nodedata["uh"] = uh
         fname = export_dir / "test.vtu"
         mesh.to_vtk(fname=str(fname))
 
