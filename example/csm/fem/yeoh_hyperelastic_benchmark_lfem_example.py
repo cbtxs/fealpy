@@ -11,9 +11,8 @@ from fealpy.csm.material.hyperelastic_material import HyperElasticMaterial
 from fealpy.csm.fem.hyperelastic_lfem_model import HyperElasticLFEMModel
 
 
-OUTPUT_DIR = Path("/home/joey/下载")
+OUTPUT_DIR = Path(__file__).resolve().parent / "yeoh_benchmark_output"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-
 
 def dof(node, direction, NN):
     return direction * NN + node
