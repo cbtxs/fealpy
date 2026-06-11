@@ -58,6 +58,9 @@ class EntityView:
     def geo_dimension(self) -> int:
         return self.schema.geo_dimension(self.context())
 
+    def global_permutations(self, tgt_name: str) -> Tensor:
+        return self.schema.global_permutations(self.context(), tgt_name)
+
     def grad_lambda(
         self,
         bcs: tuple[Tensor, ...] | None = None,
@@ -127,7 +130,7 @@ class EntityView:
         if isinstance(p, int):
             p = (p,)
         return self.schema.shape_function(
-            self.context(), bcs, p, index, variables=variables, mi=mi
+            self.context(), bcs, p, index=index, variables=variables, mi=mi
         )
 
     def size(self) -> int:

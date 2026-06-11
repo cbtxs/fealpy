@@ -1,5 +1,6 @@
 from ...backend import bm
 from ...backend import Index, Tensor
+from ..topology.ipoints import InterpolationPoints
 from .entity_schema import (
     EntityContext,
     ShapedEntitySchema,
@@ -115,25 +116,29 @@ class HexahedronSchema(ShapedEntitySchema):
         raise ValueError(f"Unsupported variables: {variables!r}")
 
     @classmethod
-    def multi_index(cls, order: tuple[int, ...], *, internal: bool = False) -> Tensor:
+    def multi_index(cls, order: tuple[int, ...], *, internal: bool = False, tensorprod: bool = True) -> Tensor:
         order = _require_order_tuple(order, "hexahedron multi_index", 3)
         px, py, pz = order
 
         if internal:
-            ix = bm.arange(1, px, dtype=bm.int32)
-            iy = bm.arange(1, py, dtype=bm.int32)
-            iz = bm.arange(1, pz, dtype=bm.int32)
-            shape = (max(px - 1, 0), max(py - 1, 0), max(pz - 1, 0))
+            ix = InterpolationPoints.multi_index_inner(px, 2)
+            iy = InterpolationPoints.multi_index_inner(py, 2)
+            iz = InterpolationPoints.multi_index_inner(pz, 2)
+            shape = (max(px - 1, 0), max(py - 1, 0), max(pz - 1, 0), 2)
         else:
-            ix = bm.arange(px + 1, dtype=bm.int32)
-            iy = bm.arange(py + 1, dtype=bm.int32)
-            iz = bm.arange(pz + 1, dtype=bm.int32)
-            shape = (px + 1, py + 1, pz + 1)
-        multi_index0 = bm.broadcast_to(ix[:, None, None], shape).reshape(-1, 1)
-        multi_index1 = bm.broadcast_to(iy[None, :, None], shape).reshape(-1, 1)
-        multi_index2 = bm.broadcast_to(iz[None, None, :], shape).reshape(-1, 1)
-        return bm.concatenate([multi_index0, multi_index1, multi_index2], axis=-1)
-
+            ix = InterpolationPoints.multi_index_matrix(px, 2)
+            iy = InterpolationPoints.multi_index_matrix(py, 2)
+            iz = InterpolationPoints.multi_index_matrix(pz, 2)
+            shape = (px + 1, py + 1, pz + 1, 2)
+        multi_index0 = bm.broadcast_to(ix[:, None, None, :], shape).reshape(-1, 2)
+        multi_index1 = bm.broadcast_to(iy[None, :, None, :], shape).reshape(-1, 2)
+        multi_index2 = bm.broadcast_to(iz[None, None, :, :], shape).reshape(-1, 2)
+        mi = bm.concat([multi_index0, multi_index1, multi_index2], axis=-1)
+        arg = cls.multi_index_sort(mi)
+        mi = mi[arg]
+        if tensorprod:
+            return cls.multi_index_tensorprod(mi, (2, 4))
+        return mi
 
     @classmethod
     def grad_lambda(

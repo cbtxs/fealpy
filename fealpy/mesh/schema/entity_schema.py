@@ -56,7 +56,7 @@ class EntitySchema:
     ### [Multi-Indices] ###
 
     @classmethod
-    def multi_index(cls, order: tuple[int, ...], *, internal: bool = False) -> Tensor:
+    def multi_index(cls, order: tuple[int, ...], *, internal: bool = False, tensorprod: bool = True) -> Tensor:
         """Multi-index of the entity, with one column per vertex."""
         raise NotImplementedError()
 
@@ -64,6 +64,50 @@ class EntitySchema:
     def num_multi_index(cls, order: tuple[int, ...], *, internal: bool = False) -> int:
         """Number of multi-indices."""
         return int(cls.multi_index(order, internal=internal).shape[0])
+
+    @classmethod
+    def multi_index_sort(cls, multi_index: Tensor) -> Tensor:
+        """Return the indices to sort multi-indices according to the predefined orientation."""
+        NV = multi_index.shape[-1]
+        count = bm.sum(multi_index != 0, axis=1)
+        nonzero_row, nonzero_col = bm.nonzero(multi_index)
+        rank = bm.zeros_like(count, dtype=bm.uint64)
+        rank = bm.index_add(rank, nonzero_row, NV**nonzero_col)
+        arg = bm.lexsort(list(multi_index.T) + [rank, count])
+        return arg
+
+    @classmethod
+    def multi_index_tensorprod(cls, broadcast_multi_index: Tensor, split_indices: tuple[int, ...] | None = None) -> Tensor:
+        from functools import reduce
+
+        if split_indices is not None:
+            mi_tuple = bm.split(broadcast_multi_index, split_indices, axis=-1)
+        else:
+            mi_tuple = (broadcast_multi_index,)
+
+        def kron_last_dim(a: Tensor, b: Tensor) -> Tensor:
+            if bm.size(a) == 0:
+                return a
+            return (a[..., :, None] * b[..., None, :]).reshape(*a.shape[:-1], -1)
+
+        return reduce(kron_last_dim, reversed(mi_tuple))
+
+    @classmethod
+    def global_permutations(cls, ctx: EntityContext, tgt_name: str) -> Tensor:
+        """Permutation indices from local to global."""
+        raise NotImplementedError()
+
+    @classmethod
+    def vo_to_do(cls, order: tuple[int, ...]) -> dict[tuple[int, ...], Tensor]:
+        """Return the mapping from vertex orientation to DoF ordering."""
+        result: dict[tuple[int, ...], Tensor] = {}
+
+        for v_o in cls.orientation:
+            mi = cls.multi_index(order, internal=True, tensorprod=False)
+            d_o = cls.multi_index_sort(mi[:, v_o])
+            result[tuple(v_o)] = d_o
+
+        return result
 
     ### [Geometric Computations] ###
 
@@ -217,6 +261,20 @@ class ShapedEntitySchema(EntitySchema):
     def size(cls, ctx: EntityContext) -> int:
         """Number of entities in the sector."""
         return ctx.sector.indices.shape[0]
+
+    @classmethod
+    def global_permutations(cls, ctx: EntityContext, tgt_name: str) -> Tensor:
+        """Permutation indices from local to global."""
+        from .utils import argpermute
+        cell_indices = ctx.sector.indices
+        local_face = cls.local_entity(tgt_name)
+        face_indices = ctx.block.get_sector(tgt_name).indices
+        cell_to_face = cls.relation(ctx, tgt_name).tgt_indices
+        return argpermute(
+            cell_indices[:, local_face],
+            face_indices[cell_to_face],
+            dtype=bm.uint8
+        )
 
     ### [Geometric Computations] ###
 

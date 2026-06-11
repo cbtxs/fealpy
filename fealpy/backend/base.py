@@ -165,7 +165,7 @@ FUNCTION_MAPPING = _make_default_mapping(
 
     ### Indexing Functions ###
     # python array API standard v2023.12
-    'take',
+    'take', 'take_along_axis',
 
     ### Inspection ###
     # python array API standard v2023.12

@@ -37,6 +37,7 @@ class NodeSchema(ShapedEntitySchema):
     top_dim = 0
     local_faces = {}
     ccw = {}
+    orientation = [(0,)]
 
     @classmethod
     def _indices(cls, ctx: EntityContext, index: Index | None) -> Tensor:
@@ -146,7 +147,7 @@ class NodeSchema(ShapedEntitySchema):
         return bm.zeros((node.shape[0], 0, gd), dtype=ctx.block.positions.dtype)
 
     @classmethod
-    def multi_index(cls, order: tuple[int, ...], *, internal: bool = False) -> Tensor:
+    def multi_index(cls, order: tuple[int, ...], *, internal: bool = False, tensorprod: bool = True) -> Tensor:
         order = _require_order_tuple(order, "node multi_index", 1)[0]
 
         if internal:

@@ -20,6 +20,10 @@ class TriangleSchema(ShapedEntitySchema):
     ccw = {
         "edge": [[1, 2], [2, 0], [0, 1]]
     }
+    orientation = [
+        (0, 1, 2), (1, 2, 0), (2, 0, 1),
+        (0, 2, 1), (2, 1, 0), (1, 0, 2),
+    ]
 
     @classmethod
     def _selected_triangles(cls, ctx: EntityContext, index: Index | None) -> Tensor:
@@ -29,12 +33,14 @@ class TriangleSchema(ShapedEntitySchema):
         return tri
 
     @classmethod
-    def multi_index(cls, order: tuple[int, ...], *, internal: bool = False) -> Tensor:
+    def multi_index(cls, order: tuple[int, ...], *, internal: bool = False, tensorprod: bool = True) -> Tensor:
         p = _require_order_tuple(order, "triangle multi_index", 1)[0]
         if internal:
-            return InterpolationPoints.multi_index_inner(p, 3)
+            mi = InterpolationPoints.multi_index_inner(p, 3)
         else:
-            return InterpolationPoints.multi_index_matrix(p, 3)
+            mi = InterpolationPoints.multi_index_matrix(p, 3)
+        arg = cls.multi_index_sort(mi)
+        return mi[arg]
 
     @classmethod
     def barycenter(cls, ctx: EntityContext, index: Index | None) -> Tensor:

@@ -1,5 +1,6 @@
 from ...backend import bm
 from ...backend import Index, Tensor
+from ..topology.ipoints import InterpolationPoints
 from .entity_schema import (
     EntityContext,
     ShapedEntitySchema,
@@ -15,29 +16,31 @@ class QuadrilateralSchema(ShapedEntitySchema):
     top_dim = 2
     local_faces = {'edge':[[0, 1], [2, 3], [0, 2], [1, 3]]}
     ccw = {'edge': [[0, 1], [1, 3], [3, 2], [2, 0]]}
+    orientation = [
+        (0, 1, 2, 3), (2, 0, 3, 1), (3, 2, 1, 0), (1, 3, 0, 2),
+        (2, 3, 0, 1), (0, 2, 1, 3), (1, 0, 3, 2), (3, 1, 2, 0),
+    ]
 
     @classmethod
-    def multi_index(cls, order: tuple[int, ...], *, internal: bool = False) -> Tensor:
+    def multi_index(cls, order: tuple[int, ...], *, internal: bool = False, tensorprod: bool = True) -> Tensor:
         px, py = _require_order_tuple(order, "quadrilateral multi_index", 2)
 
         if internal:
-            ix = bm.arange(1, px, dtype=bm.int32)
-            iy = bm.arange(1, py, dtype=bm.int32)
-            shape = (max(px - 1, 0), max(py - 1, 0))
+            ix = InterpolationPoints.multi_index_inner(px, 2)
+            iy = InterpolationPoints.multi_index_inner(py, 2)
+            shape = (max(px - 1, 0), max(py - 1, 0), 2)
         else:
-            ix = bm.arange(px + 1, dtype=bm.int32)
-            iy = bm.arange(py + 1, dtype=bm.int32)
-            shape = (px + 1, py + 1)
-        multi_index0 = bm.broadcast_to(ix[:, None], shape).reshape(-1, 1)
-        multi_index1 = bm.broadcast_to(iy[None, :], shape).reshape(-1, 1)
-        return bm.concatenate([multi_index0, multi_index1], axis=1)
-
-    @classmethod
-    def multi_index_sort(cls, multi_index: Tensor) -> Tensor:
-        if len(multi_index.shape) != 2:
-            raise ValueError("quadrilateral multi_index_sort expects a rank-2 tensor")
-        if multi_index.shape[0] == 0: return bm.asarray([], dtype=bm.int32)
-        return bm.lexsort(tuple(reversed(multi_index.T)), axis=0)
+            ix = InterpolationPoints.multi_index_matrix(px, 2)
+            iy = InterpolationPoints.multi_index_matrix(py, 2)
+            shape = (px + 1, py + 1, 2)
+        multi_index0 = bm.broadcast_to(ix[:, None], shape).reshape(-1, 2)
+        multi_index1 = bm.broadcast_to(iy[None, :], shape).reshape(-1, 2)
+        mi = bm.concatenate([multi_index0, multi_index1], axis=1)
+        arg = cls.multi_index_sort(mi)
+        mi = mi[arg]
+        if tensorprod:
+            return cls.multi_index_tensorprod(mi, (2,))
+        return mi
 
     @classmethod
     def barycenter(cls, ctx: EntityContext, index: Index | None) -> Tensor:

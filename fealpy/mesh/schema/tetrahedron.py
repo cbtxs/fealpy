@@ -141,13 +141,14 @@ class TetrahedronSchema(ShapedEntitySchema):
         return bm.abs(bm.linalg.det(jac)) / 6.0
 
     @classmethod
-    def multi_index(cls, order: tuple[int, ...], *, internal: bool = False) -> Tensor:
+    def multi_index(cls, order: tuple[int, ...], *, internal: bool = False, tensorprod: bool = True) -> Tensor:
         order = _require_order_tuple(order, "tetrahedron multi_index", 1)[0]
-
         if internal:
-            return InterpolationPoints.multi_index_inner(order, 4)
+            mi = InterpolationPoints.multi_index_inner(order, 4)
         else:
-            return InterpolationPoints.multi_index_matrix(order, 4)
+            mi = InterpolationPoints.multi_index_matrix(order, 4)
+        arg = cls.multi_index_sort(mi)
+        return mi[arg]
 
     @classmethod
     def normal(cls, ctx: EntityContext, index: Index | None) -> Tensor:

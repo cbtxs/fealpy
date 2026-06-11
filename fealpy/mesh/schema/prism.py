@@ -187,7 +187,7 @@ class PrismSchema(ShapedEntitySchema):
 
     # ipoint
     @classmethod
-    def multi_index(cls, order: tuple[int, ...], *, internal: bool = False) -> Tensor:
+    def multi_index(cls, order: tuple[int, ...], *, internal: bool = False, tensorprod: bool = True) -> Tensor:
         """Compute the multi-index matrix on reference prism.
 
         Return tensor-product multi-index of triangle and interval.
@@ -204,7 +204,12 @@ class PrismSchema(ShapedEntitySchema):
         mi0 = bm.repeat(mi0[:, None, :], mi1.shape[0], axis=1)
         mi1 = bm.repeat(mi1[None, :, :], mi0.shape[0], axis=0)
 
-        return bm.concat([mi0, mi1], axis=-1).reshape(-1, 5)
+        mi = bm.concat([mi0, mi1], axis=-1).reshape(-1, 5)
+        arg = cls.multi_index_sort(mi)
+        mi = mi[arg]
+        if tensorprod:
+            return cls.multi_index_tensorprod(mi, (3,))
+        return mi
 
     @classmethod
     def bc_to_point(

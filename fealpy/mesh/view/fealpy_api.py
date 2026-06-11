@@ -181,7 +181,7 @@ class FEALPyMesh(Mesh):
     def number_of_local_ipoints(self, p: int | tuple[int, ...], iptype: str | int = "cell") -> int:
         return self.entity_view(iptype).num_multi_index(p)
 
-    def multi_index_matrix(self, p: int | tuple[int, ...], etype: int):
+    def multi_index_matrix(self, p: int | tuple[int, ...], etype: int | str = "cell") -> Tensor:
         """Returns the multi-index matrix for polynomial degree p and number of nodes n."""
         sec = self.entity_view(etype)
         return sec.multi_index_matrix(p)
@@ -234,7 +234,7 @@ class FEALPyMesh(Mesh):
     def boundary_node_index(self) -> Tensor:
         return self._boundary_info_by_top_dim(0).index
 
-    def cell_to_edge_sign(self) -> Tensor:
+    def cell_to_edge_sign(self) -> Tensor: # TODO: remove implementation here
         """Returns the sign of edges for each cell."""
         cell_sec = self.entity_view(-1)
         edge_sec = self.entity_view(1)
@@ -245,7 +245,7 @@ class FEALPyMesh(Mesh):
 
         return bm.all(local_pair == global_pair, axis=-1)
 
-    def face_to_edge_sign(self) -> Tensor:
+    def face_to_edge_sign(self) -> Tensor: # TODO: remove implementation here
         """Returns the sign of edges for each face."""
         face_sec = self.entity_view(-2)
         edge_sec = self.entity_view(1)
@@ -258,6 +258,19 @@ class FEALPyMesh(Mesh):
             sign[:, i] = face_sec.indices[:, n[i]] == edge_sec.indices[f2e[:, i], 0]
 
         return sign
+
+    def cell_to_ipoint(self, p: int, index: Index | None = None) -> Tensor:
+        from ..topology.ipoints import to_ipoint
+        view = self.entity_view(-1)
+        return to_ipoint(self, view.schema.name, p)
+
+    def face_to_ipoint(self, p: int, index: Index | None = None) -> Tensor:
+        from ..topology.ipoints import to_ipoint
+        view = self.entity_view(-2)
+        return to_ipoint(self, view.schema.name, p)
+
+    def interpolation_points(self, p: int, etype: str | int = "cell") -> Tensor:
+        pass
 
     # def cell_to_face_permutation(self, *, locFace: Tensor | None = None) -> Tensor:
     #     """Returns the permutation of faces for each cell."""
@@ -283,24 +296,12 @@ class FEALPyMesh(Mesh):
     # Geometry
 
     def bc_to_point(self, bc: Tensor | tuple[Tensor, ...], *, index: Index | None = None) -> Tensor:
-        if isinstance(bc, tuple):
-            raise NotImplementedError("Tensor-product barycentric coordinates are not implemented")
+        if not isinstance(bc, tuple):
+            bc = (bc,)
 
-        nvert = bc.shape[-1]
-        if nvert == self.top_dimension() + 1:
-            entity = self.entity("cell")
-        elif nvert == self.top_dimension():
-            entity = self.entity("face")
-        elif nvert == 2:
-            entity = self.entity("edge")
-        else:
-            raise ValueError(f"Unsupported barycentric dimension: {nvert}")
-
-        if index is not None:
-            entity = entity[index]
-
-        points = self.block.positions[entity]
-        return bm.einsum("...j,cjd->c...d", bc, points)
+        top = sum(b.shape[1] - 1 for b in bc)
+        sec = self.entity_view(top)
+        return sec.bc_to_point(bc, index=index)
 
     def entity_measure(
         self,

@@ -20,6 +20,7 @@ class EdgeSchema(ShapedEntitySchema):
     ccw = {
         "node": [[0], [1]]
     }
+    orientation = [(0, 1), (1, 0)]
 
     @classmethod
     def _entity(cls, ctx: EntityContext, index: Index | None) -> Tensor:
@@ -33,11 +34,14 @@ class EdgeSchema(ShapedEntitySchema):
         return ctx.block.positions[cls._entity(ctx, index)]
 
     @classmethod
-    def multi_index(cls, order: tuple[int, ...], *, internal: bool = False) -> Tensor:
+    def multi_index(cls, order: tuple[int, ...], *, internal: bool = False, tensorprod: bool = True) -> Tensor:
         order = _require_order_tuple(order, "edge multi_index", 1)[0]
         if internal:
-            return InterpolationPoints.multi_index_inner(order, 2)
-        return InterpolationPoints.multi_index_matrix(order, 2)
+            mi = InterpolationPoints.multi_index_inner(order, 2)
+        else:
+            mi = InterpolationPoints.multi_index_matrix(order, 2)
+        arg = cls.multi_index_sort(mi)
+        return mi[arg]
 
     @classmethod
     def num_multi_index(cls, order: tuple[int, ...], *, internal: bool = False) -> int:

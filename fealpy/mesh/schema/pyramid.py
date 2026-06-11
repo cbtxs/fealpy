@@ -188,7 +188,7 @@ class PyramidSchema(ShapedEntitySchema):
         return grad[:, 0, :, :] if squeeze_q else grad
 
     @classmethod
-    def multi_index(cls, order: tuple[int, ...]) -> Tensor:
+    def multi_index(cls, order: tuple[int, ...], *, internal: bool = False, tensorprod: bool = True) -> Tensor:
         p = _require_order_tuple(order, "pyramid multi_index", 1)[0]
         return InterpolationPoints.multi_index_matrix(p, 5) # TODO: not correct
 
