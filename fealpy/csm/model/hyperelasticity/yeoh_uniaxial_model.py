@@ -136,29 +136,4 @@ class YeohUniaxialModel(BoxMesher3d):
 
     @cartesian
     def is_boundary(self, p: TensorLike) -> TensorLike:
-        """Return True on the boundary of the cubic domain [0, L]^3.
-        
-        Parameters:
-            p (TensorLike): Physical coordinates of points, with shape (..., 3).
-                The last dimension stores the x, y and z coordinates.
-
-        Returns:
-            TensorLike: Boolean mask with shape p.shape[:-1].
-                True means the corresponding point is on the boundary;
-                False means the point is inside the domain.
-        """
-        L = self.length
-        tol = self.tol
-        
-        # Check whether the point is on the x = 0 or x = L face.
-        x0 = bm.abs(p[..., 0]) < tol
-        x1 = bm.abs(p[..., 0] - L) < tol
-
-        y0 = bm.abs(p[..., 1]) < tol
-        y1 = bm.abs(p[..., 1] - L) < tol
-
-        z0 = bm.abs(p[..., 2]) < tol
-        z1 = bm.abs(p[..., 2] - L) < tol
-
-        # Here "|" is the element-wise logical OR for TensorLike objects.
-        return x0 | x1 | y0 | y1 | z0 | z1
+        pass
