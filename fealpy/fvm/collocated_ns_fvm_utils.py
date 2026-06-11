@@ -2,7 +2,7 @@
 
 from fealpy.typing import TensorLike
 from fealpy.backend import backend_manager as bm
-from fealpy.functionspace import ScaledMonomialSpace2d, TensorFunctionSpace
+from fealpy.functionspace import ScaledMonomialSpace, TensorFunctionSpace
 from fealpy.fem import BilinearForm, LinearForm, BlockForm
 from fealpy.sparse import COOTensor, CSRTensor, spdiags
 
@@ -64,10 +64,11 @@ class CollocatedNSFVMOperators:
         with_velocity_dirichlet_bc: bool = False,
     ) -> None:
         self.p = degree
-        self.space = ScaledMonomialSpace2d(self.mesh, degree)
-        self.velocity_space = TensorFunctionSpace(self.space, shape=(2, -1))
+        self.GD = self.mesh.geo_dimension()
+        self.space = ScaledMonomialSpace(self.mesh, degree)
+        self.velocity_space = TensorFunctionSpace(self.space, shape=(self.GD, -1))
         self.points = self.mesh.entity_barycenter("cell")
-        self.epoints = self.mesh.entity_barycenter("edge")
+        self.epoints = self.mesh.entity_barycenter("face")
 
         self.pressure_gradient = GradientReconstruct(
             self.mesh,
@@ -96,10 +97,38 @@ class CollocatedNSFVMOperators:
             )
 
         self.e2c = self.fvm_geometry.face_to_cell
-        self.edge_measure = self.mesh.entity_measure("edge")
         self.last_nonorthogonal_iterations = 0
         self.last_momentum_nonorthogonal_iterations = 0
         self.last_pressure_nonorthogonal_iterations = 0
+
+    def cell_vector_to_dofs(self, cell_vector):
+        """Return component-major algebraic dofs from ``(NC, GD)`` cell vectors."""
+        return bm.swapaxes(cell_vector, 0, 1).flatten()
+
+    def dofs_to_cell_vector(self, dofs):
+        """Return ``(NC, GD)`` cell vectors from component-major algebraic dofs."""
+        return bm.stack(
+            [
+                dofs[component * self.NC : (component + 1) * self.NC]
+                for component in range(self.GD)
+            ],
+            axis=-1,
+        )
+
+    def component_cell_diagonal(self, diagonal):
+        """Repeat a cell diagonal once per velocity component."""
+        return bm.concatenate([diagonal for _ in range(self.GD)], axis=0)
+
+    def component_response(self, a_p):
+        """Return the cell response ``V/a_P`` as an ``(NC, GD)`` vector field."""
+        return bm.stack(
+            [
+                self.cm
+                / a_p[component * self.NC : (component + 1) * self.NC]
+                for component in range(self.GD)
+            ],
+            axis=-1,
+        )
 
     def _init_linear_solver(self, options):
         linear_solver = options.get("linear_solver")
@@ -171,9 +200,8 @@ class CollocatedNSFVMOperators:
                 raise ValueError("density must be scalar or cell-wise.")
             cell_diagonal = density * self.cm / time_step
 
-        components = self.points.shape[1]
-        total_dofs = components * self.NC
-        values = bm.concatenate([cell_diagonal for _ in range(components)], axis=0)
+        total_dofs = self.GD * self.NC
+        values = self.component_cell_diagonal(cell_diagonal)
         return CSRTensor(
             crow=bm.arange(total_dofs + 1),
             col=bm.arange(total_dofs),
@@ -195,7 +223,7 @@ class CollocatedNSFVMOperators:
                 raise ValueError("density must be scalar or cell-wise.")
             cell_diagonal = density * self.cm / time_step
 
-        return (previous_velocity * cell_diagonal[:, None]).flatten(order="F")
+        return self.cell_vector_to_dofs(previous_velocity * cell_diagonal[:, None])
 
     def add_velocity_natural_convection_diagonal(
         self,
@@ -266,7 +294,7 @@ class CollocatedNSFVMOperators:
     def pressure_orthogonal_flux(self, pressure, response_coef):
         """Return the implicit orthogonal pressure-Laplacian flux."""
         _, mag_E_f, _ = self.fvm_geometry.over_relaxed_decomposition()
-        coefficient = bm.array(response_coef) * mag_E_f / self.fvm_geometry.mag_d_f
+        coefficient = response_coef * mag_E_f / self.fvm_geometry.mag_d_f
         jump = pressure[self.e2c[:, 0]] - pressure[self.e2c[:, 1]]
         return coefficient * jump
 
@@ -291,7 +319,7 @@ class CollocatedNSFVMOperators:
         selected = boundary_faces[flag]
         _, mag_E_f, _ = self.fvm_geometry.over_relaxed_decomposition()
         coefficient = (
-            bm.array(response_coef)[selected]
+            response_coef[selected]
             * mag_E_f[selected]
             / self.fvm_geometry.mag_d_f[selected]
         )
@@ -418,11 +446,9 @@ class CollocatedNSFVMOperators:
         increment.
         """
         grad_p = self.pressure_gradient.cell_gradient(pressure_field)
-        response = bm.stack([self.cm / a_p[: self.NC], self.cm / a_p[self.NC :]], axis=-1)
-        return cell_velocity - response * grad_p
+        return cell_velocity - self.component_response(a_p) * grad_p
 
     def pressure_free_velocity(self, cell_velocity, pressure, a_p):
         """Remove the current pressure-gradient contribution from velocity."""
         grad_p = self.pressure_gradient.cell_gradient(pressure)
-        response = bm.stack([self.cm / a_p[: self.NC], self.cm / a_p[self.NC :]], axis=-1)
-        return cell_velocity + response * grad_p
+        return cell_velocity + self.component_response(a_p) * grad_p

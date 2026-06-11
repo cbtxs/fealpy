@@ -5,7 +5,6 @@ from inspect import signature
 from fealpy.backend import backend_manager as bm
 from fealpy.sparse import spdiags
 
-from .backend_utils import as_backend_array, cast_like
 from .fvm_geometry import FVMGeometry
 
 
@@ -67,15 +66,15 @@ class DirichletBC:
                 # Try applying condition to x-coordinate only
                 x = bd_node[:, 0]
                 bd_idx = self.threshold(x)
-                bd_idx = as_backend_array(bd_idx, dtype=bm.bool)
+                bd_idx = bm.array(bd_idx, dtype=bm.bool)
                 if not bm.any(bd_idx):  # Check if bd_idx is all False
                     y = bd_node[:, 1]
                     bd_idx = self.threshold(y)
-                    bd_idx = as_backend_array(bd_idx, dtype=bm.bool)
+                    bd_idx = bm.array(bd_idx, dtype=bm.bool)
             except Exception:
                 # Fall back to applying condition to full node coordinates
                 bd_idx = self.threshold(bd_node)
-                bd_idx = as_backend_array(bd_idx, dtype=bm.bool)
+                bd_idx = bm.array(bd_idx, dtype=bm.bool)
         else:
             raise ValueError("self.threshold must be a callable (e.g., lambda x: (x==0.5)|(x==2.5) or a function).")
         index = total_bd_idx[bd_idx]
@@ -127,7 +126,7 @@ class DirichletBC:
             coef = self._select_boundary_coef(coef, bd_flag)
         coef = self._normalize_boundary_coef(coef, bd_integrator.shape[0])
         bd_integrator = coef * bd_integrator
-        bd_integrator = cast_like(bd_integrator, b)
+        bd_integrator = bm.array(bd_integrator, dtype=b.dtype)
         bde2c = geometry.owner[bd_edge]
         # Scalar field: bd_u shape (NE,), vector field: (NE, D).
         bd_u = self.gd(bdedgepoint)[..., None]
@@ -140,16 +139,17 @@ class DirichletBC:
         A = A + A_0
         if D == 1:
             bd_correct = (bd_integrator[:, None] * bd_u).reshape(-1)
-            bd_correct = cast_like(bd_correct, b)
+            bd_correct = bm.array(bd_correct, dtype=b.dtype)
             b = bm.index_add(b, bde2c, bd_correct, axis=0)
         else:
             bd_u = bm.squeeze(bd_u, axis=-1)
             bd_correct = bd_integrator[:, None] * bd_u
             bd_correct = bm.swapaxes(bd_correct, 0, 1).flatten()
-            bd_correct = cast_like(bd_correct, b)
-            new_arr = bde2c + NC
-            bde2c = bm.concat([bde2c, new_arr])
-            b = bm.index_add(b, bde2c, bd_correct, axis=0)
+            bd_correct = bm.array(bd_correct, dtype=b.dtype)
+            indices = bm.concat(
+                [bde2c + component * NC for component in range(D)]
+            )
+            b = bm.index_add(b, indices, bd_correct, axis=0)
         return A, b
 
     def _boundary_face_flag(self, points, threshold):
@@ -204,7 +204,7 @@ class DirichletBC:
         return {"x": 0, "y": 1, "z": 2}.get(positional[0].name)
 
     def _validate_boundary_face_flag(self, flag, n_boundary_face):
-        flag = as_backend_array(flag, dtype=bm.bool)
+        flag = bm.array(flag, dtype=bm.bool)
         if flag.shape == (n_boundary_face,):
             return flag
         raise ValueError(
@@ -219,7 +219,7 @@ class DirichletBC:
         if isinstance(coef, (int, float)):
             return coef
 
-        coef = as_backend_array(coef)
+        coef = bm.array(coef)
         if coef.shape == ():
             return coef
         n_boundary_face = bd_flag.shape[0]
@@ -237,7 +237,7 @@ class DirichletBC:
         if isinstance(coef, (int, float)):
             return coef
 
-        coef = as_backend_array(coef)
+        coef = bm.array(coef)
         if coef.shape == ():
             return coef
         if coef.shape[0] == n_boundary_face:
@@ -276,7 +276,7 @@ class DirichletBC:
         bd_u = self.gd(bdedgepoint)
         bd_correct = bd_u * bdSf
         bd_correct = bm.swapaxes(bd_correct, 0, 1).flatten()
-        bd_correct = cast_like(bd_correct, b)
+        bd_correct = bm.array(bd_correct, dtype=b.dtype)
         new_arr = bde2c + NC
         bde2c = bm.concat([bde2c, new_arr])
         b = bm.index_add(b, bde2c, bd_correct, axis=0, alpha=-1)
@@ -310,12 +310,12 @@ class DirichletBC:
         bd_value = self.gd(bdedgepoint)
 
         if len(bd_value.shape) == 1:
-            bd_correct = cast_like(flux * bd_value, b)
+            bd_correct = bm.array(flux * bd_value, dtype=b.dtype)
             b = bm.index_add(b, bde2c, bd_correct, axis=0, alpha=-1)
             return b
 
         bd_correct = -flux[:, None] * bd_value
-        bd_correct = cast_like(bd_correct, b)
+        bd_correct = bm.array(bd_correct, dtype=b.dtype)
         indices = bm.concat(
             [bde2c + component * NC for component in range(bd_value.shape[1])]
         )
@@ -323,7 +323,7 @@ class DirichletBC:
         return b
 
     def _boundary_convection_flux(self, coef, bd_edge, Sf):
-        coef = as_backend_array(coef)
+        coef = bm.array(coef)
         NF = self.mesh.number_of_faces()
         NBD = bd_edge.shape[0]
 

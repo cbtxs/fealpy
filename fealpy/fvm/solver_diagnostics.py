@@ -81,11 +81,12 @@ def simple_iteration_log_message(
 
 def log_simple_iteration(logger, iteration, residual):
     """Log one SIMPLE pressure-correction diagnostic record."""
+    pressure_criterion = residual.get("pressure_criterion", residual["pressure_update"])
     logger.info(
         simple_iteration_log_message(
             simple_iteration=iteration,
             nonorthogonal_iterations=residual["nonorthogonal_iterations"],
-            pressure_criterion=residual["pressure_update"],
+            pressure_criterion=pressure_criterion,
             pressure_relax=residual["pressure_relax"],
             mass_residual=residual["mass"],
             pressure_correction=residual["pressure_correction"],

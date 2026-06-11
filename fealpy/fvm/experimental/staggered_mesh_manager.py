@@ -3,8 +3,6 @@
 from fealpy.backend import backend_manager as bm
 from fealpy.mesh import QuadrangleMesh
 
-from ..backend_utils import cast_like
-
 
 class StaggeredMeshManager:
     """Build and map the pressure/u/v meshes used by staggered FVM solvers.
@@ -77,7 +75,7 @@ class StaggeredMeshManager:
             values = bm.full((points.shape[0],), values, dtype=reference.dtype)
         elif len(values.shape) > 1:
             values = values[:, component]
-        return cast_like(values, reference)
+        return bm.array(values, dtype=reference.dtype)
 
     def get_dof_mapping_ucell2pedge(self):
         def build():
@@ -224,11 +222,9 @@ class StaggeredMeshManager:
         ap_edge = bm.zeros(NE, dtype=ap_u.dtype)
         
         p_edge_velocity = bm.set_at(p_edge_velocity, ucell2pedge, u_cell)
-        p_edge_velocity = bm.set_at(
-            p_edge_velocity, vcell2pedge, cast_like(v_cell, p_edge_velocity)
-        )
+        p_edge_velocity = bm.set_at(p_edge_velocity, vcell2pedge, v_cell)
         ap_edge = bm.set_at(ap_edge, ucell2pedge, ap_u)
-        ap_edge = bm.set_at(ap_edge, vcell2pedge, cast_like(ap_v, ap_edge))
+        ap_edge = bm.set_at(ap_edge, vcell2pedge, ap_v)
 
         return p_edge_velocity, ap_edge
     

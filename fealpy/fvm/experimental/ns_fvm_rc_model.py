@@ -20,6 +20,7 @@ from fealpy.fvm import (
     DirichletBC,
     NeumannBC,
     ConvectionIntegrator,
+    cell_average_l2_error,
 )
 from ..rhie_chow import RhieChowCoupledOperator
 
@@ -373,15 +374,10 @@ class NSFVMRCModel(ComputationalModel):
         Compute the error between the numerical solutions for velocity u, v, 
         and pressure p and their analytical solutions
         """
-        self.uI = self.pde.velocity_u(self.mesh.entity_barycenter("cell"))
-        self.vI = self.pde.velocity_v(self.mesh.entity_barycenter("cell"))
-        self.pI = self.pde.pressure(self.mesh.entity_barycenter("cell"))
-        # uerr = bm.max(bm.abs(self.uh - self.uI))
-        # verr = bm.max(bm.abs(self.vh - self.vI))
-        # perr = bm.max(bm.abs(self.ph - self.pI))
-        uerr = bm.sqrt(bm.sum(self.mesh.entity_measure("cell") * (self.uh - self.uI)**2))
-        verr = bm.sqrt(bm.sum(self.mesh.entity_measure("cell") * (self.vh - self.vI)**2))
-        perr = bm.sqrt(bm.sum(self.mesh.entity_measure("cell") * (self.ph - self.pI)**2))
+        q = getattr(self, "error_quadrature_order", 4)
+        uerr, self.uI = cell_average_l2_error(self.mesh, self.pde.velocity_u, self.uh, q=q)
+        verr, self.vI = cell_average_l2_error(self.mesh, self.pde.velocity_v, self.vh, q=q)
+        perr, self.pI = cell_average_l2_error(self.mesh, self.pde.pressure, self.ph, q=q)
         return uerr, verr, perr
     
 

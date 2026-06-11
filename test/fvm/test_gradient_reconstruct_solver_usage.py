@@ -1,7 +1,7 @@
 import numpy as np
 
-from fealpy.fem import LinearForm
-from fealpy.functionspace import ScaledMonomialSpace2d
+from fealpy.fem import BilinearForm, LinearForm
+from fealpy.functionspace import ScaledMonomialSpace2d, TensorFunctionSpace
 from fealpy.mesh import TriangleMesh
 from fealpy.fvm import (
     ConvectionIntegrator,
@@ -79,6 +79,19 @@ def test_convection_integrator_can_use_openfoam_linear_face_weights():
 
     assert abs(weight - 0.5) > 1.0e-3
     assert np.linalg.norm(local[internal_face] - expected) < 1.0e-12
+
+
+def test_convection_integrator_expands_face_stencil_for_tensor_space():
+    mesh = _skew_two_cell_mesh()
+    scalar_space = ScaledMonomialSpace2d(mesh, 0)
+    vector_space = TensorFunctionSpace(scalar_space, shape=(2, -1))
+    face_velocity = np.tile(np.array([[0.7, -0.2]]), (mesh.number_of_faces(), 1))
+
+    matrix = BilinearForm(vector_space).add_integrator(
+        ConvectionIntegrator(q=2, coef=face_velocity)
+    ).assembly()
+
+    assert matrix.shape == (2 * mesh.number_of_cells(),) * 2
 
 
 def test_rhie_chow_can_use_openfoam_linear_velocity_interpolation():

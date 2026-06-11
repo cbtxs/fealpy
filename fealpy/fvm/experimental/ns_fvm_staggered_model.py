@@ -15,6 +15,7 @@ from fealpy.fvm import (
     ConvectionIntegrator,
     ScalarSourceIntegrator,
     DirichletBC,
+    cell_average_l2_error,
 )
 from .staggered_mesh_manager import StaggeredMeshManager
 
@@ -212,19 +213,10 @@ class NSFVMStaggeredModel(ComputationalModel):
         return self.uh, self.vh, self.ph
 
     def compute_error(self) -> Tuple:
-        self.uI = self.pde.velocity_u(self.umesh.entity_barycenter("cell"))
-        self.vI = self.pde.velocity_v(self.vmesh.entity_barycenter("cell"))
-        self.pI = self.pde.pressure(self.pmesh.entity_barycenter("cell"))
-
-        uerror = bm.sqrt(bm.sum(self.umesh.entity_measure("cell") * (self.uh - self.uI)**2))
-        verror = bm.sqrt(bm.sum(self.vmesh.entity_measure("cell") * (self.vh - self.vI)**2))
-        perror = bm.sqrt(bm.sum(self.pmesh.entity_measure("cell") * (self.ph - self.pI)**2))
-        # err = self.ph - self.pI
-        # print("err[210]:",err[210])
-        # uerr = bm.max(bm.abs(self.uh - self.uI))
-        # verr = bm.max(bm.abs(self.vh - self.vI))
-        # perr = bm.max(bm.abs(self.ph - self.pI))
-        # return uerror, verror, perror
+        q = getattr(self, "error_quadrature_order", 4)
+        uerror, self.uI = cell_average_l2_error(self.umesh, self.pde.velocity_u, self.uh, q=q)
+        verror, self.vI = cell_average_l2_error(self.vmesh, self.pde.velocity_v, self.vh, q=q)
+        perror, self.pI = cell_average_l2_error(self.pmesh, self.pde.pressure, self.ph, q=q)
         return uerror, verror, perror
 
     def plot(self) -> None:

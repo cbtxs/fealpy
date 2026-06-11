@@ -1,5 +1,7 @@
 import inspect
 
+import pytest
+
 
 def _cavity_solver(convection_coef=None, *, linear_solver=None):
     from fealpy.fvm import (
@@ -56,6 +58,27 @@ def test_collocated_simple_solver_default_pressure_relaxation_is_conservative():
 
     solve_parameters = inspect.signature(CollocatedSimpleSolver.solve).parameters
     assert solve_parameters["relax"].default == 0.03
+
+
+def test_cell_vector_dof_conversion_is_component_major_on_torch_backend():
+    pytest.importorskip("torch")
+    from fealpy.backend import backend_manager as bm
+
+    solver = _cavity_solver()
+    try:
+        bm.set_backend("pytorch")
+        cell_vector = bm.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0], [7.0, 8.0]])
+        dofs = solver.cell_vector_to_dofs(cell_vector)
+
+        assert bm.to_numpy(dofs).tolist() == [1.0, 3.0, 5.0, 7.0, 2.0, 4.0, 6.0, 8.0]
+        assert bm.to_numpy(solver.dofs_to_cell_vector(dofs)).tolist() == [
+            [1.0, 2.0],
+            [3.0, 4.0],
+            [5.0, 6.0],
+            [7.0, 8.0],
+        ]
+    finally:
+        bm.set_backend("numpy")
 
 
 def test_collocated_simple_solver_runs_without_model_adapter():

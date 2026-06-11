@@ -3,8 +3,8 @@ import numpy as np
 import pytest
 
 from fealpy.model.poisson.exp0002 import Exp0002
-from fealpy.mesh import QuadrangleMesh
-from fealpy.fvm import GradientReconstruct
+from fealpy.mesh import QuadrangleMesh, TetrahedronMesh
+from fealpy.fvm import FVMGeometry, GradientReconstruct
 from fealpy.fvm.gradient_reconstruct import (
     GreenGaussGradientReconstruct,
     LSQGradientReconstruct,
@@ -22,6 +22,45 @@ def test_lsq_recovers_linear_gradient_on_quad_and_tri_meshes():
         grad = np.asarray(GradientReconstruct(mesh).cell_gradient(field))
 
         assert np.linalg.norm(grad - np.array([1.0, 2.0])) < 1.0e-10
+
+
+def test_extended_lsq_recovers_3d_linear_gradient_on_tetra_mesh():
+    mesh = TetrahedronMesh.from_box(box=[0, 1, 0, 1, 0, 1], nx=2, ny=2, nz=2)
+    points = mesh.entity_barycenter("cell")
+    field = points[:, 0] + 2.0 * points[:, 1] + 3.0 * points[:, 2]
+
+    grad = np.asarray(GradientReconstruct(mesh).cell_gradient(field))
+
+    assert grad.shape == (mesh.number_of_cells(), mesh.geo_dimension())
+    assert np.linalg.norm(grad - np.array([1.0, 2.0, 3.0])) < 1.0e-10
+
+
+def test_weighted_lsq_recovers_3d_linear_gradient_on_tetra_interior_cells():
+    mesh = TetrahedronMesh.from_box(box=[0, 1, 0, 1, 0, 1], nx=2, ny=2, nz=2)
+    points = mesh.entity_barycenter("cell")
+    field = points[:, 0] + 2.0 * points[:, 1] + 3.0 * points[:, 2]
+
+    def gd(points):
+        return points[:, 0] + 2.0 * points[:, 1] + 3.0 * points[:, 2]
+
+    grad = np.asarray(
+        GradientReconstruct(mesh, method="weighted_lsq", gd=gd).cell_gradient(field)
+    )
+    geometry = FVMGeometry(mesh)
+    interior = np.ones(mesh.number_of_cells(), dtype=bool)
+    interior[np.asarray(geometry.owner[geometry.is_boundary])] = False
+
+    assert grad.shape == (mesh.number_of_cells(), mesh.geo_dimension())
+    assert np.linalg.norm(grad[interior] - np.array([1.0, 2.0, 3.0])) < 1.0e-10
+
+
+def test_green_gauss_allocates_3d_gradient_shape_on_tetra_mesh():
+    mesh = TetrahedronMesh.from_box(box=[0, 1, 0, 1, 0, 1], nx=2, ny=2, nz=2)
+    field = np.ones(mesh.number_of_cells())
+
+    grad = np.asarray(GradientReconstruct(mesh, method="green_gauss").cell_gradient(field))
+
+    assert grad.shape == (mesh.number_of_cells(), mesh.geo_dimension())
 
 
 def test_extended_lsq_layer_weights_keep_linear_consistency():

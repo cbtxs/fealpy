@@ -8,6 +8,7 @@ from fealpy.decorator.variantmethod import variantmethod
 
 from fealpy.mesh import HomogeneousMesh
 from fealpy.functionspace.space import FunctionSpace as _FS
+from fealpy.functionspace.utils import to_tensor_dof
 
 from fealpy.fem.integrator import LinearInt, OpInt, FaceInt, enable_cache
 
@@ -56,7 +57,19 @@ class ConvectionIntegrator(LinearInt, OpInt, FaceInt):
 
     @enable_cache
     def to_global_dof(self, space: _FS) -> TensorLike:
-        return space.edge_to_dof()[self.index]
+        mesh = getattr(space, "mesh", None)
+        face_to_cell = mesh.face_to_cell()[self.index, :2]
+
+        scalar_space = getattr(space, "scalar_space", None)
+        if scalar_space is None:
+            return face_to_cell
+
+        return to_tensor_dof(
+            face_to_cell,
+            space.dof_numel,
+            scalar_space.number_of_global_dofs(),
+            space.dof_priority,
+        )
 
     @enable_cache
     def fetch(self, space: _FS):

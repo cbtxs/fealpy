@@ -11,17 +11,23 @@ def main():
     parser.add_argument("--pde", default=3, type=int,
                         help="Navier-Stokes PDE example ID")
 
-    parser.add_argument("--nx", default=40, type=int,
+    parser.add_argument("--nx", default=20, type=int,
                         help="Grid divisions in x")
 
-    parser.add_argument("--ny", default=40, type=int,
+    parser.add_argument("--ny", default=20, type=int,
                         help="Grid divisions in y")
+
+    parser.add_argument("--nz", default=None, type=int,
+                        help="Grid divisions in z for 3D examples")
 
     parser.add_argument("--mesh_type", default="uniform_quad", type=str,
                         help="Mesh type, e.g. uniform_quad or uniform_tri")
 
-    parser.add_argument("--nt", default=160, type=int,
+    parser.add_argument("--nt", default=40, type=int,
                         help="Number of time steps")
+
+    parser.add_argument("--n_correctors", default=2, type=int,
+                        help="Number of PISO pressure correctors per time step")
 
     parser.add_argument("--momentum_nonorthogonal_max_iter", default=None, type=int,
                         help="Max explicit non-orthogonal corrections for momentum diffusion")
@@ -37,6 +43,9 @@ def main():
 
     parser.add_argument("--backend", default="numpy", type=str,
                         help="Backend: numpy, torch, tensorflow, or jax.")
+
+    parser.add_argument("--linear_solver", default="auto", type=str,
+                        help="Sparse linear solver, e.g. auto, mumps, or scipy.")
 
     parser.add_argument("--pbar_log", default=True, type=bool,
                         help="Whether to show progress bar, default is True")
@@ -54,10 +63,11 @@ def main():
     print(model)
 
     model.solve()
-    uerror, verror, perror = model.compute_error()
-    print(f"L2 error (u) = {uerror}")
-    print(f"L2 error (v) = {verror}")
-    print(f"L2 error (p) = {perror}")
+    errors = model.compute_error()
+    velocity_names = ("u", "v", "w")
+    for name, error in zip(velocity_names, errors[:-1]):
+        print(f"L2 error ({name}) = {error}")
+    print(f"L2 error (p) = {errors[-1]}")
     # model.plot()
     if options["plot"]:
         model.plot()

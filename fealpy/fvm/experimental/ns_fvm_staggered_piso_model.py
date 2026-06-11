@@ -14,6 +14,7 @@ from fealpy.fvm import (
     GradientReconstruct,
     DivergenceReconstruct,
     DirichletBC,
+    cell_average_l2_error,
 )
 from .staggered_mesh_manager import StaggeredMeshManager
 from fealpy.decorator import cartesian
@@ -278,13 +279,20 @@ class NSFVMStaggeredPISOModel(ComputationalModel):
 
     def compute_error(self) -> Tuple[float, float, float]:
         t = self.duration[1]
-        self.uI = self.pde.velocity_u(self.upoints, t)
-        self.vI = self.pde.velocity_v(self.vpoints, t)
-        self.pI = self.pde.pressure(self.ppoints, t)
+        q = getattr(self, "error_quadrature_order", 4)
 
-        uerror = bm.sqrt(bm.sum(self.ucm * (self.uh - self.uI) ** 2))
-        verror = bm.sqrt(bm.sum(self.vcm * (self.vh - self.vI) ** 2))
-        perror = bm.sqrt(bm.sum(self.pcm * (self.ph - self.pI) ** 2))
+        def exact_u(points):
+            return self.pde.velocity_u(points, t)
+
+        def exact_v(points):
+            return self.pde.velocity_v(points, t)
+
+        def exact_p(points):
+            return self.pde.pressure(points, t)
+
+        uerror, self.uI = cell_average_l2_error(self.umesh, exact_u, self.uh, q=q)
+        verror, self.vI = cell_average_l2_error(self.vmesh, exact_v, self.vh, q=q)
+        perror, self.pI = cell_average_l2_error(self.pmesh, exact_p, self.ph, q=q)
         return uerror, verror, perror
 
     def plot(self) -> None:

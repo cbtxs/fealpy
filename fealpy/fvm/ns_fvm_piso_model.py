@@ -8,6 +8,7 @@ from fealpy.backend import backend_manager as bm
 from fealpy.model import ComputationalModel
 
 from .collocated_piso_solver import CollocatedPisoSolver
+from .cell_average_error import cell_average_l2_error
 from .engineering_boundary_conditions import BoundaryConditionData
 from .navier_stokes_model_adapter import NavierStokesModelAdapter
 from .solver_controls import PisoSolverControls
@@ -25,6 +26,7 @@ class NSFVMPISOModel(ComputationalModel, NavierStokesModelAdapter, CollocatedPis
         )
         pde = self._resolve_navier_stokes_pde(options["pde"])
         self.pde = pde
+        self.error_quadrature_order = int(options.get("error_quadrature_order", 4))
         self._init_momentum_coefficients(options)
         mesh_type = self._piso_mesh_type(options)
         mesh = self._init_mesh(options, mesh_type)
@@ -78,6 +80,8 @@ class NSFVMPISOModel(ComputationalModel, NavierStokesModelAdapter, CollocatedPis
             mesh_options["nx"] = options.get("nx")
         if options.get("ny") is not None:
             mesh_options["ny"] = options.get("ny")
+        if options.get("nz") is not None:
+            mesh_options["nz"] = options.get("nz")
         if options.get("mesh_refine") is not None:
             mesh_options["mesh_refine"] = options.get("mesh_refine")
         return self._init_navier_stokes_mesh(
@@ -172,15 +176,32 @@ class NSFVMPISOModel(ComputationalModel, NavierStokesModelAdapter, CollocatedPis
         return U0, Uf0, p0
 
     def compute_error(self) -> Tuple[float, float, float]:
-        """Compute manufactured-solution errors at the final time."""
+        """Compute final-time errors against exact control-volume averages."""
         t = self.controls.duration[1]
-        self.uI = self.pde.velocity_u(self.points, t)
-        self.vI = self.pde.velocity_v(self.points, t)
-        self.pI = self.pde.pressure(self.points, t)
-        uerror = bm.sqrt(bm.sum(self.cm * (self.uh - self.uI) ** 2))
-        verror = bm.sqrt(bm.sum(self.cm * (self.vh - self.vI) ** 2))
-        perror = bm.sqrt(bm.sum(self.cm * (self.ph - self.pI) ** 2))
-        return uerror, verror, perror
+
+        def exact_velocity(points):
+            return self.pde.velocity(points, t)
+
+        def exact_pressure(points):
+            return self.pde.pressure(points, t)
+
+        velocity_error, velocity_average = cell_average_l2_error(
+            self.mesh,
+            exact_velocity,
+            self.velocity,
+            q=self.error_quadrature_order,
+        )
+        perror, self.pI = cell_average_l2_error(
+            self.mesh,
+            exact_pressure,
+            self.ph,
+            q=self.error_quadrature_order,
+        )
+        self.uI = velocity_average[:, 0]
+        self.vI = velocity_average[:, 1] if self.GD > 1 else bm.zeros_like(self.uI)
+        if self.GD > 2:
+            self.wI = velocity_average[:, 2]
+        return tuple(velocity_error[i] for i in range(self.GD)) + (perror,)
 
     def plot(self) -> None:
         """Plot numerical and exact solution errors for u, v, and p."""

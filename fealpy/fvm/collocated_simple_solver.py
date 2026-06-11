@@ -6,21 +6,23 @@ from typing import Optional, Tuple
 from fealpy.typing import TensorLike
 from fealpy.backend import backend_manager as bm
 from fealpy.fem import BilinearForm
+from fealpy.sparse import spdiags
 from .collocated_ns_fvm_utils import CollocatedNSFVMOperators
 from .dirichlet_bc import DirichletBC
 from .fvm_linear_solver import FVMLinearSolverConfig
 from .rhie_chow import RhieChowInterpolation
 from .scalar_diffusion_integrator import ScalarDiffusionIntegrator
-from .simple_iteration_control import SimpleIterationControl
 from .solver_controls import SimpleSolverControls
-from .pressure_correction_control import (
-    PressureRelaxationConfig,
-    pressure_correction_converged,
+from .pressure_correction_control import pressure_correction_converged
+from .simple_residual import (
+    log_simple_residual,
+    simple_pressure_update_step,
+    simple_tolerances,
 )
 
 
 class CollocatedSimpleSolver(CollocatedNSFVMOperators):
-    """Algorithm core for 2D steady collocated SIMPLE solves."""
+    """Algorithm core for steady collocated SIMPLE solves."""
 
     def __init__(
         self,
@@ -61,7 +63,6 @@ class CollocatedSimpleSolver(CollocatedNSFVMOperators):
         self.mesh = mesh
         self.cm = self.mesh.entity_measure("cell")
         self.NC = self.mesh.number_of_cells()
-        self.iteration_control = SimpleIterationControl(self.mesh, self.logger)
         required = (
             "conditions_for",
             "dirichlet_threshold",
@@ -137,8 +138,13 @@ class CollocatedSimpleSolver(CollocatedNSFVMOperators):
                 f, convection_face_velocity, threshold=threshold
             )
         B = B.tocoo().coalesce().tocsr()
-        ap = B.diags().values
         f = f - self.pressure_gradient_source(p)
+        B, f, ap = self.relax_momentum_equation(
+            B,
+            f,
+            u0,
+            self.controls.momentum_equation_relaxation,
+        )
         u = self.linear_solver.solve(B, f)
 
         u = self.correct_momentum_nonorthogonal_diffusion(
@@ -152,6 +158,28 @@ class CollocatedSimpleSolver(CollocatedNSFVMOperators):
         )
 
         return ap, u
+
+    @staticmethod
+    def relax_momentum_equation(matrix, rhs, previous_velocity, alpha):
+        """Apply matrix-level under-relaxation to a momentum equation.
+
+        For an assembled system ``A U = b``, the relaxed system is
+        ``(A + diag(delta)) U = b + diag(delta) U_old`` with
+        ``delta = (1 / alpha - 1) diag(A)``.  The returned diagonal is the
+        relaxed momentum diagonal used by SIMPLE pressure response.
+        """
+        if not 0.0 < alpha <= 1.0:
+            raise ValueError("momentum equation relaxation alpha must be in (0, 1].")
+
+        diagonal = matrix.diags().values
+        if alpha == 1.0:
+            return matrix, rhs, diagonal
+
+        delta = (1.0 / alpha - 1.0) * diagonal
+        relaxed_matrix = matrix + spdiags(delta, 0, matrix.shape[0], matrix.shape[1])
+        relaxed_matrix = relaxed_matrix.tocoo().coalesce().tocsr()
+        relaxed_rhs = rhs + delta * previous_velocity
+        return relaxed_matrix, relaxed_rhs, relaxed_matrix.diags().values
 
     def correct_momentum_nonorthogonal_diffusion(
         self,
@@ -170,7 +198,7 @@ class CollocatedSimpleSolver(CollocatedNSFVMOperators):
             return velocity
 
         correction_velocity = (
-            bm.stack([previous_velocity[: self.NC], previous_velocity[self.NC :]], axis=-1)
+            self.dofs_to_cell_vector(previous_velocity)
             if previous_velocity.ndim == 1
             else previous_velocity
         )
@@ -183,10 +211,7 @@ class CollocatedSimpleSolver(CollocatedNSFVMOperators):
             if bm.max(bm.abs(next_velocity - corrected_velocity)) < tol:
                 return next_velocity
             corrected_velocity = next_velocity
-            correction_velocity = bm.stack(
-                [corrected_velocity[: self.NC], corrected_velocity[self.NC :]],
-                axis=-1,
-            )
+            correction_velocity = self.dofs_to_cell_vector(corrected_velocity)
             cross = self.compute_cross_diffusion(correction_velocity)
         return corrected_velocity
 
@@ -353,23 +378,20 @@ class CollocatedSimpleSolver(CollocatedNSFVMOperators):
         relax: float = 0.03,
         tol_mass=None,
         tol_pressure_update=None,
-        adaptive_pressure_relax: bool = True,
-        relaxation_config: Optional[PressureRelaxationConfig] = None,
+        tol_pressure_correction=None,
     ) -> Tuple[TensorLike, TensorLike, TensorLike]:
         """Run the SIMPLE outer iteration."""
-        tol_mass, tol_pressure_update = self.iteration_control.tolerances(
+        tol_mass, tol_pressure_update = simple_tolerances(
             tol, tol_mass, tol_pressure_update
         )
-        relaxation = self.iteration_control.pressure_relaxation_controller(
-            relax,
-            adaptive_pressure_relax,
-            relaxation_config,
-        )
-        pressure_relax = relax
+        if tol_pressure_correction is not None and tol_pressure_correction <= 0.0:
+            raise ValueError("tol_pressure_correction must be positive.")
+        if relax <= 0.0:
+            raise ValueError("relax must be positive.")
         field_dtype = self.cm.dtype
         p = bm.zeros(self.NC, dtype=field_dtype)
-        uf = bm.zeros((self.mesh.number_of_faces(), 2), dtype=field_dtype)
-        u = bm.zeros(2 * self.NC, dtype=field_dtype)
+        uf = bm.zeros((self.mesh.number_of_faces(), self.GD), dtype=field_dtype)
+        u = bm.zeros(self.GD * self.NC, dtype=field_dtype)
         ap, u = self.temporary_velocity(p, uf, u)
         self.residuals = []
         bd_edge, bdedgeu = self._boundary_face_velocity()
@@ -384,35 +406,55 @@ class CollocatedSimpleSolver(CollocatedNSFVMOperators):
                 u, ap, p, response_coef, bd_edge, bdedgeu
             )
             p_corr = self.pressure_correct(ap, uf, response_coef=response_coef)
-            pressure_relax, p_update, residual = (
-                self.iteration_control.pressure_update_step(
-                    self.residuals,
-                    uf,
-                    p_corr,
-                    p,
-                    pressure_relax,
-                    relaxation,
-                    nonorthogonal_iterations=(
-                        self.last_pressure_nonorthogonal_iterations
-                    ),
-                    momentum_nonorthogonal_iterations=(
-                        self.last_nonorthogonal_iterations
-                    ),
+            uf_corrected = self.correct_face_velocity_with_pressure_correction(
+                uf, p_corr, response_coef, bd_edge, bdedgeu
+            )
+            p_update, residual = simple_pressure_update_step(
+                self.residuals,
+                self.mesh,
+                uf,
+                p_corr,
+                p,
+                pressure_relax=relax,
+                nonorthogonal_iterations=(
+                    self.last_pressure_nonorthogonal_iterations
+                ),
+                momentum_nonorthogonal_iterations=self.last_nonorthogonal_iterations,
+                stopping_face_velocity=uf_corrected,
+            )
+            if tol_pressure_correction is not None:
+                residual["pressure_criterion"] = residual["pressure_correction"]
+            log_simple_residual(self.logger, iteration, residual)
+
+            p += p_update
+            uf = uf_corrected
+            u = self.cell_vector_to_dofs(
+                self.velocity_pressure_correction(
+                    self.dofs_to_cell_vector(u),
+                    p_update,
+                    ap,
                 )
             )
-            self.iteration_control.log_iteration(iteration, residual)
-
-            if pressure_correction_converged(residual, tol_mass, tol_pressure_update):
+            if pressure_correction_converged(
+                residual,
+                tol_mass,
+                tol_pressure_update,
+                tol_pressure_correction,
+            ):
                 self.logger.info("Converged.")
                 break
 
-            p += p_update
-            uf = self.correct_face_velocity_with_pressure_correction(
-                uf, p_corr, response_coef, bd_edge, bdedgeu
-            )
             ap, u = self.temporary_velocity(p, uf, u)
 
-        self.uh = u[:self.NC]
-        self.vh = u[self.NC:]
+        self.velocity = self.dofs_to_cell_vector(u)
+        self.velocity_components = [
+            self.velocity[:, component] for component in range(self.GD)
+        ]
+        self.uh = self.velocity_components[0]
+        self.vh = (
+            self.velocity_components[1]
+            if self.GD > 1
+            else bm.zeros_like(self.uh)
+        )
         self.ph = p
         return self.uh, self.vh, self.ph

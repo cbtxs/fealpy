@@ -77,7 +77,6 @@ def run_simple_cavity(args):
         max_iter=args.max_iter,
         tol=args.tol,
         relax=args.relax,
-        adaptive_pressure_relax=args.adaptive_pressure_relax,
     )
 
     output_dir = (
@@ -124,11 +123,6 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max_iter", default=500, type=int)
     parser.add_argument("--tol", default=1.0e-6, type=float)
     parser.add_argument("--relax", default=0.03, type=float)
-    parser.add_argument(
-        "--adaptive_pressure_relax",
-        default=True,
-        action=argparse.BooleanOptionalAction,
-    )
     parser.add_argument("--backend", default="numpy", type=str)
     parser.add_argument("--device", default="cpu", choices=("cpu", "cuda"))
     parser.add_argument("--log_level", default="WARNING", type=str)

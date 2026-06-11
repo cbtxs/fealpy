@@ -16,6 +16,7 @@ from ..fvm import (
     DirichletBC,
     FVMGeometry,
     GradientReconstruct,
+    cell_average_l2_error,
     reconstruct_face_gradient,
 )
 
@@ -48,6 +49,7 @@ class PoissonFVMModel(ComputationalModel):
         self.set_pde(options["pde"])
         self.set_mesh(options["nx"], options["ny"])
         self.set_space(options["space_degree"])
+        self.error_quadrature_order = int(options.get("error_quadrature_order", 4))
         self.nonorthogonal_correction_method = options.get("nonorthogonal_correction_method", "bounded_over_relaxed")
         self.nonorthogonal_limit_coeff = options.get("nonorthogonal_limit_coeff", 0.5)
 
@@ -164,9 +166,12 @@ class PoissonFVMModel(ComputationalModel):
         Returns:
             float: The L2 norm of the error.
         """
-        cell_center = self.mesh.entity_barycenter('cell')
-        self.uI = self.pde.solution(cell_center)
-        self.error = bm.sqrt(bm.sum(self.mesh.entity_measure('cell') * (self.uI - self.uh)**2))
+        self.error, self.uI = cell_average_l2_error(
+            self.mesh,
+            self.pde.solution,
+            self.uh,
+            q=self.error_quadrature_order,
+        )
         # l0error = bm.max(bm.abs(self.uI - self.uh))
         # self.logger.info(f"L0 error = {l0error}")
         return self.error

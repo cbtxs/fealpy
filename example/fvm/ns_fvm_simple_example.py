@@ -8,7 +8,7 @@ def main():
     parser.add_argument('--pde', default=1, type=int,
                          help='Navier–Stokes PDE example ID')
 
-    parser.add_argument('--mesh_type', default="uniform_tri", type=str,
+    parser.add_argument('--mesh_type', default="uniform_qrad", type=str,
                         help='PDE mesh generator variant. Defaults to the PDE model default.')
 
     parser.add_argument('--mesh_refine', default=1, type=int,

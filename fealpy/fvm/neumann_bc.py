@@ -3,7 +3,6 @@
 from fealpy.sparse import spdiags
 from fealpy.backend import backend_manager as bm
 
-from .backend_utils import as_backend_array, cast_like
 from .fvm_geometry import FVMGeometry
 
 
@@ -52,15 +51,15 @@ class NeumannBC:
                 # Try applying condition to x-coordinate only
                 x = bd_node[:, 0]
                 bd_idx = self.threshold(x)
-                bd_idx = as_backend_array(bd_idx, dtype=bm.bool)
+                bd_idx = bm.array(bd_idx, dtype=bm.bool)
                 if not bm.any(bd_idx):  # Check if bd_idx is all False
                     y = bd_node[:, 1]
                     bd_idx = self.threshold(y)
-                    bd_idx = as_backend_array(bd_idx, dtype=bm.bool)
+                    bd_idx = bm.array(bd_idx, dtype=bm.bool)
             except Exception:
                 # Fall back to applying condition to full node coordinates
                 bd_idx = self.threshold(bd_node)
-                bd_idx = as_backend_array(bd_idx, dtype=bm.bool)
+                bd_idx = bm.array(bd_idx, dtype=bm.bool)
         else:
             raise ValueError("self.threshold must be a callable (e.g., lambda x: (x==0.5)|(x==2.5) or a function).")
         index = total_bd_idx[bd_idx]
@@ -95,7 +94,7 @@ class NeumannBC:
         points = geometry.face_center[bdedge]
         neumann = self.gd(points)
         bd_integrator = neumann * geometry.mag_S_f[bdedge]
-        bd_integrator = cast_like(bd_integrator, f)
+        bd_integrator = bm.array(bd_integrator, dtype=f.dtype)
         f = bm.index_add(f, geometry.owner[bdedge], bd_integrator, axis=0)
         return f
 

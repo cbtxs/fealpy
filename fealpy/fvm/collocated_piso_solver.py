@@ -28,7 +28,7 @@ from fealpy.decorator import cartesian
 
 
 class CollocatedPisoSolver(CollocatedNSFVMOperators):
-    """Algorithm core for 2D transient collocated PISO solves."""
+    """Algorithm core for transient collocated PISO solves."""
 
     def __init__(
         self,
@@ -61,7 +61,7 @@ class CollocatedPisoSolver(CollocatedNSFVMOperators):
         self.mesh = mesh
         self.cm = self.mesh.entity_measure("cell")
         self.points = self.mesh.entity_barycenter("cell")
-        self.epoints = self.mesh.entity_barycenter("edge")
+        self.epoints = self.mesh.entity_barycenter("face")
         self.NC = self.mesh.number_of_cells()
         self.boundary_conditions = self._validate_boundary_conditions(boundary_conditions)
         self.velocity_dirichlet_value = self.boundary_conditions.dirichlet_value("velocity")
@@ -203,7 +203,7 @@ class CollocatedPisoSolver(CollocatedNSFVMOperators):
             )
             old_U = U
             solution = self.linear_solver.solve(A, corrected_rhs)
-            U = bm.stack([solution[: self.NC], solution[self.NC :]], axis=-1)
+            U = self.dofs_to_cell_vector(solution)
             self.last_momentum_nonorthogonal_iterations = iteration
             if (
                 iteration > 1
@@ -384,7 +384,7 @@ class CollocatedPisoSolver(CollocatedNSFVMOperators):
         if face_response_coefficient is None:
             face_response_coefficient = self.pressure_response_face_coefficient(a_p)
         face_velocity = self.rhie_chow.Interpolation(
-            cell_velocity.flatten(order="F"),
+            self.cell_vector_to_dofs(cell_velocity),
             a_p,
             pressure,
             face_response_coefficient=face_response_coefficient,
@@ -447,13 +447,16 @@ class CollocatedPisoSolver(CollocatedNSFVMOperators):
             -(A delta_U - diag(A) delta_U) / diag(A).
         """
         delta_u = corrected_velocity - predicted_velocity
-        delta_dofs = delta_u.flatten(order="F")
+        delta_dofs = self.cell_vector_to_dofs(delta_u)
         offdiag_delta = momentum_matrix @ delta_dofs - a_p * delta_dofs
-        offdiag_cell = bm.stack(
-            [offdiag_delta[: self.NC], offdiag_delta[self.NC :]],
+        offdiag_cell = self.dofs_to_cell_vector(offdiag_delta)
+        a_p_cell = bm.stack(
+            [
+                a_p[component * self.NC : (component + 1) * self.NC]
+                for component in range(self.GD)
+            ],
             axis=-1,
         )
-        a_p_cell = bm.stack([a_p[: self.NC], a_p[self.NC :]], axis=-1)
         return corrected_velocity - offdiag_cell / a_p_cell
 
     def pressure_correction_step(
@@ -722,7 +725,15 @@ class CollocatedPisoSolver(CollocatedNSFVMOperators):
                     flux=phi,
                 )
 
-        self.uh = current_velocity[:, 0]
-        self.vh = current_velocity[:, 1]
+        self.velocity = current_velocity
+        self.velocity_components = [
+            current_velocity[:, component] for component in range(self.GD)
+        ]
+        self.uh = self.velocity_components[0]
+        self.vh = (
+            self.velocity_components[1]
+            if self.GD > 1
+            else bm.zeros_like(self.uh)
+        )
         self.ph = current_pressure
         return self.uh, self.vh, self.ph

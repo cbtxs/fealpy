@@ -1,7 +1,6 @@
 from fealpy.backend import backend_manager as bm
 from fealpy.decorator.variantmethod import variantmethod
 
-from .backend_utils import as_backend_array
 from .fvm_geometry import FVMGeometry, face_interpolation_owner_weight
 
 
@@ -11,14 +10,9 @@ class LSQGradientReconstruct:
     def __init__(self, owner):
         self.owner = owner
         self.mesh = owner.mesh
+        self.GD = owner.GD
         self.fvm_geometry = owner.fvm_geometry
-        self._extended_lsq_cache_key = None
-        self._extended_lsq_cache = None
-        self._extended_lsq_dirichlet_cache_key = None
-        self._extended_lsq_dirichlet_cache = None
-        self._face_lsq_cache_key = None
-        self._face_lsq_cache = None
-        self._weighted_lsq_cache = None
+        self.clear_cache()
 
     def clear_cache(self):
         self._extended_lsq_cache_key = None
@@ -30,7 +24,6 @@ class LSQGradientReconstruct:
         self._weighted_lsq_cache = None
 
     def extended_lsq(self, U):
-        U = as_backend_array(U)
         weights = self.owner.layer_weights
         if self._extended_lsq_cache_key != weights:
             first_weight, second_weight = weights
@@ -44,7 +37,7 @@ class LSQGradientReconstruct:
             sample_weight = bm.where(direct_neighbor, first_weight, second_weight)
             sample_weight = bm.where(self_neighbor, 0.0, sample_weight)
             weighted_d = sample_weight[:, :, None] * d
-            A = bm.zeros((NC, d.shape[-1], d.shape[-1]), dtype=cell_centers.dtype)
+            A = bm.zeros((NC, self.GD, self.GD), dtype=cell_centers.dtype)
             cells = bm.arange(NC, dtype=N.dtype)
             for k in range(N.shape[1]):
                 A = self._add_lsq_matrix_samples(A, cells, d[:, k, :], sample_weight[:, k])
@@ -57,11 +50,11 @@ class LSQGradientReconstruct:
         N, weighted_d, A, inv_A, cell_centers = self._extended_lsq_cache
         cells = bm.arange(U.shape[0], dtype=N.dtype)
         if U.ndim == 1:
-            b = bm.zeros((U.shape[0], weighted_d.shape[-1]), dtype=U.dtype)
+            b = bm.zeros((U.shape[0], self.GD), dtype=U.dtype)
             for k in range(N.shape[1]):
                 b = self._add_lsq_rhs_samples(b, cells, weighted_d[:, k, :], U[N[:, k]] - U)
         else:
-            b = bm.zeros((U.shape[0], U.shape[1], weighted_d.shape[-1]), dtype=U.dtype)
+            b = bm.zeros((U.shape[0], U.shape[1], self.GD), dtype=U.dtype)
             for k in range(N.shape[1]):
                 b = self._add_lsq_rhs_samples(b, cells, weighted_d[:, k, :], U[N[:, k]] - U)
 
@@ -80,14 +73,18 @@ class LSQGradientReconstruct:
                     bd_owner = self.fvm_geometry.owner[bdedge]
                     face_centers = self.fvm_geometry.face_center
                     bd_d = face_centers[bdedge] - cell_centers[bd_owner]
-                    A_dirichlet = self._add_lsq_matrix_samples(bm.copy(A), bd_owner, bd_d, boundary_weight)
+                    A_dirichlet = self._add_lsq_matrix_samples(
+                        bm.copy(A), bd_owner, bd_d, boundary_weight
+                    )
                     inv_A_dirichlet = self._invert_lsq_matrix(A_dirichlet, "extended_lsq")
                     self._extended_lsq_dirichlet_cache_key = cache_key
                     self._extended_lsq_dirichlet_cache = (bdedge, bd_owner, bd_d, inv_A_dirichlet)
                 bdedge, bd_owner, bd_d, inv_A = self._extended_lsq_dirichlet_cache
                 face_centers = self.fvm_geometry.face_center
                 bd_value = self.owner.gd(face_centers[bdedge])
-                b = self._add_lsq_rhs_samples(b, bd_owner, bd_d, bd_value - U[bd_owner], boundary_weight)
+                b = self._add_lsq_rhs_samples(
+                    b, bd_owner, bd_d, bd_value - U[bd_owner], boundary_weight
+                )
 
         grad = self._solve_lsq_system(A, b, "extended_lsq", inv_A=inv_A)
 
@@ -108,10 +105,10 @@ class LSQGradientReconstruct:
                     index for index, owner_value in enumerate(owner_list)
                     if owner_value == cell
                 ]
-                if len(local_indices) > 2:
+                if len(local_indices) > self.GD:
                     raise ValueError(
-                        "constrained Neumann LSQ supports at most two independent "
-                        "boundary constraints per cell in 2D."
+                        "constrained Neumann LSQ supports at most GD independent "
+                        "boundary constraints per cell."
                     )
                 constrained_grad = self._solve_cell_neumann_constraint(
                     constrained_grad,
@@ -126,7 +123,8 @@ class LSQGradientReconstruct:
         return grad
 
     def face_lsq(self, U):
-        U = as_backend_array(U)
+        if self.GD != 2:
+            raise ValueError("face_lsq is currently only implemented for 2D meshes.")
         cache_key = self.owner.gd is not None
         if self._face_lsq_cache_key != cache_key:
             NC = self.mesh.number_of_cells()
@@ -171,7 +169,6 @@ class LSQGradientReconstruct:
         return self._solve_lsq_system(A, b, "face_lsq", inv_A=inv_A)
 
     def weighted_lsq(self, U):
-        U = as_backend_array(U)
         if self._weighted_lsq_cache is None:
             NC = self.mesh.number_of_cells()
             cell_centers = self.fvm_geometry.cell_center
@@ -183,10 +180,12 @@ class LSQGradientReconstruct:
             internal_neighbour = neighbour[is_internal]
             internal_face = bm.nonzero(is_internal)[0]
             face_measure = self.fvm_geometry.mag_S_f
-            A = bm.zeros((NC, 2, 2), dtype=cell_centers.dtype)
+            A = bm.zeros((NC, self.GD, self.GD), dtype=cell_centers.dtype)
             d = cell_centers[internal_neighbour] - cell_centers[internal_owner]
             scale = face_measure[internal_face] / bm.einsum("ij,ij->i", d, d)
-            owner_weight = face_interpolation_owner_weight(self.mesh, method="linear")[internal_face]
+            owner_weight = face_interpolation_owner_weight(
+                self.mesh, method="linear"
+            )[internal_face]
             owner_scale = (1.0 - owner_weight) * scale
             neighbour_scale = owner_weight * scale
             A = self._add_lsq_matrix_samples(A, internal_owner, d, owner_scale)
@@ -230,9 +229,9 @@ class LSQGradientReconstruct:
         ) = self._weighted_lsq_cache
         NC = self.mesh.number_of_cells()
         if U.ndim == 1:
-            b = bm.zeros((NC, 2), dtype=U.dtype)
+            b = bm.zeros((NC, self.GD), dtype=U.dtype)
         else:
-            b = bm.zeros((NC, U.shape[1], 2), dtype=U.dtype)
+            b = bm.zeros((NC, U.shape[1], self.GD), dtype=U.dtype)
 
         delta = U[internal_neighbour] - U[internal_owner]
         b = self._add_lsq_rhs_samples(b, internal_owner, d, delta, owner_scale)
@@ -340,14 +339,20 @@ class LSQGradientReconstruct:
             return bm.einsum("nij,nj->ni", inv_A, b)
         return bm.einsum("nij,nkj->nki", inv_A, b)
 
-    def _solve_cell_neumann_constraint(self, grad, A, b, bd_value, unit_normal, cell, local_indices):
+    def _solve_cell_neumann_constraint(
+        self, grad, A, b, bd_value, unit_normal, cell, local_indices
+    ):
         local_indices = bm.array(local_indices, dtype=bm.int64)
         normal = unit_normal[local_indices]
         n_constraint = len(local_indices)
-        kkt = bm.zeros((2 + n_constraint, 2 + n_constraint), dtype=A.dtype)
-        kkt = bm.set_at(kkt, (slice(None, 2), slice(None, 2)), A[cell])
-        kkt = bm.set_at(kkt, (slice(None, 2), slice(2, None)), bm.swapaxes(normal, 0, 1))
-        kkt = bm.set_at(kkt, (slice(2, None), slice(None, 2)), normal)
+        kkt = bm.zeros((self.GD + n_constraint, self.GD + n_constraint), dtype=A.dtype)
+        kkt = bm.set_at(kkt, (slice(None, self.GD), slice(None, self.GD)), A[cell])
+        kkt = bm.set_at(
+            kkt,
+            (slice(None, self.GD), slice(self.GD, None)),
+            bm.swapaxes(normal, 0, 1),
+        )
+        kkt = bm.set_at(kkt, (slice(self.GD, None), slice(None, self.GD)), normal)
 
         if b.ndim == 2:
             rhs = bm.concatenate([
@@ -355,7 +360,7 @@ class LSQGradientReconstruct:
                 bd_value[local_indices],
             ])
             solution = bm.linalg.solve(kkt, rhs[:, None]).squeeze(-1)
-            return bm.set_at(grad, cell, solution[:2])
+            return bm.set_at(grad, cell, solution[:self.GD])
 
         components = []
         for component in range(b.shape[1]):
@@ -364,10 +369,17 @@ class LSQGradientReconstruct:
                 bd_value[local_indices, component],
             ])
             solution = bm.linalg.solve(kkt, rhs[:, None]).squeeze(-1)
-            components.append(solution[:2])
+            components.append(solution[:self.GD])
         return bm.set_at(grad, cell, bm.stack(components, axis=0))
 
     def _invert_lsq_matrix(self, A, method):
+        if self.GD != 2:
+            det = bm.linalg.det(A)
+            scale = bm.maximum(bm.linalg.norm(A, axis=(1, 2)), bm.ones_like(det))
+            if bm.any(bm.abs(det) <= 1.0e-14 * scale**self.GD):
+                raise ValueError(f"{method} stencil is rank deficient.")
+            return bm.linalg.inv(A)
+
         a00 = A[:, 0, 0]
         a01 = A[:, 0, 1]
         a10 = A[:, 1, 0]
@@ -391,13 +403,12 @@ class GreenGaussGradientReconstruct:
     def __init__(self, owner):
         self.owner = owner
         self.mesh = owner.mesh
+        self.GD = owner.GD
         self.fvm_geometry = owner.fvm_geometry
 
     def green_gauss(self, U):
-        # Green-Gauss is mathematically dimension-independent, but this
-        # implementation allocates 2D gradient arrays and depends on 2D
-        # ``edge_*`` face geometry.  Generalize the allocations and geometry
-        # adapter before using this variant in 3D.
+        # Green-Gauss is dimension-independent once owner-oriented face
+        # geometry is supplied by FVMGeometry.
         if self.owner.gd is not None and self.owner.bc_type is None:
             raise ValueError("bc_type must be set when gd is given.")
         if self.owner.bc_type is not None and self.owner.gd is None:
@@ -405,14 +416,13 @@ class GreenGaussGradientReconstruct:
         if self.owner.bc_type not in (None, "dirichlet", "neumann"):
             raise ValueError(f"Unknown Green-Gauss bc_type: {self.owner.bc_type!r}.")
 
-        U = as_backend_array(U)
         cell_measure = self.mesh.entity_measure("cell")
         scalar_field = U.ndim == 1
         NC = self.mesh.number_of_cells()
         if scalar_field:
-            grad_U = bm.zeros((NC, 2), dtype=U.dtype)
+            grad_U = bm.zeros((NC, self.GD), dtype=U.dtype)
         else:
-            grad_U = bm.zeros((NC, U.shape[1], 2), dtype=U.dtype)
+            grad_U = bm.zeros((NC, U.shape[1], self.GD), dtype=U.dtype)
 
         is_internal = self.fvm_geometry.is_internal
         owner = self.fvm_geometry.owner[is_internal]
@@ -466,38 +476,21 @@ class GradientReconstruct:
     Pressure-velocity coupling and Rhie-Chow corrections are deliberately kept
     outside this class.
 
-    Notes for future 3D extension
-    -----------------------------
-    The core ``extended_lsq`` construction is dimension-independent in its
-    geometry:
-
-    - the stencil values ``N`` are cell indices;
-    - ``d = x_j - x_i`` may have two or three coordinates;
-    - ``A = sum(w d d^T)`` naturally becomes ``(NC, GD, GD)``;
-    - the RHS accumulation uses ``weighted_d.shape[-1]`` and can also work
-      for ``GD = 3``.
-
-    The current implementation is nevertheless a 2D production path.  Before
-    using it in 3D, generalize the following pieces:
-
-    - the LSQ path currently uses an explicit 2-by-2 inverse formula.  Keep
-      this fast path for 2D, but add a 3-by-3 or generic solve branch.
-    - constrained Neumann LSQ builds a 2D KKT system and allows at most two
-      independent boundary constraints per cell.  In 3D this must use ``GD``
-      and allow up to ``GD`` independent constraints.
-    - ``face_lsq`` and ``green_gauss`` allocate ``(NC, 2)`` or ``(NC, 2, 2)``
-      arrays and must be changed to use the geometric dimension.
-    - FEALPy 2D meshes expose control-volume faces through ``edge_*`` mesh
-      APIs internally.  This class uses ``FVMGeometry`` as the face-geometry
-      adapter, so the 3D path should extend that adapter first.
+    Dimension status
+    ----------------
+    ``extended_lsq``, ``weighted_lsq``, and ``green_gauss`` use the cached
+    ``GD = mesh.geo_dimension()`` for gradient dimensions.  The 2D LSQ inverse
+    keeps the explicit fast path; other dimensions use the backend batched
+    inverse.  ``face_lsq`` is still a 2D historical variant and should be
+    generalized only if it becomes part of the production 3D route.
 
     Future cleanup directions
     -------------------------
     - Performance: keep the current LSQ geometry/inverse caches, then consider
       further reducing ``weighted_lsq`` boundary-geometry recomputation, RHS
       assembly work, and temporary arrays.
-    - 3D extension: remove the remaining 2D assumptions described above before
-      using these reconstructors on three-dimensional control volumes.
+    - 3D extension: validate boundary Neumann constraints and ``face_lsq`` on
+      three-dimensional control volumes before treating those paths as stable.
     - Boundary semantics: ``gd``/``bc_type``/``threshold`` are inherited from
       the historical manufactured-solution interface.  Revisit them after the
       engineering boundary-condition layer becomes stable.
@@ -515,6 +508,7 @@ class GradientReconstruct:
         boundary_weight=1.0,
     ):
         self.mesh = mesh
+        self.GD = mesh.geo_dimension()
         self.fvm_geometry = FVMGeometry(mesh)
         self.S_f = self.fvm_geometry.S_f
         self.gd = gd
@@ -590,7 +584,7 @@ class GradientReconstruct:
     def _boundary_face_flag(self, points, threshold):
         if not callable(threshold):
             raise ValueError("threshold must be a callable boundary face selector.")
-        flag = as_backend_array(threshold(points), dtype=bm.bool)
+        flag = bm.array(threshold(points), dtype=bm.bool)
         if flag.shape == (points.shape[0],):
             return flag
         raise ValueError(

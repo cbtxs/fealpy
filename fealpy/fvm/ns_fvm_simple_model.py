@@ -7,6 +7,7 @@ from fealpy.backend import backend_manager as bm
 from fealpy.model import ComputationalModel
 
 from .collocated_simple_solver import CollocatedSimpleSolver
+from .cell_average_error import cell_average_l2_error
 from .engineering_boundary_conditions import BoundaryConditionData
 from .navier_stokes_model_adapter import NavierStokesModelAdapter
 from .solver_controls import SimpleSolverControls
@@ -23,6 +24,7 @@ class NSFVMSimpleModel(ComputationalModel, NavierStokesModelAdapter, CollocatedS
         )
         pde = self._resolve_navier_stokes_pde(options["pde"])
         self.pde = pde
+        self.error_quadrature_order = int(options.get("error_quadrature_order", 4))
         self._init_momentum_coefficients(options)
         mesh = self._init_mesh(options)
         boundary_input = self._init_simple_boundary_conditions(options, mesh, pde)
@@ -86,6 +88,9 @@ class NSFVMSimpleModel(ComputationalModel, NavierStokesModelAdapter, CollocatedS
             momentum_face_interpolation=options.get("momentum_face_interpolation"),
             pressure_response_interpolation=options.get("pressure_response_interpolation"),
             rhie_chow_velocity_interpolation=options.get("rhie_chow_velocity_interpolation"),
+            momentum_equation_relaxation=options.get(
+                "momentum_equation_relaxation", 1.0
+            ),
             momentum_nonorthogonal_max_iter=options.get("momentum_nonorthogonal_max_iter", 10),
             momentum_nonorthogonal_tol=options.get("momentum_nonorthogonal_tol", 1.0e-4),
             pressure_nonorthogonal_max_iter=options.get("pressure_nonorthogonal_max_iter", 10),
@@ -115,15 +120,25 @@ class NSFVMSimpleModel(ComputationalModel, NavierStokesModelAdapter, CollocatedS
         return factory(mesh)
 
     def compute_error(self) -> Tuple[float, float, float]:
-        """Compute errors for velocity and pressure."""
-        cell_centers = self.mesh.entity_barycenter("cell")
-        self.uI = self.pde.velocity(cell_centers)[:, 0]
-        self.vI = self.pde.velocity(cell_centers)[:, 1]
-        self.pI = self.pde.pressure(cell_centers)
-        uerror = bm.sqrt(bm.sum(self.cm * (self.uh - self.uI) ** 2))
-        verror = bm.sqrt(bm.sum(self.cm * (self.vh - self.vI) ** 2))
-        perror = bm.sqrt(bm.sum(self.cm * (self.ph - self.pI) ** 2))
-        return uerror, verror, perror
+        """Compute errors against exact control-volume averages."""
+        velocity = getattr(self, "velocity", bm.stack([self.uh, self.vh], axis=-1))
+        velocity_error, velocity_average = cell_average_l2_error(
+            self.mesh,
+            self.pde.velocity,
+            velocity,
+            q=self.error_quadrature_order,
+        )
+        perror, self.pI = cell_average_l2_error(
+            self.mesh,
+            self.pde.pressure,
+            self.ph,
+            q=self.error_quadrature_order,
+        )
+        self.uI = velocity_average[:, 0]
+        self.vI = velocity_average[:, 1] if self.GD > 1 else bm.zeros_like(self.uI)
+        if self.GD > 2:
+            self.wI = velocity_average[:, 2]
+        return tuple(velocity_error[i] for i in range(self.GD)) + (perror,)
 
     def plot(self) -> None:
         """Plot numerical and exact solution errors for u, v, and p."""

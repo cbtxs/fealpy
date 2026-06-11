@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+from pathlib import Path
 
 from fealpy.backend import backend_manager as bm
 from fealpy.fem import LinearForm
@@ -294,3 +295,11 @@ def test_rhie_chow_interpolation_reuses_instance_geometry_for_owner_weights(monk
         rtol=1.0e-13,
         atol=1.0e-13,
     )
+
+
+def test_fvm_module_does_not_keep_backend_utils_adapter():
+    fvm_dir = Path(__file__).resolve().parents[2] / "fealpy" / "fvm"
+
+    assert not (fvm_dir / "backend_utils.py").exists()
+    for path in fvm_dir.glob("*.py"):
+        assert "backend_utils" not in path.read_text()

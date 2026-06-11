@@ -50,6 +50,8 @@ class NavierStokesModelAdapter:
             mesh_options["nx"] = int(options["nx"])
         if "ny" in options:
             mesh_options["ny"] = int(options["ny"])
+        if "nz" in options:
+            mesh_options["nz"] = int(options["nz"])
         mesh = self.pde.init_mesh[mesh_type](**mesh_options)
         if mesh_refine == 0:
             return mesh

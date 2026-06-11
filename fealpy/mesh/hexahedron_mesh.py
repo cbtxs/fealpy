@@ -102,7 +102,7 @@ class HexahedronMesh(TensorMesh, Plotable):
         J = self.jacobi_matrix(bcs, index=index)
         n = bm.cross(J[..., 0], J[..., 1], axis=-1)
         n = bm.sqrt(bm.sum(n**2, axis=-1))
-        val = bm.einsum('q, qi->i', ws, n)
+        val = bm.einsum('q, iq->i', ws, n)
         return val
 
     def jacobi_matrix(self, bc, index=_S):

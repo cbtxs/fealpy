@@ -20,6 +20,7 @@ from fealpy.fvm import (
     DirichletBC,
     NeumannBC,
     ConvectionIntegrator,
+    cell_average_l2_error,
 )
 from ..rhie_chow import RhieChowCoupledOperator
 
@@ -248,14 +249,10 @@ class StokesFVMRCModel(ComputationalModel):
         Compute the error between the numerical solutions for velocity u, v,
         and pressure p and their analytical solutions
         """
-        self.uI = self.pde.velocity_u(self.mesh.entity_barycenter("cell"))
-        self.vI = self.pde.velocity_v(self.mesh.entity_barycenter("cell"))
-        self.pI = self.pde.pressure(self.mesh.entity_barycenter("cell"))
-
-        cell_measure = self.mesh.entity_measure("cell")
-        uerror = bm.sqrt(bm.sum(cell_measure * (self.uh - self.uI)**2))
-        verror = bm.sqrt(bm.sum(cell_measure * (self.vh - self.vI)**2))
-        perror = bm.sqrt(bm.sum(cell_measure * (self.ph - self.pI)**2))
+        q = getattr(self, "error_quadrature_order", 4)
+        uerror, self.uI = cell_average_l2_error(self.mesh, self.pde.velocity_u, self.uh, q=q)
+        verror, self.vI = cell_average_l2_error(self.mesh, self.pde.velocity_v, self.vh, q=q)
+        perror, self.pI = cell_average_l2_error(self.mesh, self.pde.pressure, self.ph, q=q)
         return uerror, verror, perror
 
 

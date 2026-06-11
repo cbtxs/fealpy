@@ -30,6 +30,9 @@ class ScaledMonomialSpace3d(FunctionSpace, Generic[_MT]):
         self.p = p
         self.GD = 3
         self.mesh = mesh
+        self.device = mesh.device
+        self.itype = self.mesh.itype
+        self.ftype = self.mesh.ftype
         mtype = mesh.meshtype
         
         self.ikwargs = bm.context(mesh.cell[0]) if mtype =='polyhedron' else bm.context(mesh.cell)
@@ -216,6 +219,8 @@ class ScaledMonomialSpace3d(FunctionSpace, Generic[_MT]):
         """
         p = self.p if p is None else p
         h = self.csize
+        if isinstance(point, tuple):
+            point = point[0]
         ldof = self.number_of_local_dofs(p=p, doftype='cell')
         if p == 0:
             shape = len(point.shape)*(1, )
@@ -260,6 +265,8 @@ class ScaledMonomialSpace3d(FunctionSpace, Generic[_MT]):
         h = self.fsize
         bc = self.facebarycenter
         frame = self.faceframe
+        if isinstance(point, tuple):
+            point = point[0]
         
         fdof = self.number_of_local_dofs(p=p, doftype='face')
         if p == 0:
@@ -297,6 +304,8 @@ class ScaledMonomialSpace3d(FunctionSpace, Generic[_MT]):
 
         """
         p = self.p if p is None else p
+        if isinstance(point, tuple):
+            point = point[0]
         if p == 0:
             shape = len(point.shape)*(1, )
             return bm.array([1.0], **self.fkwargs).reshape(shape)

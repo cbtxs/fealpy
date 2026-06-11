@@ -23,6 +23,7 @@ from fealpy.backend import backend_manager as bm
 
 from .div_reconstruct import DivergenceReconstruct
 from .fvm_geometry import FVMGeometry
+from .solver_diagnostics import log_simple_iteration, simple_iteration_log_message
 
 
 def _as_float(value):
@@ -93,6 +94,93 @@ def collocated_mass_residual(mesh, face_velocity):
     face_flux = bm.einsum("ij,ij->i", face_velocity, geometry.S_f)
     cell_flux_imbalance = geometry.scatter_face_flux_to_cells(face_flux)
     return normalized_flux_residual(mesh, cell_flux_imbalance, face_flux)
+
+
+def simple_iteration_residual(
+    mesh,
+    face_velocity,
+    pressure_correction,
+    pressure,
+    *,
+    pressure_relax,
+    nonorthogonal_iterations,
+    momentum_nonorthogonal_iterations,
+    stopping_face_velocity=None,
+):
+    """Return one SIMPLE residual record.
+
+    SIMPLE solves a pressure-correction equation and then updates
+    ``p <- p + alpha_p p'`` with a fixed scalar pressure relaxation
+    ``alpha_p``.  This record reports both the raw correction norm and the
+    relaxed pressure-update size.  The mass residual is evaluated after the
+    face-velocity pressure correction when ``stopping_face_velocity`` is
+    supplied, which is the residual used for stopping the current collocated
+    SIMPLE loop.
+    """
+    pressure_update = pressure_relax * pressure_correction
+    pressure_update_relative = relative_l2_update(mesh, pressure_update, pressure)
+    pressure_correction_relative = relative_l2_update(
+        mesh, pressure_correction, pressure
+    )
+    mass_before_pressure_correction = collocated_mass_residual(mesh, face_velocity)
+    if stopping_face_velocity is None:
+        mass = mass_before_pressure_correction
+    else:
+        mass = collocated_mass_residual(mesh, stopping_face_velocity)
+    return {
+        "mass": mass,
+        "mass_before_pressure_correction": mass_before_pressure_correction,
+        "pressure_correction": cell_l2_norm(mesh, pressure_correction),
+        "pressure_correction_relative": pressure_correction_relative,
+        "pressure_update": pressure_update_relative,
+        "pressure_criterion": pressure_update_relative,
+        "pressure_relax": pressure_relax,
+        "pressure_relax_reduced": False,
+        "pressure_relax_action": "fixed",
+        "nonorthogonal_iterations": nonorthogonal_iterations,
+        "momentum_nonorthogonal_iterations": momentum_nonorthogonal_iterations,
+    }
+
+
+def simple_pressure_update_step(
+    residuals,
+    mesh,
+    face_velocity,
+    pressure_correction,
+    pressure,
+    *,
+    pressure_relax,
+    nonorthogonal_iterations,
+    momentum_nonorthogonal_iterations,
+    stopping_face_velocity=None,
+):
+    """Return fixed-relaxation pressure update and append its residual row."""
+    pressure_update = pressure_relax * pressure_correction
+    residual = simple_iteration_residual(
+        mesh,
+        face_velocity,
+        pressure_correction,
+        pressure,
+        pressure_relax=pressure_relax,
+        nonorthogonal_iterations=nonorthogonal_iterations,
+        momentum_nonorthogonal_iterations=momentum_nonorthogonal_iterations,
+        stopping_face_velocity=stopping_face_velocity,
+    )
+    residuals.append(residual)
+    return pressure_update, residual
+
+
+def simple_tolerances(tol, tol_mass, tol_pressure_update):
+    """Return mass and pressure-update stopping tolerances for SIMPLE."""
+    return (
+        tol if tol_mass is None else tol_mass,
+        10.0 * tol if tol_pressure_update is None else tol_pressure_update,
+    )
+
+
+def log_simple_residual(logger, iteration, residual):
+    """Log one SIMPLE pressure-correction residual record."""
+    log_simple_iteration(logger, iteration, residual)
 
 
 def staggered_mass_residual(mesh, edge_velocity):

@@ -17,6 +17,7 @@ class SimpleSolverControls:
     momentum_face_interpolation: str | None = None
     pressure_response_interpolation: str | None = None
     rhie_chow_velocity_interpolation: str | None = None
+    momentum_equation_relaxation: float = 1.0
     momentum_nonorthogonal_max_iter: int = 10
     momentum_nonorthogonal_tol: float = 1.0e-4
     pressure_nonorthogonal_max_iter: int = 10
@@ -37,6 +38,8 @@ class SimpleSolverControls:
             raise ValueError("momentum_nonorthogonal_max_iter must be non-negative.")
         if self.pressure_nonorthogonal_max_iter < 0:
             raise ValueError("pressure_nonorthogonal_max_iter must be non-negative.")
+        if not 0.0 < self.momentum_equation_relaxation <= 1.0:
+            raise ValueError("momentum_equation_relaxation must be in (0, 1].")
         if self.momentum_nonorthogonal_tol <= 0.0:
             raise ValueError("momentum_nonorthogonal_tol must be positive.")
         if self.pressure_nonorthogonal_tol <= 0.0:

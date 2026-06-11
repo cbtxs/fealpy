@@ -6,6 +6,7 @@ from fealpy.backend import backend_manager as bm
 from fealpy.model import ComputationalModel, PDEModelManager
 
 from .collocated_simple_solver import CollocatedSimpleSolver
+from .cell_average_error import cell_average_l2_error
 from .engineering_boundary_conditions import BoundaryConditionData
 from .solver_controls import SimpleSolverControls
 
@@ -22,6 +23,7 @@ class StokesFVMSimpleModel(ComputationalModel, CollocatedSimpleSolver):
             log_level=options.get("log_level", "WARNING"),
         )
         self.pde = self._resolve_stokes_pde(options["pde"])
+        self.error_quadrature_order = int(options.get("error_quadrature_order", 4))
         mesh = self._init_mesh(options)
         self.mu = self._init_diffusion_coef(options)
         CollocatedSimpleSolver.__init__(
@@ -61,6 +63,7 @@ class StokesFVMSimpleModel(ComputationalModel, CollocatedSimpleSolver):
             "momentum_nonorthogonal_tol",
             "pressure_nonorthogonal_max_iter",
             "pressure_nonorthogonal_tol",
+            "error_quadrature_order",
             "linear_solver",
             "linear_solver_config",
             "pbar_log",
@@ -139,6 +142,9 @@ class StokesFVMSimpleModel(ComputationalModel, CollocatedSimpleSolver):
             rhie_chow_velocity_interpolation=options.get(
                 "rhie_chow_velocity_interpolation"
             ),
+            momentum_equation_relaxation=options.get(
+                "momentum_equation_relaxation", 1.0
+            ),
             momentum_nonorthogonal_max_iter=options.get(
                 "momentum_nonorthogonal_max_iter", 10
             ),
@@ -154,15 +160,24 @@ class StokesFVMSimpleModel(ComputationalModel, CollocatedSimpleSolver):
         )
 
     def compute_error(self) -> Tuple[float, float, float]:
-        """Compute errors for velocity and pressure."""
-        cell_centers = self.mesh.entity_barycenter("cell")
-        self.uI = self.pde.velocity(cell_centers)[:, 0]
-        self.vI = self.pde.velocity(cell_centers)[:, 1]
-        self.pI = self.pde.pressure(cell_centers)
-        uerror = bm.sqrt(bm.sum(self.cm * (self.uh - self.uI) ** 2))
-        verror = bm.sqrt(bm.sum(self.cm * (self.vh - self.vI) ** 2))
-        perror = bm.sqrt(bm.sum(self.cm * (self.ph - self.pI) ** 2))
-        return uerror, verror, perror
+        """Compute errors against exact control-volume averages."""
+        velocity_error, velocity_average = cell_average_l2_error(
+            self.mesh,
+            self.pde.velocity,
+            self.velocity,
+            q=self.error_quadrature_order,
+        )
+        perror, self.pI = cell_average_l2_error(
+            self.mesh,
+            self.pde.pressure,
+            self.ph,
+            q=self.error_quadrature_order,
+        )
+        self.uI = velocity_average[:, 0]
+        self.vI = velocity_average[:, 1] if self.GD > 1 else bm.zeros_like(self.uI)
+        if self.GD > 2:
+            self.wI = velocity_average[:, 2]
+        return tuple(velocity_error[i] for i in range(self.GD)) + (perror,)
 
     def plot(self) -> None:
         """Plot numerical and exact solution errors for u, v, and p."""

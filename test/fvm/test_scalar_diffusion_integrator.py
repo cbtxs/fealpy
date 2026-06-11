@@ -3,7 +3,7 @@ import pytest
 
 from fealpy.backend import backend_manager as bm
 from fealpy.fem import BilinearForm
-from fealpy.functionspace import ScaledMonomialSpace2d
+from fealpy.functionspace import ScaledMonomialSpace2d, TensorFunctionSpace
 from fealpy.mesh import TriangleMesh
 
 
@@ -74,3 +74,16 @@ def test_scalar_diffusion_integrator_delegates_local_matrix_construction(monkeyp
 
     assert len(calls) == 1
     assert calls[0][0] is space
+
+
+def test_scalar_diffusion_integrator_expands_face_stencil_for_tensor_space():
+    from fealpy.fvm import ScalarDiffusionIntegrator
+
+    _, scalar_space = _box_space(nx=1, ny=1)
+    vector_space = TensorFunctionSpace(scalar_space, shape=(2, -1))
+
+    matrix = BilinearForm(vector_space).add_integrator(
+        ScalarDiffusionIntegrator()
+    ).assembly()
+
+    assert matrix.shape == (2 * scalar_space.number_of_global_dofs(),) * 2

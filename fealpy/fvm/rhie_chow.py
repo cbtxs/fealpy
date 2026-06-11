@@ -3,7 +3,6 @@
 from fealpy.backend import backend_manager as bm
 from fealpy.sparse import COOTensor
 
-from .backend_utils import as_backend_array
 from .face_gradient import reconstruct_face_gradient
 from .fvm_geometry import FVMGeometry
 
@@ -35,6 +34,7 @@ class RhieChowInterpolation:
         self.mesh = mesh
         self.cm = self.mesh.entity_measure('cell')
         self.NC = mesh.number_of_cells()
+        self.GD = mesh.geo_dimension()
         self.fvm_geometry = FVMGeometry(mesh)
         self.face_to_cell = self.fvm_geometry.face_to_cell
         self.edge_to_cell = self.face_to_cell
@@ -74,14 +74,21 @@ class RhieChowInterpolation:
 
     def Ucell2edge(self, u, ap, face_response_coefficient=None):
         """Interpolate cell velocity and pressure response to faces."""
-        u = bm.stack([u[:self.NC], u[self.NC:]], axis=-1)
+        if u.ndim == 1:
+            u = bm.stack(
+                [
+                    u[component * self.NC : (component + 1) * self.NC]
+                    for component in range(self.GD)
+                ],
+                axis=-1,
+            )
         uf = self._interpolate_cell_value(u)
         if face_response_coefficient is None:
             ap = ap[:self.NC]
             dp = self.cm / ap
             df = self._interpolate_cell_value(dp)[:, None]
         else:
-            df = as_backend_array(face_response_coefficient, dtype=uf.dtype)[:, None]
+            df = face_response_coefficient[:, None]
         return uf, df
 
     def GradientDifference(self, p):
@@ -330,7 +337,6 @@ class RhieChowCoupledOperator:
         """
         NC = self.mesh.number_of_cells()
         edge_to_cell = self.fvm_geometry.face_to_cell
-        velocity = as_backend_array(velocity)
         if len(velocity.shape) == 1:
             velocity = bm.stack([velocity[:NC], velocity[NC:2 * NC]], axis=1)
 
@@ -397,7 +403,6 @@ class RhieChowCoupledOperator:
         mesh = self.mesh
         NC = mesh.number_of_cells()
         cell_measure = mesh.entity_measure("cell")
-        ap = as_backend_array(ap, dtype=cell_measure.dtype)
         if ap.shape[0] == 2 * NC:
             ap_u = ap[:NC]
             ap_v = ap[NC:2 * NC]
