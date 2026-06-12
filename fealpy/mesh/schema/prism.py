@@ -101,6 +101,7 @@ class PrismSchema(ShapedEntitySchema):
     @classmethod
     def shape_function(
         cls,
+        ctx: EntityContext,
         bcs: tuple[Tensor, ...],
         p: tuple[int, ...],
         *,
@@ -110,9 +111,14 @@ class PrismSchema(ShapedEntitySchema):
     ) -> Tensor:
         bcs = _require_bcs_tuple(bcs, "prism shape_function", 2)
         p = _require_order_tuple(p, "prism shape_function", 2)
-        raw_phi = [bm.simplex_shape_function(bc, p, mi) for bc, p in zip(bcs, p)]
-        phi = bm.tensorprod(*raw_phi)
 
+        arg = cls.multi_index_sort(cls.multi_index(p, tensorprod=False))
+        mi0 = InterpolationPoints.multi_index_matrix(p[0], 3)
+        mi1 = InterpolationPoints.multi_index_matrix(p[1], 2)
+        phi = bm.tensorprod(
+            bm.simplex_shape_function(bcs[1], p[1], mi1),
+            bm.simplex_shape_function(bcs[0], p[0], mi0),
+        )[..., arg]
         if variables == "u":
             return phi
         if variables == "x":

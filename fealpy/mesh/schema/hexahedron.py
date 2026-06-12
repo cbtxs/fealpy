@@ -56,6 +56,7 @@ class HexahedronSchema(ShapedEntitySchema):
     @classmethod
     def shape_function(
         cls,
+        ctx: EntityContext,
         bcs: tuple[Tensor, ...],
         p: tuple[int, ...],
         *,
@@ -65,10 +66,16 @@ class HexahedronSchema(ShapedEntitySchema):
     ) -> Tensor:
         bcs = _require_bcs_tuple(bcs, "hexahedron shape_function", 3)
         p = _require_order_tuple(p, "hexahedron shape_function", 3)
-        for bc in bcs:
-            if bc.shape[-1] != 2:
-                raise ValueError("hexahedron shape_function expects three interval barycentric tensors")
-        phi = bm.tensorprod(*(bm.simplex_shape_function(bc, p, mi) for bc, p in zip(bcs, p)))
+
+        arg = cls.multi_index_sort(cls.multi_index(p, tensorprod=False))
+        mi0 = InterpolationPoints.multi_index_matrix(p[0], 2)
+        mi1 = InterpolationPoints.multi_index_matrix(p[1], 2)
+        mi2 = InterpolationPoints.multi_index_matrix(p[2], 2)
+        phi = bm.tensorprod(
+            bm.simplex_shape_function(bcs[2], p[2], mi2),
+            bm.simplex_shape_function(bcs[1], p[1], mi1),
+            bm.simplex_shape_function(bcs[0], p[0], mi0),
+        )[..., arg]
         if variables == "u":
             return phi
         if variables == "x":

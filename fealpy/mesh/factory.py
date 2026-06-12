@@ -94,9 +94,41 @@ class QuadrangleMesh(metaclass=MeshFactory):
 class TetrahedronMesh(metaclass=MeshFactory):
     schema = "tet"
 
+    @classmethod
+    def from_box(
+        cls,
+        box=[0, 1, 0, 1, 0, 1],
+        nx=10,
+        ny=10,
+        nz=10,
+        *,
+        threshold=None,
+        device=None
+    ):
+        """Create a tetrahedron mesh of the box."""
+        from ..mesher.box import Box3d
+        box = Box3d(box, nx, ny, nz, device=device)
+        return box.tetrahedralize().fealpy_api()
+
 
 class HexahedronMesh(metaclass=MeshFactory):
     schema = "hex"
+
+    @classmethod
+    def from_box(
+        cls,
+        box=[0, 1, 0, 1, 0, 1],
+        nx=10,
+        ny=10,
+        nz=10,
+        *,
+        threshold=None,
+        device=None
+    ):
+        """Create a hexahedron mesh of the box."""
+        from ..mesher.box import Box3d
+        box = Box3d(box, nx, ny, nz, device=device)
+        return box.hexahedralize().fealpy_api()
 
 
 class PolygonMesh(metaclass=MeshFactory):

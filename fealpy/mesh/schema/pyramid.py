@@ -91,6 +91,7 @@ class PyramidSchema(ShapedEntitySchema):
     @classmethod
     def shape_function(
         cls,
+        ctx: EntityContext,
         bcs: tuple[Tensor, ...],
         p: tuple[int, ...],
         *,
