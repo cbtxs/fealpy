@@ -51,6 +51,7 @@ class TriangleSchema(ShapedEntitySchema):
     @classmethod
     def shape_function(
         cls,
+        ctx: EntityContext,
         bcs: tuple[Tensor, ...],
         p: tuple[int, ...],
         *,
@@ -62,6 +63,7 @@ class TriangleSchema(ShapedEntitySchema):
         p = _require_order_tuple(p, "triangle shape_function", 1)
         if bcs[0].shape[-1] != 3:
             raise ValueError(f"triangle shape_function expects last dimension 3, got {bcs[0].shape[-1]}")
+        mi = cls.multi_index(p) if mi is None else mi
         phi = bm.simplex_shape_function(bcs[0], p[0], mi)
         if variables == "u":
             return phi
@@ -84,6 +86,7 @@ class TriangleSchema(ShapedEntitySchema):
         p = _require_order_tuple(p, "triangle grad_shape_function", 1)
         if bcs[0].shape[-1] != 3:
             raise ValueError(f"triangle grad_shape_function expects last dimension 3, got {bcs[0].shape[-1]}")
+        mi = cls.multi_index(p) if mi is None else mi
         ref = bm.simplex_grad_shape_function(bcs[0], p[0], mi)
         if variables == "u":
             return ref

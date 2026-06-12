@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import final, TYPE_CHECKING, ParamSpec
 
-from ...backend import Tensor, Index
+from ...backend import bm, Tensor, Index
 from ..schema.entity_schema import EntityContext
 
 if TYPE_CHECKING:
@@ -32,12 +32,14 @@ class EntityView:
     # User APIs
 
     def barycentric(self, func: Callable[[Tensor], Tensor], /, *, index: Index | None = None):
-        return self.schema.barycentric(self.context(), index, func)
+        return self.schema.barycentric(self.context(), func, index)
 
     def barycenter(self, *, index: Index | None = None) -> Tensor:
         return self.schema.barycenter(self.context(), index)
 
-    def bc_to_point(self, bc: Tensor, *, index: Index | None = None) -> Tensor:
+    def bc_to_point(self, bc: Tensor | tuple[Tensor, ...], *, index: Index | None = None) -> Tensor:
+        if not isinstance(bc, tuple):
+            bc = (bc,)
         return self.schema.bc_to_point(self.context(), bc, index)
 
     def boundary(self) -> "BoundaryInfo":
@@ -54,6 +56,29 @@ class EntityView:
                 entities.
         """
         return self.schema.boundary(self.context())
+
+    def error(
+        self,
+        f1: Callable[[Tensor], Tensor],
+        f2: Callable[[Tensor], Tensor],
+        /,
+        power: float = 2.0,
+        q: int = 3,
+        *,
+        index: Index | None = None
+    ) -> Tensor:
+        from ...decorator import barycentric
+        if not getattr(f1, "coordtype", None) == "barycentric":
+            f1 = self.barycentric(f1, index=index)
+        if not getattr(f2, "coordtype", None) == "barycentric":
+            f2 = self.barycentric(f2, index=index)
+        @barycentric
+        def integrand(bcs: tuple[Tensor, ...]) -> Tensor:
+            v1 = f1(bcs)
+            v2 = f2(bcs)
+            return bm.abs(v1 - v2) ** power
+
+        return self.integral(integrand, q=q, index=index) ** (1.0 / power)
 
     def geo_dimension(self) -> int:
         return self.schema.geo_dimension(self.context())
@@ -91,8 +116,8 @@ class EntityView:
     def indices(self) -> Tensor:
         return self.sector.indices
 
-    def integral(self, func: Callable[[Tensor], Tensor], /, *, index: Index | None = None, q: int = 3) -> Tensor:
-        return self.schema.integral(self.context(), index, func, q)
+    def integral(self, func: Callable[[Tensor], Tensor], /, q: int = 3, *, index: Index | None = None) -> Tensor:
+        return self.schema.integral(self.context(), func, q, index)
 
     def jacobi_matrix(self, *, index: Index | None = None) -> Tensor:
         return self.schema.jacobi_matrix(self.context(), index)

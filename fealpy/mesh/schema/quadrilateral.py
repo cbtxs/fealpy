@@ -52,10 +52,10 @@ class QuadrilateralSchema(ShapedEntitySchema):
     def bc_to_point(cls, ctx: EntityContext, bcs: tuple[Tensor, ...], index: Index | None) -> Tensor:
         bcs = _require_bcs_tuple(bcs, "quadrilateral bc_to_point", 2)
         quad = ctx.sector.indices if index is None else ctx.sector.indices[index]
-        points = ctx.block.positions[quad[:, [0, 2, 1, 3]]]
+        points = ctx.block.positions[quad]
         bc0 = bcs[0].reshape(-1, 2)
         bc1 = bcs[1].reshape(-1, 2)
-        bc = bm.einsum("im,jn->ijmn", bc0, bc1).reshape(-1, 4)
+        bc = bm.einsum("im,jn->ijmn", bc1, bc0).reshape(-1, 4)
         return bm.einsum("qj,cjd->cqd", bc, points)
 
     @classmethod
@@ -71,9 +71,15 @@ class QuadrilateralSchema(ShapedEntitySchema):
     ) -> Tensor:
         bcs = _require_bcs_tuple(bcs, "quadrilateral shape_function", 2)
         p = _require_order_tuple(p, "quadrilateral shape_function", 2)
-        if bcs[0].shape[-1] != 2 or bcs[1].shape[-1] != 2:
-            raise ValueError("quadrilateral shape_function expects two interval barycentric tensors")
-        phi = bm.tensorprod(*(bm.simplex_shape_function(bc, p, mi) for bc, p in zip(bcs, p)))
+
+        arg = cls.multi_index_sort(cls.multi_index(p, tensorprod=False))
+        mi0 = InterpolationPoints.multi_index_matrix(p[0], 2)
+        mi1 = InterpolationPoints.multi_index_matrix(p[1], 2)
+
+        phi = bm.tensorprod(
+            bm.simplex_shape_function(bcs[1], p[1], mi1),
+            bm.simplex_shape_function(bcs[0], p[0], mi0),
+        )[..., arg]
         if variables == "u":
             return phi
         if variables == "x":
@@ -93,21 +99,20 @@ class QuadrilateralSchema(ShapedEntitySchema):
     ) -> Tensor:
         bcs = _require_bcs_tuple(bcs, "quadrilateral grad_shape_function", 2)
         p = _require_order_tuple(p, "quadrilateral grad_shape_function", 2)
-        if bcs[0].shape[-1] != 2 or bcs[1].shape[-1] != 2:
-            raise ValueError("quadrilateral grad_shape_function expects two interval barycentric tensors")
 
-        Dlambda = bm.asarray([-1, 1], device=bm.get_device(bcs[0]), dtype=bm.float64)
-        phi0 = bm.simplex_shape_function(bcs[0], p=p[0], mi=mi)
-        phi1 = bm.simplex_shape_function(bcs[1], p=p[1], mi=mi)
-        R0 = bm.simplex_grad_shape_function(bcs[0], p=p[0], mi=mi)
-        R1 = bm.simplex_grad_shape_function(bcs[1], p=p[1], mi=mi)
-        dphi0 = bm.einsum('...ij, j->...i', R0, Dlambda)
-        dphi1 = bm.einsum('...ij, j->...i', R1, Dlambda)
+        arg = cls.multi_index_sort(cls.multi_index(p, tensorprod=False))
+        mi0 = InterpolationPoints.multi_index_matrix(p[0], 2)
+        mi1 = InterpolationPoints.multi_index_matrix(p[1], 2)
+        phi0 = bm.simplex_shape_function(bcs[0], p=p[0], mi=mi0)
+        phi1 = bm.simplex_shape_function(bcs[1], p=p[1], mi=mi1)
+        R0 = bm.simplex_grad_shape_function(bcs[0], p=p[0], mi=mi0)
+        R1 = bm.simplex_grad_shape_function(bcs[1], p=p[1], mi=mi1)
         ldof = cls.num_multi_index(p)
 
-        gphi0 = bm.einsum('im, jn -> ijmn', dphi0, phi1).reshape(-1, ldof, 1)
-        gphi1 = bm.einsum('im, jn -> ijmn', phi0, dphi1).reshape(-1, ldof, 1)
-        gphi = bm.concatenate((gphi0, gphi1), axis=-1)
+        gphi0 = bm.einsum('im, jng -> ijmng', phi1, R0).reshape(-1, ldof, 2)
+        gphi1 = bm.einsum('img, jn -> ijmng', R1, phi0).reshape(-1, ldof, 2)
+        gphi = (gphi0 + gphi1)[..., arg, :]
+
         if variables == "u":
             return gphi
         if variables == "x":
@@ -197,7 +202,7 @@ class QuadrilateralSchema(ShapedEntitySchema):
         bcs = _require_bcs_tuple(bcs, "quadrilateral jacobi_matrix", 2)
         node = ctx.block.positions
         cell = ctx.sector.indices
-        gphi = cls.grad_shape_function(ctx, bcs, p=(1, 1), variables='u', index=index) # (NQ, ldof, GD)
+        gphi = cls.grad_shape_function(ctx, bcs, p=(1, 1), variables='u', index=index) # (NQ, bc, GD)
         J = bm.einsum('cim, qin -> cqmn', node[cell], gphi) # (NC, NQ, GD, GD)
 
         return J

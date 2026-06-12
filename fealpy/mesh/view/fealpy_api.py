@@ -1,4 +1,5 @@
 
+from collections.abc import Iterable, Callable
 from dataclasses import dataclass
 from typing import Literal
 
@@ -269,8 +270,38 @@ class FEALPyMesh(Mesh):
         view = self.entity_view(-2)
         return to_ipoint(self, view.schema.name, p)
 
-    def interpolation_points(self, p: int, etype: str | int = "cell") -> Tensor:
-        pass
+    def interpolation_points(
+        self,
+        p: int,
+        entity: str | int | Iterable[str] | Iterable[int] | None = None,
+        index: Index | None = None
+    ) -> Tensor:
+        """Get the interpolation points for the given entity and order.
+
+        Parameters:
+            p (int): The degree of interpolation.
+            entity (str | int | Iterable[str] | Iterable[int] | None, optional):
+                The entity or entities for which to compute interpolation points.
+
+        Returns:
+            Tensor: A tensor of shape (num_ip, GD) containing the interpolation points.
+        """
+        from ..topology.ipoints import ipoints
+        if entity is None:
+            entity_iter = range(self.top_dimension()+1)
+        elif not isinstance(entity, Iterable) or isinstance(entity, str):
+            entity_iter = (entity,)
+        else:
+            entity_iter = entity
+        names: list[EntityView] = []
+        for et in entity_iter:
+            names.extend(self.entity_views(et))
+        names = [sec.schema.name for sec in names]
+        ips = ipoints(self, p, names)
+
+        if index is None:
+            return ips
+        return ips[index, :]
 
     # def cell_to_face_permutation(self, *, locFace: Tensor | None = None) -> Tensor:
     #     """Returns the permutation of faces for each cell."""
@@ -329,6 +360,20 @@ class FEALPyMesh(Mesh):
         tangent = block.tangent(index=index)
         norm = bm.linalg.vector_norm(tangent, axis=1, keepdims=True)
         return tangent / norm
+
+    def error(
+        self,
+        f1: Callable[[Tensor], Tensor],
+        f2: Callable[[Tensor], Tensor],
+        /,
+        power: float = 2.0,
+        q: int = 3,
+        *,
+        index: Index | None = None
+    ) -> Tensor:
+        """Returns the error between two functions defined on the mesh."""
+        cell_sec = self.entity_view(-1)
+        return cell_sec.error(f1, f2, power=power, q=q, index=index)
 
     def face_normal(self, *, index: Index | None = None) -> Tensor:
         """Returns the normal vector of faces."""

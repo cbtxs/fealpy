@@ -23,19 +23,24 @@ __all__ = [
 ]
 
 
-class MeshFactory:
-    pass
+class MeshFactory(type):
+    schema: str = ""
+    def __instancecheck__(cls, instance) -> bool:
+        if not isinstance(instance, Mesh):
+            return False
+        return instance.is_elemental(cls.schema)
 
 
-class IntervalMesh(MeshFactory):
-    pass
+class IntervalMesh(metaclass=MeshFactory):
+    schema = "edge"
 
 
-class EdgeMesh(MeshFactory):
-    pass
+class EdgeMesh(metaclass=MeshFactory):
+    schema = "edge"
 
 
-class TriangleMesh(MeshFactory):
+class TriangleMesh(metaclass=MeshFactory):
+    schema = "tri"
     def __new__(self, node: Tensor, cell: Tensor) -> FEALPyMesh:
         block = MeshBlock(positions=node)
         block.add_sector(EntitySector("tri", cell), root=True)
@@ -60,7 +65,8 @@ class TriangleMesh(MeshFactory):
         return box.triangulate().fealpy_api()
 
 
-class QuadrangleMesh(MeshFactory):
+class QuadrangleMesh(metaclass=MeshFactory):
+    schema = "quad"
     def __new__(self, node: Tensor, cell: Tensor) -> FEALPyMesh:
         block = MeshBlock(positions=node)
         block.add_sector(EntitySector("quad", cell), root=True)
@@ -85,20 +91,20 @@ class QuadrangleMesh(MeshFactory):
         return box.quadrangulate().fealpy_api()
 
 
-class TetrahedronMesh(MeshFactory):
-    pass
+class TetrahedronMesh(metaclass=MeshFactory):
+    schema = "tet"
 
 
-class HexahedronMesh(MeshFactory):
-    pass
+class HexahedronMesh(metaclass=MeshFactory):
+    schema = "hex"
 
 
-class PolygonMesh(MeshFactory):
-    pass
+class PolygonMesh(metaclass=MeshFactory):
+    schema = "poly"
 
 
-class UniformMesh(MeshFactory):
-    pass
+class UniformMesh(metaclass=MeshFactory):
+    schema = "uniform"
 
 
 class UniformMesh1d(UniformMesh):
@@ -113,9 +119,9 @@ class UniformMesh3d(UniformMesh):
     pass
 
 
-class LagrangeTriangleMesh(MeshFactory):
-    pass
+class LagrangeTriangleMesh(metaclass=MeshFactory):
+    schema = "lagrange_tri"
 
 
-class LagrangeQuadrangleMesh(MeshFactory):
-    pass
+class LagrangeQuadrangleMesh(metaclass=MeshFactory):
+    schema = "lagrange_quad"

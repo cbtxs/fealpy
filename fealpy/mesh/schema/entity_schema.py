@@ -117,12 +117,12 @@ class EntitySchema:
         raise NotImplementedError()
 
     @classmethod
-    def barycentric(cls, ctx: EntityContext, index: Index | None, func: Callable[[Tensor], Tensor]) -> Callable[[Tensor], Tensor]:
+    def barycentric(cls, ctx: EntityContext, func: Callable[[Tensor], Tensor], index: Index | None) -> Callable[[Tensor], Tensor]:
         """Transform functions from cartesian to barycentric coordinates."""
         raise NotImplementedError()
 
     @classmethod
-    def bc_to_point(cls, ctx: EntityContext, index: Index | None, bcs: tuple[Tensor, ...]) -> Tensor:
+    def bc_to_point(cls, ctx: EntityContext, bcs: tuple[Tensor, ...], index: Index | None) -> Tensor:
         """Convert barycentric coordinates to physical points."""
         raise NotImplementedError()
 
@@ -172,7 +172,7 @@ class EntitySchema:
         raise NotImplementedError()
 
     @classmethod
-    def integral(cls, ctx: EntityContext, index: Index | None, func: Callable[[Tensor], Tensor], q: int) -> Tensor:
+    def integral(cls, ctx: EntityContext, func: Callable[[Tensor], Tensor], q: int, index: Index | None) -> Tensor:
         """Integral of a barycentric function."""
         raise NotImplementedError()
 
@@ -279,12 +279,16 @@ class ShapedEntitySchema(EntitySchema):
     ### [Geometric Computations] ###
 
     @classmethod
-    def barycentric(cls, ctx: EntityContext, index: Index | None, func: Callable[[Tensor], Tensor]) -> Callable[[Tensor], Tensor]:
+    def barycentric(cls, ctx: EntityContext, func: Callable[[Tensor], Tensor], index: Index | None) -> Callable[[Tensor], Tensor]:
         """Compute the barycentric coordinates of the entity."""
         from functools import wraps
+        from ...decorator import barycentric
         @wraps(func)
-        def wrapper(bcs: tuple[Tensor, ...]) -> Tensor:
-            points = cls.bc_to_point(ctx, index, bcs) # [NC, NQ, GD]
+        @barycentric
+        def wrapper(bcs: Tensor | tuple[Tensor, ...]) -> Tensor:
+            if not isinstance(bcs, tuple):
+                bcs = (bcs,)
+            points = cls.bc_to_point(ctx, bcs, index) # [NC, NQ, GD]
             return func(points)
         return wrapper
 
@@ -293,12 +297,15 @@ class ShapedEntitySchema(EntitySchema):
         return int(ctx.block.positions.shape[1])
 
     @classmethod
-    def integral(cls, ctx: EntityContext, index: Index | None, func: Callable[[Tensor], Tensor], q: int) -> Tensor:
+    def integral(cls, ctx: EntityContext, func: Callable[[Tensor], Tensor], q: int, index: Index | None) -> Tensor:
         """Integral of a barycentric function."""
         quadrature = cls.quadrature_formula(q)
         bcs, ws = quadrature.get_quadrature_points_and_weights()
-        points = cls.bc_to_point(ctx, index, bcs) # [NC, NQ, GD]
-        values = func(points)
+
+        if not getattr(func, "coordtype", None) == "barycentric":
+            func = cls.barycentric(ctx, func, index)
+        values = func(bcs)
+
         return bm.einsum("cq..., q -> c...", values, ws)
 
 

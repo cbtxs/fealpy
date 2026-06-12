@@ -1,9 +1,10 @@
 
+from collections.abc import Iterable
 from itertools import combinations_with_replacement
 from typing import TYPE_CHECKING
 
 from ...backend import bm
-from ...backend import Tensor, dtype
+from ...backend import Tensor, dtype, device
 
 if TYPE_CHECKING:
     from ..view import Mesh
@@ -51,7 +52,7 @@ class InterpolationPoints:
         return cls.multi_index_matrix(p - n, n, dtype=dtype) + 1
 
 
-def to_ipoint(mesh: "Mesh", entity: str, order: int) -> Tensor: # [num_entities, num_ip]
+def to_ipoint(mesh: "Mesh", name: str, order: int) -> Tensor: # [num_entities, num_ip]
     """Get the interpolation point indices for the given entity and order,
     in unstructured meshes.
     The interpolation point indices are ordered from lower-dimensional
@@ -60,7 +61,7 @@ def to_ipoint(mesh: "Mesh", entity: str, order: int) -> Tensor: # [num_entities,
 
     Parameters:
         mesh (Mesh): The mesh object.
-        entity (str): The name of the entity (e.g., "cell", "face", "edge").
+        name (str): The name of the entity shape (e.g., "tri", "tet", "edge").
         order (int): The degree of interpolation.
 
     Returns:
@@ -70,7 +71,7 @@ def to_ipoint(mesh: "Mesh", entity: str, order: int) -> Tensor: # [num_entities,
     collected = []
     dim_cursor = 0
     ip_cursor = 0
-    tgt_entity = mesh.sector(entity)
+    tgt_entity = mesh.sector(name)
     shutdown = False
 
     while True:
@@ -124,20 +125,39 @@ def to_ipoint(mesh: "Mesh", entity: str, order: int) -> Tensor: # [num_entities,
     return bm.concat(collected, axis=1)
 
 
-def ipoints(mesh: "Mesh", entity: str, order: tuple[int, ...]) -> Tensor:
+def ipoints(mesh: "Mesh", order: int | tuple[int, ...], names: Iterable[str]) -> Tensor:
     """Get the interpolation points for the given entity and order.
 
     Parameters:
         mesh (Mesh): The mesh object.
-        entity (str): The name of the entity (e.g., "cell", "face", "edge").
-        order (tuple[int, ...]): The degree of interpolation.
+        order (int | tuple[int, ...]): The degree of interpolation.
+        names (Iterable[str]): The names of the entities for which to compute
+            interpolation points. For example, ["tet", "hex"].
 
     Returns:
         Tensor: A tensor of shape (num_ip, GD) containing the interpolation points.
     """
-    collected = []
-    dim_cursor = 0
+    if isinstance(order, int):
+        order = (order,)
+    if not order or any(p <= 0 for p in order):
+        raise ValueError(f"order must be positive, got {order!r}")
 
-    while True:
-        for subentity in mesh.entity_views(dim_cursor):
-            mi = subentity.schema.multi_index(order, internal=True)
+    device = mesh.block.positions.device
+
+    collected = []
+    for subentity in [mesh.sector(entity) for entity in names]:
+        mi = subentity.schema.multi_index(order, internal=True)
+        mi = bm.device_put(mi, device)
+        if mi.shape[0] == 0:
+            continue
+
+        vertices = subentity.indices
+        points = mesh.block.positions[vertices]
+        weights = mi / bm.sum(mi, axis=-1, keepdims=True)
+        points = bm.einsum("qv, evd -> eqd", weights, points)
+        collected.append(bm.reshape(points, (-1, mesh.geo_dimension())))
+
+    if not collected:
+        return bm.zeros((0, mesh.geo_dimension()), dtype=mesh.block.positions.dtype, device=device)
+
+    return bm.concat(collected, axis=0)
