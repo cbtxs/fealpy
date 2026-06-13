@@ -220,6 +220,8 @@ class ScaledMonomialSpace3d(FunctionSpace, Generic[_MT]):
         p = self.p if p is None else p
         h = self.csize
         if isinstance(point, tuple):
+            # This fallback only supports the current p=0 FVM assembly path.
+            # High-order tensor-mesh support needs explicit physical points.
             point = point[0]
         ldof = self.number_of_local_dofs(p=p, doftype='cell')
         if p == 0:
@@ -266,6 +268,8 @@ class ScaledMonomialSpace3d(FunctionSpace, Generic[_MT]):
         bc = self.facebarycenter
         frame = self.faceframe
         if isinstance(point, tuple):
+            # This fallback only supports the current p=0 FVM assembly path.
+            # High-order tensor-mesh support needs explicit physical points.
             point = point[0]
         
         fdof = self.number_of_local_dofs(p=p, doftype='face')
@@ -305,6 +309,8 @@ class ScaledMonomialSpace3d(FunctionSpace, Generic[_MT]):
         """
         p = self.p if p is None else p
         if isinstance(point, tuple):
+            # This fallback only supports the current p=0 FVM assembly path.
+            # High-order tensor-mesh support needs explicit physical points.
             point = point[0]
         if p == 0:
             shape = len(point.shape)*(1, )

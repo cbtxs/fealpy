@@ -1,6 +1,6 @@
 import argparse
 from fealpy.backend import backend_manager as bm
-from fealpy.fvm import StokesFVMSimpleModel
+from fealpy.fvm import FVMLinearSolverConfig, StokesFVMSimpleModel
 
 def main():
     parser = argparse.ArgumentParser(description="SIMPLE-based FVM Stokes Solver")
@@ -8,14 +8,22 @@ def main():
     parser.add_argument('--pde', default=1, type=int,
                         help='Stokes PDE example ID')
 
-    parser.add_argument('--mesh_type', default="uniform_quad", type=str,
+    parser.add_argument('--mesh_type', default="uniform_qrad", type=str,
                         help='PDE mesh generator variant. Defaults to the PDE model default.')
 
-    parser.add_argument('--mesh_refine', default=1, type=int,
+    parser.add_argument('--mesh_refine', default=2, type=int,
                         help='Uniform refinement levels applied after the PDE default mesh is generated.')
 
     parser.add_argument('--backend', default='numpy', type=str,
                         help="Backend: numpy, torch, tensorflow, or jax.")
+
+    parser.add_argument('--device', default='cpu', type=str,
+                        choices=("cpu", "cuda"),
+                        help="Device used by the selected backend.")
+
+    parser.add_argument('--linear_solver', default='scipy', type=str,
+                        choices=("auto", "mumps", "scipy", "cupy"),
+                        help='Sparse linear solver backend.')
 
     parser.add_argument('--pbar_log', default=True, action=argparse.BooleanOptionalAction,
                         help='Whether to show progress bar.')
@@ -24,17 +32,26 @@ def main():
                         default='INFO', type=str,
                         help='Log level: DEBUG, INFO, WARNING, ERROR, or CRITICAL.')
 
-    parser.add_argument('--max_iter', default=400, type=int)
+    parser.add_argument('--max_iter', default=2000, type=int)
 
     parser.add_argument('--tol', default=1e-5, type=float)
 
-    parser.add_argument('--relax', default=0.1, type=float)
+    parser.add_argument('--relax', default=0.3, type=float)
+
+    parser.add_argument('--momentum_equation_relaxation', default=0.7, type=float)
 
     parser.add_argument('--plot', action='store_true')
 
     options = vars(parser.parse_args())
 
-    bm.set_backend(options.pop("backend"))
+    backend = options.pop("backend")
+    device = options.pop("device")
+    if device != "cpu" and backend != "pytorch":
+        raise ValueError("GPU execution is currently supported through pytorch backend.")
+
+    bm.set_backend(backend)
+    if backend == "pytorch":
+        bm.set_default_device(device)
 
     solve_options = {
         "max_iter": options.pop("max_iter"),
@@ -42,6 +59,11 @@ def main():
         "relax": options.pop("relax"),
     }
     plot = options.pop("plot")
+    options["linear_solver_config"] = FVMLinearSolverConfig(
+        backend=backend,
+        device=device,
+        solver=options.pop("linear_solver"),
+    )
 
     model = StokesFVMSimpleModel(options)
     print(model)

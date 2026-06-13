@@ -63,7 +63,18 @@ class CollocatedPisoSolver(CollocatedNSFVMOperators):
         self.points = self.mesh.entity_barycenter("cell")
         self.epoints = self.mesh.entity_barycenter("face")
         self.NC = self.mesh.number_of_cells()
-        self.boundary_conditions = self._validate_boundary_conditions(boundary_conditions)
+        required = (
+            "conditions_for",
+            "dirichlet_threshold",
+            "dirichlet_value",
+            "natural_threshold",
+            "has_pressure_dirichlet",
+            "boundary_face_velocity",
+        )
+        missing = [name for name in required if not hasattr(boundary_conditions, name)]
+        if missing:
+            raise TypeError("boundary_conditions must provide " + ", ".join(required))
+        self.boundary_conditions = boundary_conditions
         self.velocity_dirichlet_value = self.boundary_conditions.dirichlet_value("velocity")
         self.velocity_dirichlet_threshold = self.boundary_conditions.dirichlet_threshold(
             "velocity"
@@ -107,21 +118,6 @@ class CollocatedPisoSolver(CollocatedNSFVMOperators):
 
                 logger.addHandler(handler)
         return logger
-
-    def _validate_boundary_conditions(self, boundary_conditions):
-        """Validate boundary-condition data required by the PISO solver."""
-        required = (
-            "conditions_for",
-            "dirichlet_threshold",
-            "dirichlet_value",
-            "natural_threshold",
-            "has_pressure_dirichlet",
-            "boundary_face_velocity",
-        )
-        missing = [name for name in required if not hasattr(boundary_conditions, name)]
-        if missing:
-            raise TypeError("boundary_conditions must provide " + ", ".join(required))
-        return boundary_conditions
 
     def __str__(self) -> str:
         return (
@@ -170,7 +166,11 @@ class CollocatedPisoSolver(CollocatedNSFVMOperators):
             self.rho * Uf0,
             controls.face_interpolation_method,
         )
-        A = self.add_momentum_natural_convection_boundary(A, Uf0)
+        A = self.add_velocity_natural_convection_diagonal(
+            A,
+            self.rho * Uf0,
+            self.velocity_natural_threshold,
+        )
         M = self.momentum_time_matrix(self.rho, controls.tau)
 
         @cartesian
@@ -276,14 +276,6 @@ class CollocatedPisoSolver(CollocatedNSFVMOperators):
             cell_values=velocity,
             interpolation_method="linear",
             **kwargs,
-        )
-
-    def add_momentum_natural_convection_boundary(self, matrix, face_velocity):
-        """Add the momentum natural-boundary convection contribution."""
-        return self.add_velocity_natural_convection_diagonal(
-            matrix,
-            self.rho * face_velocity,
-            self.velocity_natural_threshold,
         )
 
     def _assemble_pressure_state_system(self, rhs, coef, cross_rhs):

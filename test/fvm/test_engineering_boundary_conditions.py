@@ -102,7 +102,10 @@ def test_simple_model_uses_engineering_boundary_conditions_for_face_constraints(
 
     model = _simple_model_with_left_right_bc()
 
-    bd_edge, bd_value = model._boundary_face_velocity()
+    bd_edge, bd_value = model.boundary_conditions.boundary_face_velocity(
+        "velocity",
+        mesh=model.mesh,
+    )
     face_centers = model.mesh.entity_barycenter("face")[bd_edge]
 
     assert isinstance(model.engineering_bc, EngineeringBoundaryConditions)
@@ -286,7 +289,11 @@ def test_simple_natural_velocity_outlet_adds_owner_convection_diagonal():
     uf = bm.zeros((model.mesh.number_of_faces(), 2))
     uf = bm.set_at(uf, (slice(None), 0), 1.0)
 
-    A = model._apply_velocity_natural_convection(A, uf)
+    A = model.add_velocity_natural_convection_diagonal(
+        A,
+        model.convection_coef * uf,
+        model.velocity_natural_threshold,
+    )
     diag = bm.array(A.to_scipy().diagonal())
     outlet_faces = model.engineering_bc.patch_face_index("right")
     outlet_owners = model.mesh.edge_to_cell()[outlet_faces, 0]

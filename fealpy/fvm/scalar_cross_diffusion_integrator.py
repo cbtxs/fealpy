@@ -4,7 +4,6 @@ from fealpy.backend import backend_manager as bm
 from fealpy.typing import TensorLike, Index, _S, CoefLike
 from fealpy.decorator import variantmethod
 
-from fealpy.mesh import HomogeneousMesh
 from fealpy.functionspace.space import FunctionSpace as _FS
 
 from fealpy.fem.integrator import LinearInt, OpInt, FaceInt, enable_cache
@@ -83,20 +82,9 @@ class ScalarCrossDiffusionIntegrator(LinearInt, OpInt, FaceInt):
     @enable_cache
     def fetch(self, space: _FS):
         index = self.index
-        mesh = self._mesh(space)
+        mesh = getattr(space, "mesh", None)
         geometry = self.geometry if self.geometry is not None else FVMGeometry(mesh, index=index)
         return geometry.face_to_cell, geometry
-
-    @staticmethod
-    def _mesh(space: _FS) -> HomogeneousMesh:
-        mesh = getattr(space, "mesh", None)
-        if isinstance(mesh, HomogeneousMesh):
-            return mesh
-        raise RuntimeError(
-            "The ScalarCrossDiffusionIntegrator only supports spaces on "
-            f"homogeneous meshes, but {type(mesh).__name__} is not a subclass "
-            "of HomoMesh."
-        )
 
     @variantmethod
     def assembly(self, space: _FS) -> TensorLike:

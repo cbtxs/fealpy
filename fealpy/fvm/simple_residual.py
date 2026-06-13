@@ -112,7 +112,8 @@ def simple_iteration_residual(
     SIMPLE solves a pressure-correction equation and then updates
     ``p <- p + alpha_p p'`` with a fixed scalar pressure relaxation
     ``alpha_p``.  This record reports both the raw correction norm and the
-    relaxed pressure-update size.  The mass residual is evaluated after the
+    relaxed pressure-update size.  The pressure stopping criterion is the
+    current raw correction L2 norm.  The mass residual is evaluated after the
     face-velocity pressure correction when ``stopping_face_velocity`` is
     supplied, which is the residual used for stopping the current collocated
     SIMPLE loop.
@@ -122,6 +123,7 @@ def simple_iteration_residual(
     pressure_correction_relative = relative_l2_update(
         mesh, pressure_correction, pressure
     )
+    pressure_correction_l2 = cell_l2_norm(mesh, pressure_correction)
     mass_before_pressure_correction = collocated_mass_residual(mesh, face_velocity)
     if stopping_face_velocity is None:
         mass = mass_before_pressure_correction
@@ -130,13 +132,11 @@ def simple_iteration_residual(
     return {
         "mass": mass,
         "mass_before_pressure_correction": mass_before_pressure_correction,
-        "pressure_correction": cell_l2_norm(mesh, pressure_correction),
+        "pressure_correction": pressure_correction_l2,
         "pressure_correction_relative": pressure_correction_relative,
         "pressure_update": pressure_update_relative,
-        "pressure_criterion": pressure_update_relative,
+        "pressure_criterion": pressure_correction_l2,
         "pressure_relax": pressure_relax,
-        "pressure_relax_reduced": False,
-        "pressure_relax_action": "fixed",
         "nonorthogonal_iterations": nonorthogonal_iterations,
         "momentum_nonorthogonal_iterations": momentum_nonorthogonal_iterations,
     }
@@ -170,11 +170,11 @@ def simple_pressure_update_step(
     return pressure_update, residual
 
 
-def simple_tolerances(tol, tol_mass, tol_pressure_update):
-    """Return mass and pressure-update stopping tolerances for SIMPLE."""
+def simple_tolerances(tol, tol_mass, tol_pressure_correction):
+    """Return mass and pressure-correction stopping tolerances for SIMPLE."""
     return (
         tol if tol_mass is None else tol_mass,
-        10.0 * tol if tol_pressure_update is None else tol_pressure_update,
+        10.0 * tol if tol_pressure_correction is None else tol_pressure_correction,
     )
 
 

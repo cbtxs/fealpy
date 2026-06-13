@@ -6,7 +6,6 @@ from fealpy.backend import backend_manager as bm
 from fealpy.typing import TensorLike, Index, _S, CoefLike
 from fealpy.decorator.variantmethod import variantmethod
 
-from fealpy.mesh import HomogeneousMesh
 from fealpy.functionspace.space import FunctionSpace as _FS
 from fealpy.functionspace.utils import to_tensor_dof
 
@@ -58,7 +57,7 @@ class ConvectionIntegrator(LinearInt, OpInt, FaceInt):
     @enable_cache
     def to_global_dof(self, space: _FS) -> TensorLike:
         mesh = getattr(space, "mesh", None)
-        face_to_cell = mesh.face_to_cell()[self.index, :2]
+        face_to_cell = FVMGeometry(mesh, index=self.index).face_to_cell
 
         scalar_space = getattr(space, "scalar_space", None)
         if scalar_space is None:
@@ -75,10 +74,6 @@ class ConvectionIntegrator(LinearInt, OpInt, FaceInt):
     def fetch(self, space: _FS):
         index = self.index
         mesh = getattr(space, 'mesh', None)
-        if not isinstance(mesh, HomogeneousMesh):
-            raise RuntimeError("The ConvectionIntegrator only supports spaces on "
-                               f"homogeneous meshes, but {type(mesh).__name__} is"
-                               " not a subclass of HomoMesh.")
         Sf = FVMGeometry(mesh, index=index).S_f
         q = self.q
         qf = mesh.quadrature_formula(q, 'face')

@@ -1,5 +1,6 @@
 """Cell source-term integrator for finite-volume right-hand sides."""
 
+import inspect
 from typing import Optional, Literal
 
 from fealpy.backend import backend_manager as bm
@@ -53,6 +54,16 @@ class ScalarSourceIntegrator(LinearInt, SrcInt, CellInt):
         source = self.source
         mesh = getattr(space, 'mesh', None)
         bcs, ws, cm, index = self.fetch(space, indices)
+
+        if callable(source) and getattr(mesh, "meshtype", None) == "polygon":
+            n_param = len(inspect.signature(source).parameters)
+
+            def integrand(points, cell_index):
+                return source(points, cell_index) if n_param == 2 else source(points)
+
+            val = mesh.integral(integrand, q=self.q, celltype=True)
+            return val[index]
+
         val = process_coef_func(source, bcs=bcs, mesh=mesh, etype='cell', index=index)
         # val: (Q, NC) for scalar data or (Q, NC, D) for vector data.
         if val.ndim == 2:

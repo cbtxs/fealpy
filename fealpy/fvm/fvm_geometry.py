@@ -1,7 +1,6 @@
 """Owner-oriented finite-volume face geometry."""
 
 from fealpy.backend import backend_manager as bm
-from fealpy.mesh import HomogeneousMesh
 from fealpy.typing import Index, TensorLike, _S
 
 
@@ -13,15 +12,19 @@ class FVMGeometry:
     or pressure-correction data.
     """
 
-    def __init__(self, mesh: HomogeneousMesh, *, index: Index = _S) -> None:
-        if not isinstance(mesh, HomogeneousMesh):
-            raise RuntimeError(
-                "FVMGeometry only supports homogeneous meshes, "
-                f"but got {type(mesh).__name__}."
-            )
-
+    def __init__(self, mesh, *, index: Index = _S) -> None:
         self.mesh = mesh
         self.index = index
+
+        required = ("geo_dimension", "entity_barycenter", "entity_measure", "number_of_cells")
+        missing = [name for name in required if not hasattr(mesh, name)]
+        if missing:
+            raise RuntimeError(
+                "FVMGeometry requires a mesh with FVM geometry methods: "
+                + ", ".join(missing)
+            )
+        if not hasattr(mesh, "face_to_cell") and not hasattr(mesh, "edge_to_cell"):
+            raise RuntimeError("FVMGeometry requires face_to_cell() or edge_to_cell().")
 
         if hasattr(mesh, "face_to_cell"):
             face_to_cell = mesh.face_to_cell(index=index)
@@ -174,7 +177,7 @@ class FVMGeometry:
         )
 
 
-def face_interpolation_owner_weight(mesh: HomogeneousMesh, *, method: str = "linear", index: Index = _S) -> TensorLike:
+def face_interpolation_owner_weight(mesh, *, method: str = "linear", index: Index = _S) -> TensorLike:
     """Return owner-side face interpolation weights.
 
     ``linear`` is the geometry-consistent face interpolation used by the

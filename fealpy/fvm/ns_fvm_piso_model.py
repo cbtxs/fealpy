@@ -6,15 +6,35 @@ from typing import Tuple
 from fealpy.typing import TensorLike
 from fealpy.backend import backend_manager as bm
 from fealpy.model import ComputationalModel
+from fealpy.model import PDEModelManager
 
 from .collocated_piso_solver import CollocatedPisoSolver
 from .cell_average_error import cell_average_l2_error
 from .engineering_boundary_conditions import BoundaryConditionData
-from .navier_stokes_model_adapter import NavierStokesModelAdapter
 from .solver_controls import PisoSolverControls
 
 
-class NSFVMPISOModel(ComputationalModel, NavierStokesModelAdapter, CollocatedPisoSolver):
+def _call_boundary_condition_factory(factory, mesh, pde):
+    try:
+        parameters = list(signature(factory).parameters.values())
+    except (TypeError, ValueError):
+        return factory(mesh, pde)
+
+    accepts_varargs = any(
+        parameter.kind == parameter.VAR_POSITIONAL for parameter in parameters
+    )
+    positional = [
+        parameter
+        for parameter in parameters
+        if parameter.kind
+        in (parameter.POSITIONAL_ONLY, parameter.POSITIONAL_OR_KEYWORD)
+    ]
+    if accepts_varargs or len(positional) >= 2:
+        return factory(mesh, pde)
+    return factory(mesh)
+
+
+class NSFVMPISOModel(ComputationalModel, CollocatedPisoSolver):
     """Finite-volume PISO model for PDE examples with exact solutions."""
 
     def __init__(self, options):
@@ -24,13 +44,59 @@ class NSFVMPISOModel(ComputationalModel, NavierStokesModelAdapter, CollocatedPis
             pbar_log=options.get("pbar_log", False),
             log_level=options.get("log_level", "WARNING"),
         )
-        pde = self._resolve_navier_stokes_pde(options["pde"])
+        pde_input = options["pde"]
+        if isinstance(pde_input, int):
+            pde = PDEModelManager("navier_stokes").get_example(pde_input)
+        else:
+            pde = pde_input
         self.pde = pde
         self.error_quadrature_order = int(options.get("error_quadrature_order", 4))
-        self._init_momentum_coefficients(options)
-        mesh_type = self._piso_mesh_type(options)
-        mesh = self._init_mesh(options, mesh_type)
-        boundary_input = self._init_piso_boundary_conditions(options, mesh, pde)
+
+        rho_value = options.get("rho", None)
+        if rho_value is None:
+            rho_value = getattr(pde, "rho", 1.0)
+        mu_value = options.get("mu", None)
+        if mu_value is None:
+            for name in ("mu", "viscosity", "nu"):
+                if hasattr(pde, name):
+                    mu_value = getattr(pde, name)
+                    break
+            else:
+                mu_value = 1.0
+        self.rho = self._as_positive_scalar(rho_value, "rho")
+        self.mu = self._as_positive_scalar(mu_value, "mu")
+
+        mesh_type = options.get("mesh_type", "uniform_quad")
+        if mesh_type == "uniform_qrad":
+            mesh_type = "uniform_quad"
+        mesh_type = mesh_type or getattr(pde, "default_mesh_type", "uniform_quad")
+        mesh_refine = int(options.get("mesh_refine", 0) or 0)
+        if mesh_refine < 0:
+            raise ValueError("mesh_refine must be non-negative.")
+        if getattr(pde, "supports_geometric_refine", False):
+            mesh = pde.init_mesh[mesh_type](mesh_refine=mesh_refine)
+        else:
+            mesh_options = {}
+            if options.get("nx") is not None:
+                mesh_options["nx"] = int(options["nx"])
+            if options.get("ny") is not None:
+                mesh_options["ny"] = int(options["ny"])
+            if options.get("nz") is not None:
+                mesh_options["nz"] = int(options["nz"])
+            mesh = pde.init_mesh[mesh_type](**mesh_options)
+            if mesh_refine > 0:
+                if not hasattr(mesh, "uniform_refine"):
+                    raise ValueError("mesh does not provide uniform_refine().")
+                mesh.uniform_refine(mesh_refine)
+
+        boundary_input = options.get("boundary_conditions")
+        if boundary_input is None:
+            velocity_dirichlet = getattr(pde, "velocity_dirichlet", None)
+            if velocity_dirichlet is None:
+                velocity_dirichlet = pde.dirichlet_velocity
+            boundary_input = BoundaryConditionData(velocity_dirichlet)
+        elif callable(boundary_input) and not hasattr(boundary_input, "dirichlet_threshold"):
+            boundary_input = _call_boundary_condition_factory(boundary_input, mesh, pde)
         self.engineering_bc = (
             boundary_input
             if options.get("boundary_conditions") is not None
@@ -43,6 +109,54 @@ class NSFVMPISOModel(ComputationalModel, NavierStokesModelAdapter, CollocatedPis
             boundary_conditions = boundary_input.to_pde_boundary()
         else:
             boundary_conditions = boundary_input
+        default_pressure_nonorthogonal_iter = 1 if mesh_type == "uniform_quad" else 3
+        legacy_momentum_route = options.get("momentum_explicit_correction", "openfoam")
+        if legacy_momentum_route not in (None, "openfoam"):
+            raise ValueError(
+                "momentum_explicit_correction='current' has been removed from "
+                "PISO; the boundary-corrected explicit momentum source is now "
+                "the only supported route."
+            )
+        if "transient_flux_correction_limiter" in options:
+            raise ValueError(
+                "transient_flux_correction_limiter has been removed from PISO; "
+                "the limited ddtCorr route is now always used when "
+                "use_transient_flux_correction is enabled."
+            )
+        nt = options.get("nt", 20)
+        n_correctors = options.get("n_correctors", 2)
+        snapshot_interval = options.get("snapshot_interval", 1)
+        snapshot_start_step = options.get("snapshot_start_step", 1)
+        momentum_nonorthogonal_max_iter = options.get("momentum_nonorthogonal_max_iter", 1)
+        pressure_nonorthogonal_max_iter = options.get(
+            "pressure_nonorthogonal_max_iter",
+            default_pressure_nonorthogonal_iter,
+        )
+        controls = PisoSolverControls(
+            space_degree=options.get("space_degree", 0),
+            duration=tuple(options.get("duration", (0, 1))),
+            nt=20 if nt is None else int(nt),
+            n_correctors=2 if n_correctors is None else int(n_correctors),
+            snapshot_interval=1 if snapshot_interval is None else int(snapshot_interval),
+            snapshot_start_step=1 if snapshot_start_step is None else int(snapshot_start_step),
+            pressure_gradient_method=options.get("pressure_gradient_method", "extended_lsq"),
+            velocity_gradient_method=options.get("velocity_gradient_method", "extended_lsq"),
+            rhie_chow_pressure_gradient_method=options.get("rhie_chow_pressure_gradient_method", "extended_lsq"),
+            face_interpolation_method=options.get("face_interpolation_method", "average"),
+            rhie_chow_velocity_interpolation=options.get("rhie_chow_velocity_interpolation"),
+            use_transient_flux_correction=bool(options.get("use_transient_flux_correction", True)),
+            momentum_nonorthogonal_max_iter=(
+                1 if momentum_nonorthogonal_max_iter is None else int(momentum_nonorthogonal_max_iter)
+            ),
+            momentum_nonorthogonal_tol=float(options.get("momentum_nonorthogonal_tol", 1.0e-5)),
+            pressure_nonorthogonal_max_iter=(
+                default_pressure_nonorthogonal_iter
+                if pressure_nonorthogonal_max_iter is None
+                else int(pressure_nonorthogonal_max_iter)
+            ),
+            pressure_nonorthogonal_tol=float(options.get("pressure_nonorthogonal_tol", 1.0e-5)),
+            diagnostics_enabled=bool(options.get("diagnostics_enabled", False)),
+        )
         CollocatedPisoSolver.__init__(
             self,
             mesh=mesh,
@@ -50,7 +164,7 @@ class NSFVMPISOModel(ComputationalModel, NavierStokesModelAdapter, CollocatedPis
             convection_coef=self.rho,
             source=pde.source,
             boundary_conditions=boundary_conditions,
-            controls=self._piso_controls_from_options(options, mesh_type),
+            controls=controls,
             linear_solver=options.get("linear_solver"),
             linear_solver_config=options.get("linear_solver_config"),
             logger=self.logger,
@@ -68,104 +182,6 @@ class NSFVMPISOModel(ComputationalModel, NavierStokesModelAdapter, CollocatedPis
             f"  Pressure nonorthogonal corrections: "
             f"{self.controls.pressure_nonorthogonal_max_iter}\n"
         )
-
-    def _piso_mesh_type(self, options):
-        """Return the normalized mesh type for the PISO manufactured adapter."""
-        return self._normalized_mesh_type(options.get("mesh_type", "uniform_quad"))
-
-    def _init_mesh(self, options, mesh_type):
-        """Build the PDE mesh used by the PISO manufactured adapter."""
-        mesh_options = {"mesh_type": mesh_type}
-        if options.get("nx") is not None:
-            mesh_options["nx"] = options.get("nx")
-        if options.get("ny") is not None:
-            mesh_options["ny"] = options.get("ny")
-        if options.get("nz") is not None:
-            mesh_options["nz"] = options.get("nz")
-        if options.get("mesh_refine") is not None:
-            mesh_options["mesh_refine"] = options.get("mesh_refine")
-        return self._init_navier_stokes_mesh(
-            mesh_options,
-            default_mesh_type="uniform_quad",
-            normalize_mesh_type=True,
-        )
-
-    def _init_piso_boundary_conditions(self, options, mesh, pde):
-        """Translate model or engineering boundary input to solver boundary data."""
-        boundary_conditions = options.get("boundary_conditions")
-        if boundary_conditions is None:
-            velocity_dirichlet = getattr(pde, "velocity_dirichlet", None)
-            if velocity_dirichlet is None:
-                velocity_dirichlet = pde.dirichlet_velocity
-            return BoundaryConditionData(velocity_dirichlet)
-
-        if callable(boundary_conditions) and not hasattr(boundary_conditions, "dirichlet_threshold"):
-            return self._call_boundary_condition_factory(boundary_conditions, mesh, pde)
-        return boundary_conditions
-
-    @staticmethod
-    def _piso_controls_from_options(options, mesh_type):
-        """Translate historical manufactured-model options to PISO controls."""
-        default_pressure_nonorthogonal_iter = 1 if mesh_type == "uniform_quad" else 3
-        legacy_momentum_route = options.get("momentum_explicit_correction", "openfoam")
-        if legacy_momentum_route not in (None, "openfoam"):
-            raise ValueError(
-                "momentum_explicit_correction='current' has been removed from "
-                "PISO; the boundary-corrected explicit momentum source is now "
-                "the only supported route."
-            )
-        if "transient_flux_correction_limiter" in options:
-            raise ValueError(
-                "transient_flux_correction_limiter has been removed from PISO; "
-                "the limited ddtCorr route is now always used when "
-                "use_transient_flux_correction is enabled."
-            )
-
-        def option_int(name: str, default: int) -> int:
-            value = options.get(name, default)
-            return default if value is None else int(value)
-
-        return PisoSolverControls(
-            space_degree=options.get("space_degree", 0),
-            duration=tuple(options.get("duration", (0, 1))),
-            nt=option_int("nt", 20),
-            n_correctors=option_int("n_correctors", 2),
-            snapshot_interval=option_int("snapshot_interval", 1),
-            snapshot_start_step=option_int("snapshot_start_step", 1),
-            pressure_gradient_method=options.get("pressure_gradient_method", "extended_lsq"),
-            velocity_gradient_method=options.get("velocity_gradient_method", "extended_lsq"),
-            rhie_chow_pressure_gradient_method=options.get("rhie_chow_pressure_gradient_method", "extended_lsq"),
-            face_interpolation_method=options.get("face_interpolation_method", "average"),
-            rhie_chow_velocity_interpolation=options.get("rhie_chow_velocity_interpolation"),
-            use_transient_flux_correction=bool(options.get("use_transient_flux_correction", True)),
-            momentum_nonorthogonal_max_iter=option_int("momentum_nonorthogonal_max_iter", 1),
-            momentum_nonorthogonal_tol=float(options.get("momentum_nonorthogonal_tol", 1.0e-5)),
-            pressure_nonorthogonal_max_iter=option_int("pressure_nonorthogonal_max_iter", default_pressure_nonorthogonal_iter),
-            pressure_nonorthogonal_tol=float(options.get("pressure_nonorthogonal_tol", 1.0e-5)),
-            diagnostics_enabled=bool(options.get("diagnostics_enabled", False)),
-        )
-
-    @staticmethod
-    def _call_boundary_condition_factory(factory, mesh, pde):
-        """Call a boundary-condition factory with mesh or mesh plus PDE."""
-        try:
-            parameters = list(signature(factory).parameters.values())
-        except (TypeError, ValueError):
-            return factory(mesh, pde)
-
-        accepts_varargs = any(
-            parameter.kind == parameter.VAR_POSITIONAL
-            for parameter in parameters
-        )
-        positional = [
-            parameter
-            for parameter in parameters
-            if parameter.kind
-            in (parameter.POSITIONAL_ONLY, parameter.POSITIONAL_OR_KEYWORD)
-        ]
-        if accepts_varargs or len(positional) >= 2:
-            return factory(mesh, pde)
-        return factory(mesh)
 
     def initial_solution(self) -> Tuple[TensorLike, TensorLike, TensorLike]:
         """Return the initial velocity, face velocity, and pressure fields."""

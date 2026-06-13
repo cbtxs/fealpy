@@ -127,7 +127,11 @@ class CollocatedSimpleSolver(CollocatedNSFVMOperators):
                 convection_face_velocity,
                 self.controls.face_interpolation("momentum_face_interpolation"),
             )
-            B = self._apply_velocity_natural_convection(B, uf)
+            B = self.add_velocity_natural_convection_diagonal(
+                B,
+                self.convection_coef * uf,
+                self.velocity_natural_threshold,
+            )
         f = self.momentum_source_vector(self.source)
         threshold = self.velocity_dirichlet_threshold
         B, f = self.velocity_dirichlet_bc.DiffusionApply(
@@ -215,28 +219,11 @@ class CollocatedSimpleSolver(CollocatedNSFVMOperators):
             cross = self.compute_cross_diffusion(correction_velocity)
         return corrected_velocity
 
-    def _apply_velocity_natural_convection(self, matrix, uf):
-        """Add zero-gradient velocity outlet convection as owner diagonal."""
-        return self.add_velocity_natural_convection_diagonal(
-            matrix,
-            self.convection_coef * uf,
-            self.velocity_natural_threshold,
-        )
-
     def pressure_correction_flux(self, p_corr: TensorLike, response_coef: TensorLike) -> TensorLike:
         """Return the full pressure-correction flux used to correct mass flux."""
         orthogonal_flux = self.pressure_orthogonal_flux(p_corr, response_coef)
         cross_flux = self._pressure_nonorthogonal_cross_flux(p_corr, response_coef)
         flux = orthogonal_flux - cross_flux
-        return self._add_pressure_dirichlet_boundary_flux(flux, p_corr, response_coef)
-
-    def _add_pressure_dirichlet_boundary_flux(
-        self,
-        flux: TensorLike,
-        p_corr: TensorLike,
-        response_coef: TensorLike,
-    ) -> TensorLike:
-        """Add pressure-correction flux on pressure Dirichlet boundary faces."""
         return self.add_pressure_dirichlet_flux(
             flux,
             p_corr,
@@ -333,58 +320,36 @@ class CollocatedSimpleSolver(CollocatedNSFVMOperators):
 
     def rhie_chow_face_velocity(self, u, ap, p, response_coef, bd_edge, bdedgeu):
         """Construct Rhie-Chow face velocity and enforce velocity Dirichlet data."""
-        try:
-            uf = self.rhie_chow.Interpolation(
-                u, ap, p, face_response_coefficient=response_coef
-            )
-        except TypeError as exc:
-            if "face_response_coefficient" not in str(exc):
-                raise
-            uf = self.rhie_chow.Interpolation(u, ap, p)
+        uf = self.rhie_chow.Interpolation(
+            u, ap, p, face_response_coefficient=response_coef
+        )
         return bm.set_at(uf, bd_edge, bdedgeu)
 
     def _build_rhie_chow_interpolation(self):
         """Build Rhie-Chow interpolation with active pressure boundary data."""
-        try:
-            return RhieChowInterpolation(
-                self.mesh,
-                pressure_gradient_method=self.controls.rhie_chow_pressure_gradient_method,
-                velocity_interpolation=self.controls.face_interpolation(
-                    "rhie_chow_velocity_interpolation"
-                ),
-                pressure_dirichlet=self.pressure_dirichlet_data,
-                pressure_dirichlet_threshold=self.pressure_dirichlet_threshold,
-            )
-        except TypeError as exc:
-            if (
-                "pressure_dirichlet" not in str(exc)
-                and "pressure_gradient_method" not in str(exc)
-                and "velocity_interpolation" not in str(exc)
-            ):
-                raise
-            return RhieChowInterpolation(self.mesh)
-
-    def _boundary_face_velocity(self):
-        """Return only faces with prescribed velocity data when using patches."""
-        try:
-            return self.boundary_conditions.boundary_face_velocity("velocity", mesh=self.mesh)
-        except TypeError:
-            return self.boundary_conditions.boundary_face_velocity("velocity")
+        return RhieChowInterpolation(
+            self.mesh,
+            pressure_gradient_method=self.controls.rhie_chow_pressure_gradient_method,
+            velocity_interpolation=self.controls.face_interpolation(
+                "rhie_chow_velocity_interpolation"
+            ),
+            pressure_dirichlet=self.pressure_dirichlet_data,
+            pressure_dirichlet_threshold=self.pressure_dirichlet_threshold,
+        )
 
     def solve(
         self,
         max_iter: int = 100,
         tol: float = 1e-5,
-        relax: float = 0.03,
+        relax: float = 0.3,
         tol_mass=None,
-        tol_pressure_update=None,
         tol_pressure_correction=None,
     ) -> Tuple[TensorLike, TensorLike, TensorLike]:
         """Run the SIMPLE outer iteration."""
-        tol_mass, tol_pressure_update = simple_tolerances(
-            tol, tol_mass, tol_pressure_update
+        tol_mass, tol_pressure_correction = simple_tolerances(
+            tol, tol_mass, tol_pressure_correction
         )
-        if tol_pressure_correction is not None and tol_pressure_correction <= 0.0:
+        if tol_pressure_correction <= 0.0:
             raise ValueError("tol_pressure_correction must be positive.")
         if relax <= 0.0:
             raise ValueError("relax must be positive.")
@@ -394,7 +359,15 @@ class CollocatedSimpleSolver(CollocatedNSFVMOperators):
         u = bm.zeros(self.GD * self.NC, dtype=field_dtype)
         ap, u = self.temporary_velocity(p, uf, u)
         self.residuals = []
-        bd_edge, bdedgeu = self._boundary_face_velocity()
+        try:
+            bd_edge, bdedgeu = self.boundary_conditions.boundary_face_velocity(
+                "velocity",
+                mesh=self.mesh,
+            )
+        except TypeError:
+            bd_edge, bdedgeu = self.boundary_conditions.boundary_face_velocity(
+                "velocity"
+            )
         self.rhie_chow = self._build_rhie_chow_interpolation()
 
         for iteration in range(1, max_iter + 1):
@@ -406,8 +379,9 @@ class CollocatedSimpleSolver(CollocatedNSFVMOperators):
                 u, ap, p, response_coef, bd_edge, bdedgeu
             )
             p_corr = self.pressure_correct(ap, uf, response_coef=response_coef)
+            relaxed_p_corr = relax * p_corr
             uf_corrected = self.correct_face_velocity_with_pressure_correction(
-                uf, p_corr, response_coef, bd_edge, bdedgeu
+                uf, relaxed_p_corr, response_coef, bd_edge, bdedgeu
             )
             p_update, residual = simple_pressure_update_step(
                 self.residuals,
@@ -422,8 +396,6 @@ class CollocatedSimpleSolver(CollocatedNSFVMOperators):
                 momentum_nonorthogonal_iterations=self.last_nonorthogonal_iterations,
                 stopping_face_velocity=uf_corrected,
             )
-            if tol_pressure_correction is not None:
-                residual["pressure_criterion"] = residual["pressure_correction"]
             log_simple_residual(self.logger, iteration, residual)
 
             p += p_update
@@ -438,8 +410,7 @@ class CollocatedSimpleSolver(CollocatedNSFVMOperators):
             if pressure_correction_converged(
                 residual,
                 tol_mass,
-                tol_pressure_update,
-                tol_pressure_correction,
+                tol_pressure_correction=tol_pressure_correction,
             ):
                 self.logger.info("Converged.")
                 break

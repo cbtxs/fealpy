@@ -17,7 +17,7 @@ class SimpleSolverControls:
     momentum_face_interpolation: str | None = None
     pressure_response_interpolation: str | None = None
     rhie_chow_velocity_interpolation: str | None = None
-    momentum_equation_relaxation: float = 1.0
+    momentum_equation_relaxation: float = 0.7
     momentum_nonorthogonal_max_iter: int = 10
     momentum_nonorthogonal_tol: float = 1.0e-4
     pressure_nonorthogonal_max_iter: int = 10

@@ -21,6 +21,10 @@ def main():
                         choices=("cpu", "cuda"),
                         help="Device used by the selected backend.")
 
+    parser.add_argument('--linear_solver', default='auto', type=str,
+                        choices=("auto", "mumps", "scipy", "cupy"),
+                        help='Sparse linear solver backend.')
+
     parser.add_argument('--pbar_log', default=True, action=argparse.BooleanOptionalAction,
                         help='Whether to show progress bar.')
 
@@ -32,7 +36,9 @@ def main():
 
     parser.add_argument('--tol', default=1e-6, type=float)
 
-    parser.add_argument('--relax', default=0.01, type=float)
+    parser.add_argument('--relax', default=0.3, type=float)
+
+    parser.add_argument('--momentum_equation_relaxation', default=0.7, type=float)
 
     parser.add_argument('--plot', action='store_true')
 
@@ -56,17 +62,18 @@ def main():
     options["linear_solver_config"] = FVMLinearSolverConfig(
         backend=backend,
         device=device,
-        solver="auto",
+        solver=options.pop("linear_solver"),
     )
 
     model = NSFVMSimpleModel(options)
     print(model)
     
     model.solve(**solve_options)
-    uerror, verror, perror = model.compute_error()
-    print(f"L2 error (u) = {uerror}")
-    print(f"L2 error (v) = {verror}")
-    print(f"L2 error (p) = {perror}")
+    errors = model.compute_error()
+    velocity_names = ("u", "v", "w")
+    for name, error in zip(velocity_names, errors[:-1]):
+        print(f"L2 error ({name}) = {error}")
+    print(f"L2 error (p) = {errors[-1]}")
     if plot:
         model.plot()
         model.plot_residual()

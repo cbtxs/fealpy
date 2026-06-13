@@ -5,14 +5,13 @@ from __future__ import annotations
 from typing import Optional
 
 from fealpy.backend import backend_manager as bm
-from fealpy.mesh import HomogeneousMesh
 from fealpy.typing import TensorLike
 
 from .fvm_geometry import FVMGeometry
 
 
 def reconstruct_face_gradient(
-    mesh: HomogeneousMesh,
+    mesh,
     cell_gradient: TensorLike,
     *,
     cell_values: Optional[TensorLike] = None,
@@ -30,12 +29,6 @@ def reconstruct_face_gradient(
     faces are corrected by the supplied normal derivative for Dirichlet,
     Neumann, or generic boundary patch data.
     """
-    if not isinstance(mesh, HomogeneousMesh):
-        raise RuntimeError(
-            "reconstruct_face_gradient only supports homogeneous meshes, "
-            f"but got {type(mesh).__name__}."
-        )
-
     geometry = FVMGeometry(mesh)
     cell_gradient = bm.array(cell_gradient)
     face_gradient = _interpolate_cell_gradient(geometry, cell_gradient, interpolation_method)
@@ -121,7 +114,7 @@ def _interpolate_cell_gradient(geometry: FVMGeometry, cell_gradient: TensorLike,
 
 
 def _normalize_patch_data(
-    mesh: HomogeneousMesh,
+    mesh,
     value: TensorLike,
     faces: TensorLike,
     value_shape: tuple[int, ...],

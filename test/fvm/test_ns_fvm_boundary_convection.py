@@ -172,10 +172,10 @@ def test_collocated_simple_records_common_residuals(monkeypatch):
     import fealpy.fvm.ns_fvm_simple_model as simple_model
 
     class FakeRhieChow:
-        def __init__(self, mesh):
+        def __init__(self, mesh, **kwargs):
             self.mesh = mesh
 
-        def Interpolation(self, u, ap, p):
+        def Interpolation(self, u, ap, p, face_response_coefficient=None):
             return bm.zeros((self.mesh.number_of_faces(), 2))
 
     monkeypatch.setattr(simple_solver, "RhieChowInterpolation", FakeRhieChow)
@@ -220,7 +220,7 @@ def test_collocated_simple_records_common_residuals(monkeypatch):
         "mass": 0.0,
         "pressure_update": 0.0,
         "pressure_correction": 0.0,
-        "pressure_relax": 0.03,
+        "pressure_relax": 0.3,
     }
 
 
@@ -231,10 +231,10 @@ def test_collocated_simple_updates_cell_velocity_after_pressure_correction(monke
     import fealpy.fvm.ns_fvm_simple_model as simple_model
 
     class FakeRhieChow:
-        def __init__(self, mesh):
+        def __init__(self, mesh, **kwargs):
             self.mesh = mesh
 
-        def Interpolation(self, u, ap, p):
+        def Interpolation(self, u, ap, p, face_response_coefficient=None):
             return bm.zeros((self.mesh.number_of_faces(), 2))
 
     calls = []
@@ -289,6 +289,62 @@ def test_collocated_simple_updates_cell_velocity_after_pressure_correction(monke
 
     assert len(calls) == 2
     assert bm.max(bm.abs(calls[1] - 3.0)) < 1.0e-14
+
+
+def test_collocated_simple_relaxes_face_flux_pressure_correction(monkeypatch):
+    bm.set_backend("numpy")
+    import fealpy.fvm.collocated_simple_solver as simple_solver
+    import fealpy.fvm.simple_residual as simple_residual
+    import fealpy.fvm.ns_fvm_simple_model as simple_model
+
+    class FakeRhieChow:
+        def __init__(self, mesh, **kwargs):
+            self.mesh = mesh
+
+        def Interpolation(self, u, ap, p, face_response_coefficient=None):
+            return bm.zeros((self.mesh.number_of_faces(), 2))
+
+    received = []
+
+    def fake_temporary_velocity(self, p, uf, u0):
+        return bm.ones(2 * self.NC), bm.zeros(2 * self.NC)
+
+    def fake_correct_face_velocity(self, uf, p_corr, response_coef, bd_edge, bdedgeu):
+        received.append(p_corr.copy())
+        return uf
+
+    monkeypatch.setattr(simple_solver, "RhieChowInterpolation", FakeRhieChow)
+    monkeypatch.setattr(simple_residual, "collocated_mass_residual", lambda mesh, uf: 0.0)
+    monkeypatch.setattr(simple_residual, "cell_l2_norm", lambda mesh, value: 1.0)
+    monkeypatch.setattr(simple_residual, "relative_l2_update", lambda mesh, update, p: 1.0)
+    monkeypatch.setattr(simple_model.NSFVMSimpleModel, "temporary_velocity", fake_temporary_velocity)
+    monkeypatch.setattr(
+        simple_model.NSFVMSimpleModel,
+        "pressure_correct",
+        lambda self, ap, uf, *, response_coef=None: bm.ones(self.NC),
+    )
+    monkeypatch.setattr(
+        simple_model.NSFVMSimpleModel,
+        "correct_face_velocity_with_pressure_correction",
+        fake_correct_face_velocity,
+    )
+
+    model = simple_model.NSFVMSimpleModel(
+        {
+            "pde": 6,
+            "nx": 2,
+            "ny": 2,
+            "space_degree": 0,
+            "log_level": "ERROR",
+            "pbar_log": False,
+        }
+    )
+    model.pde.dirichlet_velocity = lambda points: bm.zeros_like(points)
+
+    model.solve(max_iter=1, tol_mass=0.0, tol_pressure_correction=1.0e-12, relax=0.5)
+
+    assert len(received) == 1
+    assert bm.max(bm.abs(received[0] - 0.5)) < 1.0e-14
 
 
 def test_staggered_simple_records_common_residuals(monkeypatch):

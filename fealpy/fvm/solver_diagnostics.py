@@ -13,7 +13,6 @@ def format_pressure_correction_log(
     iteration: int,
     nonorthogonal_iterations: int,
     pressure_criterion: float,
-    pressure_relax: float,
     mass_residual: float,
     pressure_correction: float,
     label: str = "SIMPLE",
@@ -23,7 +22,6 @@ def format_pressure_correction_log(
         f"[{label} {iteration}] "
         f"nonorthogonal iterations: {nonorthogonal_iterations}, "
         f"pressure criterion: {pressure_criterion:.2e}, "
-        f"pressure relax: {pressure_relax:.2e}, "
         f"mass residual: {mass_residual:.2e}, "
         f"pressure correction L2: {pressure_correction:.2e}"
     )
@@ -63,7 +61,6 @@ def simple_iteration_log_message(
     simple_iteration: int,
     nonorthogonal_iterations: int,
     pressure_criterion: float,
-    pressure_relax: float,
     mass_residual: float,
     pressure_correction: float,
 ) -> str:
@@ -72,7 +69,6 @@ def simple_iteration_log_message(
         iteration=simple_iteration,
         nonorthogonal_iterations=nonorthogonal_iterations,
         pressure_criterion=pressure_criterion,
-        pressure_relax=pressure_relax,
         mass_residual=mass_residual,
         pressure_correction=pressure_correction,
         label="SIMPLE",
@@ -87,48 +83,10 @@ def log_simple_iteration(logger, iteration, residual):
             simple_iteration=iteration,
             nonorthogonal_iterations=residual["nonorthogonal_iterations"],
             pressure_criterion=pressure_criterion,
-            pressure_relax=residual["pressure_relax"],
             mass_residual=residual["mass"],
             pressure_correction=residual["pressure_correction"],
         )
     )
-    action = residual["pressure_relax_action"]
-    if action in {"reduce", "increase"}:
-        logger.info(
-            f"[Iter {iteration}] pressure relaxation {action}d to "
-            f"{residual['pressure_relax']:.2e}"
-        )
-
-
-def attach_corrector_diagnostics(
-    diagnostics,
-    *,
-    step,
-    time,
-    corrector,
-    n_correctors,
-    splitting_linf,
-    current_velocity,
-    next_velocity,
-    current_pressure,
-    next_pressure,
-    target_flux_error,
-):
-    """Attach outer-loop update diagnostics to a pressure-corrector row."""
-    row = dict(diagnostics)
-    row.update(
-        {
-            "step": int(step),
-            "time": float(time),
-            "corrector": int(corrector),
-            "n_correctors": int(n_correctors),
-            "operator_splitting_compensation_linf": float(splitting_linf),
-            "velocity_update_linf": linf_norm(next_velocity - current_velocity),
-            "pressure_update_linf": linf_norm(next_pressure - current_pressure),
-            "rhie_chow_flux_error_linf": linf_norm(target_flux_error),
-        }
-    )
-    return row
 
 
 def record_piso_corrector_diagnostics(
@@ -164,18 +122,18 @@ def record_piso_corrector_diagnostics(
         face_response_coefficient=face_response_coefficient,
     )
     target_flux_error = face_flux(target_face_velocity) - phi
-    row = attach_corrector_diagnostics(
-        diagnostics,
-        step=step,
-        time=time,
-        corrector=correction,
-        n_correctors=n_correctors,
-        splitting_linf=splitting_linf,
-        current_velocity=current_velocity,
-        next_velocity=next_velocity,
-        current_pressure=current_pressure,
-        next_pressure=next_pressure,
-        target_flux_error=target_flux_error,
+    row = dict(diagnostics)
+    row.update(
+        {
+            "step": int(step),
+            "time": float(time),
+            "corrector": int(correction),
+            "n_correctors": int(n_correctors),
+            "operator_splitting_compensation_linf": float(splitting_linf),
+            "velocity_update_linf": linf_norm(next_velocity - current_velocity),
+            "pressure_update_linf": linf_norm(next_pressure - current_pressure),
+            "rhie_chow_flux_error_linf": linf_norm(target_flux_error),
+        }
     )
     storage.append(row)
     if callback is not None:

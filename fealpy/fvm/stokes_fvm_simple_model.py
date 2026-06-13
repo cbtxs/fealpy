@@ -59,6 +59,7 @@ class StokesFVMSimpleModel(ComputationalModel, CollocatedSimpleSolver):
             "momentum_face_interpolation",
             "pressure_response_interpolation",
             "rhie_chow_velocity_interpolation",
+            "momentum_equation_relaxation",
             "momentum_nonorthogonal_max_iter",
             "momentum_nonorthogonal_tol",
             "pressure_nonorthogonal_max_iter",
@@ -143,7 +144,7 @@ class StokesFVMSimpleModel(ComputationalModel, CollocatedSimpleSolver):
                 "rhie_chow_velocity_interpolation"
             ),
             momentum_equation_relaxation=options.get(
-                "momentum_equation_relaxation", 1.0
+                "momentum_equation_relaxation", 0.7
             ),
             momentum_nonorthogonal_max_iter=options.get(
                 "momentum_nonorthogonal_max_iter", 10

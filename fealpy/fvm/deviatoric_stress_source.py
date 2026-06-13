@@ -6,7 +6,6 @@ from fealpy.backend import backend_manager as bm
 from fealpy.decorator import variantmethod
 from fealpy.fem.integrator import FaceInt, LinearInt, OpInt, enable_cache
 from fealpy.functionspace.space import FunctionSpace as _FS
-from fealpy.mesh import HomogeneousMesh
 from fealpy.typing import CoefLike, Index, TensorLike, _S
 
 from .fvm_geometry import FVMGeometry
@@ -62,11 +61,6 @@ class DeviatoricStressSourceIntegrator(LinearInt, OpInt, FaceInt):
     @enable_cache
     def fetch(self, space: _FS, /, indices=None):
         mesh = space.mesh
-        if not isinstance(mesh, HomogeneousMesh):
-            raise RuntimeError(
-                "DeviatoricStressSourceIntegrator only supports homogeneous "
-                f"meshes, but got {type(mesh).__name__}."
-            )
 
         region = self.get_region()
         if region is not None:

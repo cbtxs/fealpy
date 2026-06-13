@@ -57,7 +57,7 @@ def test_collocated_simple_solver_default_pressure_relaxation_is_conservative():
     from fealpy.fvm import CollocatedSimpleSolver
 
     solve_parameters = inspect.signature(CollocatedSimpleSolver.solve).parameters
-    assert solve_parameters["relax"].default == 0.03
+    assert solve_parameters["relax"].default == 0.3
 
 
 def test_cell_vector_dof_conversion_is_component_major_on_torch_backend():
@@ -91,7 +91,7 @@ def test_collocated_simple_solver_runs_without_model_adapter():
     assert vh.shape == (solver.NC,)
     assert ph.shape == (solver.NC,)
     assert len(solver.residuals) == 1
-    assert solver.residuals[0]["pressure_relax"] == 0.03
+    assert solver.residuals[0]["pressure_relax"] == 0.3
 
 
 def test_collocated_simple_solver_accepts_zero_convection_for_stokes_limit():
@@ -111,7 +111,25 @@ def test_collocated_simple_solver_accepts_string_linear_solver_choice():
     assert solver.linear_solver.config.solver == "scipy"
 
 
-def test_stokes_simple_model_reuses_collocated_simple_solver_core():
+def test_stokes_simple_model_uses_collocated_simple_algorithm_core():
     from fealpy.fvm import CollocatedSimpleSolver, StokesFVMSimpleModel
 
     assert issubclass(StokesFVMSimpleModel, CollocatedSimpleSolver)
+
+
+def test_stokes_simple_model_accepts_momentum_relaxation_option():
+    from fealpy.fvm import StokesFVMSimpleModel
+
+    model = StokesFVMSimpleModel(
+        {
+            "pde": 1,
+            "nx": 2,
+            "ny": 2,
+            "space_degree": 0,
+            "momentum_equation_relaxation": 0.6,
+            "log_level": "ERROR",
+            "pbar_log": False,
+        }
+    )
+
+    assert model.controls.momentum_equation_relaxation == 0.6
