@@ -1,6 +1,6 @@
 from ...backend import bm
 from ...backend import Index, Tensor
-from ..topology.ipoints import InterpolationPoints
+from ..topology.ipoints import MultiIndex as _MI
 from .entity_schema import (
     EntityContext,
     ShapedEntitySchema,
@@ -68,9 +68,9 @@ class HexahedronSchema(ShapedEntitySchema):
         p = _require_order_tuple(p, "hexahedron shape_function", 3)
 
         arg = cls.multi_index_sort(cls.multi_index(p, tensorprod=False))
-        mi0 = InterpolationPoints.multi_index_matrix(p[0], 2)
-        mi1 = InterpolationPoints.multi_index_matrix(p[1], 2)
-        mi2 = InterpolationPoints.multi_index_matrix(p[2], 2)
+        mi0 = _MI.multi_index_matrix(p[0], 2)
+        mi1 = _MI.multi_index_matrix(p[1], 2)
+        mi2 = _MI.multi_index_matrix(p[2], 2)
         phi = bm.tensorprod(
             bm.simplex_shape_function(bcs[2], p[2], mi2),
             bm.simplex_shape_function(bcs[1], p[1], mi1),
@@ -128,14 +128,14 @@ class HexahedronSchema(ShapedEntitySchema):
         px, py, pz = order
 
         if internal:
-            ix = InterpolationPoints.multi_index_inner(px, 2)
-            iy = InterpolationPoints.multi_index_inner(py, 2)
-            iz = InterpolationPoints.multi_index_inner(pz, 2)
+            ix = _MI.multi_index_inner(px, 2)
+            iy = _MI.multi_index_inner(py, 2)
+            iz = _MI.multi_index_inner(pz, 2)
             shape = (max(px - 1, 0), max(py - 1, 0), max(pz - 1, 0), 2)
         else:
-            ix = InterpolationPoints.multi_index_matrix(px, 2)
-            iy = InterpolationPoints.multi_index_matrix(py, 2)
-            iz = InterpolationPoints.multi_index_matrix(pz, 2)
+            ix = _MI.multi_index_matrix(px, 2)
+            iy = _MI.multi_index_matrix(py, 2)
+            iz = _MI.multi_index_matrix(pz, 2)
             shape = (px + 1, py + 1, pz + 1, 2)
         multi_index0 = bm.broadcast_to(ix[:, None, None, :], shape).reshape(-1, 2)
         multi_index1 = bm.broadcast_to(iy[None, :, None, :], shape).reshape(-1, 2)

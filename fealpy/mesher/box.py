@@ -98,8 +98,8 @@ class Box2d:
 
         cell0 = idx[:-1, :-1] # type: ignore
         cell1 = cell0 + ny + 1
-        cell2 = cell1 + 1
-        cell3 = cell0 + 1
+        cell2 = cell0 + 1
+        cell3 = cell1 + 1
         cell = bm.concat(
             (
                 bm.reshape(cell0, (-1, 1)),

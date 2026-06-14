@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import final, TYPE_CHECKING, ParamSpec
+from typing import final, Literal, TYPE_CHECKING, ParamSpec
 
 from ...backend import bm, Tensor, Index
 from ..schema.entity_schema import EntityContext
@@ -32,6 +32,15 @@ class EntityView:
     # User APIs
 
     def barycentric(self, func: Callable[[Tensor], Tensor], /, *, index: Index | None = None):
+        """Transform a function defined in cartesian coordinates to barycentric coordinates.
+
+        Parameters:
+            func (Callable): A function that takes cartesian coordinates as input and returns a tensor.
+            index (Index, optional): The index of the entities for which to compute the barycentric function.
+
+        Returns:
+            Callable: A function that takes barycentric coordinates as input and returns a tensor.
+        """
         return self.schema.barycentric(self.context(), func, index)
 
     def barycenter(self, *, index: Index | None = None) -> Tensor:
@@ -59,8 +68,8 @@ class EntityView:
 
     def error(
         self,
-        f1: Callable[[Tensor], Tensor],
-        f2: Callable[[Tensor], Tensor],
+        f1: Callable[[Tensor | tuple[Tensor, ...]], Tensor],
+        f2: Callable[[Tensor | tuple[Tensor, ...]], Tensor],
         /,
         power: float = 2.0,
         q: int = 3,
@@ -73,7 +82,7 @@ class EntityView:
         if not getattr(f2, "coordtype", None) == "barycentric":
             f2 = self.barycentric(f2, index=index)
         @barycentric
-        def integrand(bcs: tuple[Tensor, ...]) -> Tensor:
+        def integrand(bcs: Tensor | tuple[Tensor, ...]) -> Tensor:
             v1 = f1(bcs)
             v2 = f2(bcs)
             return bm.abs(v1 - v2) ** power
@@ -101,34 +110,62 @@ class EntityView:
         p: int | tuple[int, ...] = 1,
         *,
         index: Index | None = None,
-        variables: str = "u",
+        variables: Literal["b", "u", "x"] = "u",
         mi = None
     ) -> Tensor:
+        """Compute the gradient of shape functions.
+
+        Parameters:
+            bcs (Tensor or tuple of Tensor): The barycentric coordinates at which to evaluate the gradients.
+            p (int or tuple of int): The order(s) of the shape functions.
+            index (Index, optional): The index of the entities for which to compute the gradients.
+            variables (str): The coordinate system for the gradients.
+                "b" for barycentric, "u" for reference, "x" for cartesian.
+
+        Returns:
+            Tensor: The gradients of the shape functions evaluated at the given barycentric coordinates and order.
+        """
         if isinstance(bcs, Tensor):
             bcs = (bcs,)
         if isinstance(p, int):
             p = (p,)
-        return self.schema.grad_shape_function(
-            self.context(), bcs=bcs, p=p, index=index, variables=variables, mi=mi
-        )
+        if variables == "b":
+            return self.schema.grad_shape_function_barycentric(bcs=bcs, p=p)
+        elif variables == "u":
+            return self.schema.grad_shape_function_reference(bcs=bcs, p=p)
+        elif variables == "x":
+            return self.schema.grad_shape_function_cartesian(
+                self.context(), bcs=bcs, p=p, index=index
+            )
+        else:
+            raise ValueError(f"Unsupported variable type: {variables}")
 
     @property
     def indices(self) -> Tensor:
         return self.sector.indices
 
-    def integral(self, func: Callable[[Tensor], Tensor], /, q: int = 3, *, index: Index | None = None) -> Tensor:
+    def integral(
+        self,
+        func: Callable[[Tensor | tuple[Tensor, ...]], Tensor],
+        /,
+        q: int = 3,
+        *,
+        index: Index | None = None
+    ) -> Tensor:
         return self.schema.integral(self.context(), func, q, index)
 
-    def jacobi_matrix(self, *, index: Index | None = None) -> Tensor:
-        return self.schema.jacobi_matrix(self.context(), index)
+    def jacobi_matrix(self, bcs: Tensor | tuple[Tensor, ...], *, index: Index | None = None) -> Tensor:
+        if isinstance(bcs, Tensor):
+            bcs = (bcs,)
+        return self.schema.jacobi_matrix(self.context(), bcs, index)
 
     def measure(self, *, index: Index | None = None) -> Tensor:
         return self.schema.measure(self.context(), index)
 
-    def multi_index_matrix(self, order: int | tuple[int, ...], *, internal: bool = False):
+    def multi_index_matrix(self, order: int | tuple[int, ...], *, internal: bool = False, tensorprod: bool = True):
         if isinstance(order, int):
             order = (order,)
-        return self.schema.multi_index(order, internal=internal)
+        return self.schema.multi_index(order, internal=internal, tensorprod=tensorprod)
 
     def normal(self, *, index: Index | None = None) -> Tensor:
         return self.schema.normal(self.context(), index)
@@ -138,7 +175,7 @@ class EntityView:
             order = (order,)
         return self.schema.num_multi_index(order, internal=internal)
 
-    def quadrature_formula(self, q: int = 3, qtype: str = "legendre") -> tuple[Tensor, Tensor]:
+    def quadrature_formula(self, q: int = 3, qtype: str = "legendre"):
         return self.schema.quadrature_formula(q, qtype)
 
     def shape_function(
@@ -154,9 +191,13 @@ class EntityView:
             bcs = (bcs,)
         if isinstance(p, int):
             p = (p,)
-        return self.schema.shape_function(
-            self.context(), bcs, p, index=index, variables=variables, mi=mi
-        )
+        val = self.schema.shape_function(bcs, p)
+        if variables == "u":
+            return val
+        elif variables == "x":
+            return val[None, ...] # type: ignore[return-value]
+        else:
+            raise ValueError(f"Unsupported variable type: {variables}")
 
     def size(self) -> int:
         return self.schema.size(self.context())

@@ -1,6 +1,6 @@
 from ...backend import bm
 from ...backend import Index, Tensor
-from ..topology.ipoints import InterpolationPoints
+from ..topology.ipoints import MultiIndex as _MI
 from .entity_schema import (
     EntityContext,
     ShapedEntitySchema,
@@ -113,8 +113,8 @@ class PrismSchema(ShapedEntitySchema):
         p = _require_order_tuple(p, "prism shape_function", 2)
 
         arg = cls.multi_index_sort(cls.multi_index(p, tensorprod=False))
-        mi0 = InterpolationPoints.multi_index_matrix(p[0], 3)
-        mi1 = InterpolationPoints.multi_index_matrix(p[1], 2)
+        mi0 = _MI.multi_index_matrix(p[0], 3)
+        mi1 = _MI.multi_index_matrix(p[1], 2)
         phi = bm.tensorprod(
             bm.simplex_shape_function(bcs[1], p[1], mi1),
             bm.simplex_shape_function(bcs[0], p[0], mi0),
@@ -201,11 +201,11 @@ class PrismSchema(ShapedEntitySchema):
         p0, p1 = _require_order_tuple(order, "prism multi_index", 2)
 
         if internal:
-            mi0 = InterpolationPoints.multi_index_inner(p0, 3)
-            mi1 = InterpolationPoints.multi_index_inner(p1, 2)
+            mi0 = _MI.multi_index_inner(p0, 3)
+            mi1 = _MI.multi_index_inner(p1, 2)
         else:
-            mi0 = InterpolationPoints.multi_index_matrix(p0, 3)
-            mi1 = InterpolationPoints.multi_index_matrix(p1, 2)
+            mi0 = _MI.multi_index_matrix(p0, 3)
+            mi1 = _MI.multi_index_matrix(p1, 2)
 
         mi0 = bm.repeat(mi0[:, None, :], mi1.shape[0], axis=1)
         mi1 = bm.repeat(mi1[None, :, :], mi0.shape[0], axis=0)

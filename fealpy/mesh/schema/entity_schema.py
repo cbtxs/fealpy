@@ -66,33 +66,6 @@ class EntitySchema:
         return int(cls.multi_index(order, internal=internal).shape[0])
 
     @classmethod
-    def multi_index_sort(cls, multi_index: Tensor) -> Tensor:
-        """Return the indices to sort multi-indices according to the predefined orientation."""
-        NV = multi_index.shape[-1]
-        count = bm.sum(multi_index != 0, axis=1)
-        nonzero_row, nonzero_col = bm.nonzero(multi_index)
-        rank = bm.zeros_like(count, dtype=bm.uint64)
-        rank = bm.index_add(rank, nonzero_row, NV**nonzero_col)
-        arg = bm.lexsort(list(multi_index.T) + [rank, count])
-        return arg
-
-    @classmethod
-    def multi_index_tensorprod(cls, broadcast_multi_index: Tensor, split_indices: tuple[int, ...] | None = None) -> Tensor:
-        from functools import reduce
-
-        if split_indices is not None:
-            mi_tuple = bm.split(broadcast_multi_index, split_indices, axis=-1)
-        else:
-            mi_tuple = (broadcast_multi_index,)
-
-        def kron_last_dim(a: Tensor, b: Tensor) -> Tensor:
-            if bm.size(a) == 0:
-                return a
-            return (a[..., :, None] * b[..., None, :]).reshape(*a.shape[:-1], -1)
-
-        return reduce(kron_last_dim, reversed(mi_tuple))
-
-    @classmethod
     def global_permutations(cls, ctx: EntityContext, tgt_name: str) -> Tensor:
         """Permutation indices from local to global."""
         raise NotImplementedError()
@@ -100,11 +73,12 @@ class EntitySchema:
     @classmethod
     def vo_to_do(cls, order: tuple[int, ...]) -> dict[tuple[int, ...], Tensor]:
         """Return the mapping from vertex orientation to DoF ordering."""
+        from ..topology.ipoints import multi_index_sort
         result: dict[tuple[int, ...], Tensor] = {}
 
         for v_o in cls.orientation:
             mi = cls.multi_index(order, internal=True, tensorprod=False)
-            d_o = cls.multi_index_sort(mi[:, v_o])
+            d_o = multi_index_sort(mi[:, v_o])
             result[tuple(v_o)] = d_o
 
         return result
@@ -117,7 +91,7 @@ class EntitySchema:
         raise NotImplementedError()
 
     @classmethod
-    def barycentric(cls, ctx: EntityContext, func: Callable[[Tensor], Tensor], index: Index | None) -> Callable[[Tensor], Tensor]:
+    def barycentric(cls, ctx: EntityContext, func: Callable[[Tensor], Tensor], index: Index | None) -> Callable[[Tensor | tuple[Tensor, ...]], Tensor]:
         """Transform functions from cartesian to barycentric coordinates."""
         raise NotImplementedError()
 
@@ -127,58 +101,89 @@ class EntitySchema:
         raise NotImplementedError()
 
     @classmethod
-    def first_fundamental_form(cls, J: Tensor) -> Tensor:
-        """First fundamental form of the entity."""
-        return bm.einsum("...km, ...kn -> ...mn", J, J)
-
-    @classmethod
     def geo_dimension(cls, ctx: EntityContext) -> int:
         """Geometric dimension of the cell."""
         raise NotImplementedError()
 
     @classmethod
-    def grad_lambda(
+    def grad_shape_function_barycentric(
         cls,
-        ctx: EntityContext,
-        index: Index | None,
-        bcs: tuple[Tensor, ...] | None = None,
-        *,
-        ref: bool = False,
+        bcs: tuple[Tensor, ...],
+        p: tuple[int, ...]
     ) -> Tensor:
-        """Gradient of lowest-order shape functions.
+        """Gradient of shape functions to barycentric coordinates.
 
-        If ref is False, return gradients with respect to physical Cartesian
-        coordinates. With bcs=None the shape is (NC, ldof, GD); with bcs set
-        the shape is (NC, NQ, ldof, GD).
+        Parameters:
+            bcs (tuple[Tensor, ...]): Barycentric coordinates of evaluation points, with shape (NQ, num_bc).
+            p (tuple[int, ...]): Polynomial degree(s) of the shape functions.
 
-        If ref is True, return gradients with respect to the reference
-        barycentric coordinates. With bcs=None the shape is (NC, ldof, num_bc);
-        with bcs set the shape is (NC, NQ, ldof, num_bc).
+        Returns:
+            Tensor: The gradient of shape functions with shape (NQ, num_shape, num_bc), where
+                NQ is the number of points, num_shape is the number of shape functions,
+                and num_bc is the number of barycentric coordinates.
         """
         raise NotImplementedError()
 
     @classmethod
-    def grad_shape_function(
+    def grad_shape_function_cartesian(
         cls,
         ctx: EntityContext,
         bcs: tuple[Tensor, ...],
         p: tuple[int, ...],
         *,
-        index: Index | None = None,
-        variables: str = "u",
-        mi: Tensor | None = None,
+        index: Index | None = None
     ) -> Tensor:
-        """Gradient of shape functions."""
+        """Gradient of shape functions to cartesian coordinates."""
+        from ..transform import piola_transform_covariant
+        grad_ref = cls.grad_shape_function_reference(bcs, p)[None, ...]
+        J = cls.jacobi_matrix(ctx, bcs, index=index)[..., None, :, :]
+        # [NC, NQ, num_shape, ref_dim], [NC, NQ, num_shape, GD, ref_dim]
+        return piola_transform_covariant(grad_ref, J)
+
+    @classmethod
+    def grad_shape_function_reference(
+        cls,
+        bcs: tuple[Tensor, ...],
+        p: tuple[int, ...]
+    ) -> Tensor:
+        """Gradient of shape functions to reference coordinates.
+
+        Parameters:
+            bcs (tuple[Tensor, ...]): Barycentric coordinates of evaluation points, with shape (NQ, num_bc).
+            p (tuple[int, ...]): Polynomial degree(s) of the shape functions.
+
+        Returns:
+            Tensor: The gradient of shape functions with shape (NQ, num_shape, ref_dim), where
+                NQ is the number of points, num_shape is the number of shape functions,
+                and ref_dim is the dimension of the reference element.
+        """
         raise NotImplementedError()
 
     @classmethod
-    def integral(cls, ctx: EntityContext, func: Callable[[Tensor], Tensor], q: int, index: Index | None) -> Tensor:
+    def integral(
+        cls,
+        ctx: EntityContext,
+        func: Callable[[Tensor | tuple[Tensor, ...]], Tensor],
+        q: int, index: Index | None
+    ) -> Tensor:
         """Integral of a barycentric function."""
         raise NotImplementedError()
 
     @classmethod
     def jacobi_matrix(cls, ctx: EntityContext, bcs: tuple[Tensor, ...], index: Index | None) -> Tensor:
-        """Jacobi matrix of the transformation from reference to physical element."""
+        """Jacobi matrix of the transformation from reference to physical element.
+
+        Parameters:
+            ctx (EntityContext): The entity context containing the mesh block and sector information.
+            bcs (tuple[Tensor, ...]): Barycentric coordinates of evaluation points, with shape (NQ, num_bc).
+            index (Index | None): The index of the entity in the sector, or None for all entities.
+
+        Returns:
+            Tensor: The Jacobi matrix with shape (NC, NQ, GD, ref_dim), where
+                NC is the number of cells, NQ is the number of points,
+                GD is the geometric dimension, and ref_dim is the dimension of the
+                reference element.
+        """
         raise NotImplementedError()
 
     @classmethod
@@ -197,27 +202,13 @@ class EntitySchema:
         raise NotImplementedError()
 
     @classmethod
-    def shape_function(
-        cls,
-        ctx: EntityContext,
-        bcs: tuple[Tensor, ...],
-        p: tuple[int, ...],
-        *,
-        index: Index | None = None,
-        variables: str = "u",
-        mi: Tensor | None = None,
-    ) -> Tensor:
+    def shape_function(cls, bcs: tuple[Tensor, ...], p: tuple[int, ...]) -> Tensor:
         """Shape functions."""
         raise NotImplementedError()
 
     @classmethod
     def tangent(cls, ctx: EntityContext, index: Index | None) -> Tensor:
         """Compute the tangent vector of the entity."""
-        raise NotImplementedError()
-
-    @classmethod
-    def transform(cls, ctx: EntityContext, func: Callable[P, Tensor], kind: str = "value") -> Callable[P, Tensor]:
-        """Transform functions from reference to physical element."""
         raise NotImplementedError()
 
 
@@ -263,7 +254,7 @@ class ShapedEntitySchema(EntitySchema):
         return ctx.sector.indices.shape[0]
 
     @classmethod
-    def global_permutations(cls, ctx: EntityContext, tgt_name: str) -> Tensor:
+    def global_permutations(cls, ctx: EntityContext, tgt_name: EntityShape) -> Tensor:
         """Permutation indices from local to global."""
         from .utils import argpermute
         cell_indices = ctx.sector.indices
@@ -307,13 +298,6 @@ class ShapedEntitySchema(EntitySchema):
         values = func(bcs)
 
         return bm.einsum("cq..., q -> c...", values, ws)
-
-
-def _make_sure_interval_bcs(bcs: tuple[Tensor, ...]) -> tuple[Tensor, ...]:
-    return tuple(
-        bc if bc.ndim >= 2 else bm.stack((bc, 1. - bc), dim=-1)
-        for bc in bcs
-    )
 
 
 @overload

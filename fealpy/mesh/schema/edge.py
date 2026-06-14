@@ -1,6 +1,6 @@
 from ...backend import bm
 from ...backend import Index, Tensor
-from ..topology.ipoints import InterpolationPoints
+from ..topology.ipoints import MultiIndex as _MI
 from .entity_schema import (
     EntityContext,
     ShapedEntitySchema,
@@ -35,20 +35,19 @@ class EdgeSchema(ShapedEntitySchema):
 
     @classmethod
     def multi_index(cls, order: tuple[int, ...], *, internal: bool = False, tensorprod: bool = True) -> Tensor:
-        order = _require_order_tuple(order, "edge multi_index", 1)[0]
+        p = _require_order_tuple(order, "edge multi_index", 1)[0]
         if internal:
-            mi = InterpolationPoints.multi_index_inner(order, 2)
+            mi = _MI.multi_index_inner(p, 2)
         else:
-            mi = InterpolationPoints.multi_index_matrix(order, 2)
-        arg = cls.multi_index_sort(mi)
-        return mi[arg]
+            mi = _MI.multi_index_matrix(p, 2)
+        return mi
 
     @classmethod
     def num_multi_index(cls, order: tuple[int, ...], *, internal: bool = False) -> int:
-        order = _require_order_tuple(order, "edge num_multi_index", 1)[0]
+        p = _require_order_tuple(order, "edge num_multi_index", 1)[0]
         if internal:
-            return order - 1 if order > 1 else 0
-        return order + 1
+            return p - 1 if p > 1 else 0
+        return p + 1
 
     @classmethod
     def barycenter(cls, ctx: EntityContext, index: Index | None) -> Tensor:

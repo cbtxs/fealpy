@@ -1,6 +1,6 @@
 from ...backend import bm
 from ...backend import Index, Tensor
-from ..topology.ipoints import InterpolationPoints
+from ..topology.ipoints import MultiIndex as _MI
 from .entity_schema import (
     EntityContext,
     ShapedEntitySchema,
@@ -191,7 +191,7 @@ class PyramidSchema(ShapedEntitySchema):
     @classmethod
     def multi_index(cls, order: tuple[int, ...], *, internal: bool = False, tensorprod: bool = True) -> Tensor:
         p = _require_order_tuple(order, "pyramid multi_index", 1)[0]
-        return InterpolationPoints.multi_index_matrix(p, 5) # TODO: not correct
+        return _MI.multi_index_matrix(p, 5) # TODO: not correct
 
     @classmethod
     def quadrature_formula(cls, q: int, qtype: str | None = "legendre", device=None):

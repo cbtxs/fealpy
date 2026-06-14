@@ -1,6 +1,6 @@
 from ...backend import bm
 from ...backend import Index, Tensor
-from ..topology.ipoints import InterpolationPoints
+from ..topology.ipoints import MultiIndex as _MI
 from .entity_schema import (
     EntityContext,
     ShapedEntitySchema,
@@ -145,9 +145,9 @@ class TetrahedronSchema(ShapedEntitySchema):
     def multi_index(cls, order: tuple[int, ...], *, internal: bool = False, tensorprod: bool = True) -> Tensor:
         order = _require_order_tuple(order, "tetrahedron multi_index", 1)[0]
         if internal:
-            mi = InterpolationPoints.multi_index_inner(order, 4)
+            mi = _MI.multi_index_inner(order, 4)
         else:
-            mi = InterpolationPoints.multi_index_matrix(order, 4)
+            mi = _MI.multi_index_matrix(order, 4)
         arg = cls.multi_index_sort(mi)
         return mi[arg]
 

@@ -1,6 +1,6 @@
 from ...backend import bm
 from ...backend import Index, Tensor
-from ..topology.ipoints import InterpolationPoints
+from ..topology.ipoints import MultiIndex as _MI, multi_index_tensorprod
 from .entity_schema import (
     EntityContext,
     ShapedEntitySchema,
@@ -26,20 +26,18 @@ class QuadrilateralSchema(ShapedEntitySchema):
         px, py = _require_order_tuple(order, "quadrilateral multi_index", 2)
 
         if internal:
-            ix = InterpolationPoints.multi_index_inner(px, 2)
-            iy = InterpolationPoints.multi_index_inner(py, 2)
-            shape = (max(px - 1, 0), max(py - 1, 0), 2)
+            ix = _MI.multi_index_inner(px, 2)
+            iy = _MI.multi_index_inner(py, 2)
         else:
-            ix = InterpolationPoints.multi_index_matrix(px, 2)
-            iy = InterpolationPoints.multi_index_matrix(py, 2)
-            shape = (px + 1, py + 1, 2)
-        multi_index0 = bm.broadcast_to(ix[:, None], shape).reshape(-1, 2)
-        multi_index1 = bm.broadcast_to(iy[None, :], shape).reshape(-1, 2)
-        mi = bm.concatenate([multi_index0, multi_index1], axis=1)
-        arg = cls.multi_index_sort(mi)
-        mi = mi[arg]
+            ix = _MI.multi_index_matrix(px, 2)
+            iy = _MI.multi_index_matrix(py, 2)
+
+        shape = (iy.shape[0], ix.shape[0], 2)
+        multi_index0 = bm.broadcast_to(ix[None, :, :], shape).reshape(-1, 2)
+        multi_index1 = bm.broadcast_to(iy[:, None, :], shape).reshape(-1, 2)
+        mi = bm.concat([multi_index0, multi_index1], axis=1)
         if tensorprod:
-            return cls.multi_index_tensorprod(mi, (2,))
+            return multi_index_tensorprod(mi, (2,))
         return mi
 
     @classmethod
@@ -61,68 +59,66 @@ class QuadrilateralSchema(ShapedEntitySchema):
     @classmethod
     def shape_function(
         cls,
-        ctx: EntityContext,
         bcs: tuple[Tensor, ...],
-        p: tuple[int, ...],
-        *,
-        index: Index | None = None,
-        variables: str = "u",
-        mi=None,
+        p: tuple[int, ...]
     ) -> Tensor:
         bcs = _require_bcs_tuple(bcs, "quadrilateral shape_function", 2)
         p = _require_order_tuple(p, "quadrilateral shape_function", 2)
 
-        arg = cls.multi_index_sort(cls.multi_index(p, tensorprod=False))
-        mi0 = InterpolationPoints.multi_index_matrix(p[0], 2)
-        mi1 = InterpolationPoints.multi_index_matrix(p[1], 2)
+        mi0 = _MI.multi_index_matrix(p[0], 2)
+        mi1 = _MI.multi_index_matrix(p[1], 2)
 
-        phi = bm.tensorprod(
+        return bm.tensorprod(
             bm.simplex_shape_function(bcs[1], p[1], mi1),
             bm.simplex_shape_function(bcs[0], p[0], mi0),
-        )[..., arg]
-        if variables == "u":
-            return phi
-        if variables == "x":
-            return phi[None, ...]
-        raise ValueError(f"Unsupported variables: {variables!r}")
+        )
 
     @classmethod
-    def grad_shape_function(
+    def grad_shape_function_barycentric(
         cls,
-        ctx: EntityContext,
         bcs: tuple[Tensor, ...],
-        p: tuple[int, ...],
-        *,
-        index: Index | None = None,
-        variables: str = "u",
-        mi=None,
+        p: tuple[int, ...]
     ) -> Tensor:
         bcs = _require_bcs_tuple(bcs, "quadrilateral grad_shape_function", 2)
         p = _require_order_tuple(p, "quadrilateral grad_shape_function", 2)
 
-        arg = cls.multi_index_sort(cls.multi_index(p, tensorprod=False))
-        mi0 = InterpolationPoints.multi_index_matrix(p[0], 2)
-        mi1 = InterpolationPoints.multi_index_matrix(p[1], 2)
+        mi0 = _MI.multi_index_matrix(p[0], 2)
+        mi1 = _MI.multi_index_matrix(p[1], 2)
         phi0 = bm.simplex_shape_function(bcs[0], p=p[0], mi=mi0)
         phi1 = bm.simplex_shape_function(bcs[1], p=p[1], mi=mi1)
         R0 = bm.simplex_grad_shape_function(bcs[0], p=p[0], mi=mi0)
         R1 = bm.simplex_grad_shape_function(bcs[1], p=p[1], mi=mi1)
-        ldof = cls.num_multi_index(p)
+        num_shape_functions = cls.num_multi_index(p)
 
-        gphi0 = bm.einsum('im, jng -> ijmng', phi1, R0).reshape(-1, ldof, 2)
-        gphi1 = bm.einsum('img, jn -> ijmng', R1, phi0).reshape(-1, ldof, 2)
-        gphi = (gphi0 + gphi1)[..., arg, :]
+        gphi0 = bm.einsum('im, jng -> ijmng', phi1, R0).reshape(-1, num_shape_functions, 2)
+        gphi1 = bm.einsum('img, jn -> ijmng', R1, phi0).reshape(-1, num_shape_functions, 2)
+        gphi = gphi0[..., None, :] + gphi1[..., None, :]
+        return bm.reshape(gphi, (-1, num_shape_functions, 4))
 
-        if variables == "u":
-            return gphi
-        if variables == "x":
-            J = cls.jacobi_matrix(ctx, bcs, index=index)           # (NC, NQ, GD, GD)
-            G = cls.first_fundamental_form(J)                      # (NC, NQ, GD, GD)
-            G = bm.linalg.inv(G)
-            gphi = bm.einsum('cqkm, cqmn, qln -> cqlk', J, G, gphi) # (NC, NQ, ldof, GD)
+    @classmethod
+    def grad_shape_function_reference(
+        cls,
+        bcs: tuple[Tensor, ...],
+        p: tuple[int, ...]
+    ) -> Tensor:
+        bcs = _require_bcs_tuple(bcs, "quadrilateral grad_shape_function_reference", 2)
+        p = _require_order_tuple(p, "quadrilateral grad_shape_function_reference", 2)
 
-            return gphi
-        raise ValueError(f"Unsupported variables: {variables!r}")
+        Dlambda = bm.array([-1, 1], dtype=bm.float64, device=bm.get_device(bcs[0]))
+        mi0 = _MI.multi_index_matrix(p[0], 2)
+        mi1 = _MI.multi_index_matrix(p[1], 2)
+        phi0 = bm.simplex_shape_function(bcs[0], p=p[0], mi=mi0)
+        phi1 = bm.simplex_shape_function(bcs[1], p=p[1], mi=mi1)
+        R0 = bm.simplex_grad_shape_function(bcs[0], p=p[0], mi=mi0)
+        R1 = bm.simplex_grad_shape_function(bcs[1], p=p[1], mi=mi1)
+        dphi0 = bm.einsum('...ij, j->...i', R0, Dlambda)
+        dphi1 = bm.einsum('...ij, j->...i', R1, Dlambda)
+
+        num_shape_functions = phi0.shape[-1]**2
+
+        gphi0 = bm.einsum('im, jn -> ijmn', dphi0, phi1).reshape(-1, num_shape_functions, 1)
+        gphi1 = bm.einsum('im, jn -> ijmn', phi0, dphi1).reshape(-1, num_shape_functions, 1)
+        return bm.concat((gphi0, gphi1), axis=-1)
 
     @classmethod
     def quadrature_formula(cls, q: int, qtype: str | None = "legendre", device=None):
@@ -202,8 +198,8 @@ class QuadrilateralSchema(ShapedEntitySchema):
         bcs = _require_bcs_tuple(bcs, "quadrilateral jacobi_matrix", 2)
         node = ctx.block.positions
         cell = ctx.sector.indices
-        gphi = cls.grad_shape_function(ctx, bcs, p=(1, 1), variables='u', index=index) # (NQ, bc, GD)
-        J = bm.einsum('cim, qin -> cqmn', node[cell], gphi) # (NC, NQ, GD, GD)
+        gphi = cls.grad_shape_function_reference(bcs, p=(1, 1)) # (NQ, num_shape, ref_dim)
+        J = bm.einsum('cim, qin -> cqmn', node[cell], gphi) # (NC, NQ, GD, ref_dim)
 
         return J
 

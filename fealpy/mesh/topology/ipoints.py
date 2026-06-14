@@ -7,10 +7,21 @@ from ...backend import bm
 from ...backend import Tensor, dtype, device
 
 if TYPE_CHECKING:
+    from ..schema import EntitySchema
     from ..view import Mesh
 
 
-class InterpolationPoints:
+__all__ = [
+    "MultiIndex",
+    "multi_index_sort",
+    "multi_index_tensorprod",
+    "to_ipoint",
+    "to_ipoint_permutation",
+    "ipoints",
+]
+
+
+class MultiIndex:
     @classmethod
     def multi_index_matrix(cls, p: int, n: int, *, dtype: dtype | None = None) -> Tensor:
         """Generate the multi-index matrix for interpolation points of
@@ -50,6 +61,40 @@ class InterpolationPoints:
                 dtype = bm.int32
             return bm.zeros((0, n), dtype=dtype)
         return cls.multi_index_matrix(p - n, n, dtype=dtype) + 1
+
+
+def multi_index_sort(multi_index: Tensor, /) -> Tensor:
+    """Return the indices to sort multi-indices according to the predefined orientation."""
+    NV = multi_index.shape[-1]
+    count = bm.sum(multi_index != 0, axis=1)
+    nonzero_row, nonzero_col = bm.nonzero(multi_index)
+    rank = bm.zeros_like(count, dtype=bm.uint64)
+    rank = bm.index_add(rank, nonzero_row, NV**nonzero_col) # type: ignore[call-overload]
+    arg = bm.lexsort(tuple(multi_index.T) + (rank, count)) # type: ignore[call-overload]
+    return arg
+
+
+def multi_index_tensorprod(
+    broadcast_multi_index: Tensor,
+    split_indices: tuple[int, ...] | None = None
+) -> Tensor:
+    """Compute the tensor product between split multi-indices.
+
+    Do nothing if split_indices is None, as no other operand is provided to
+    perform the tensor product with."""
+    from functools import reduce
+
+    if split_indices is not None:
+        mi_tuple = bm.split(broadcast_multi_index, split_indices, axis=-1)
+    else:
+        return broadcast_multi_index
+
+    def kron_last_dim(a: Tensor, b: Tensor) -> Tensor:
+        if bm.size(a) == 0:
+            return a
+        return (a[..., :, None] * b[..., None, :]).reshape(*a.shape[:-1], -1) # type: ignore[return-value]
+
+    return reduce(kron_last_dim, reversed(mi_tuple))
 
 
 def to_ipoint(mesh: "Mesh", name: str, order: int) -> Tensor: # [num_entities, num_ip]
@@ -122,7 +167,27 @@ def to_ipoint(mesh: "Mesh", name: str, order: int) -> Tensor: # [num_entities, n
         if shutdown:
             break
 
-    return bm.concat(collected, axis=1)
+    result = bm.concat(collected, axis=1)
+
+    permutation = to_ipoint_permutation(tgt_entity.schema, (order,))
+    if permutation is not None:
+        permutation = bm.device_put(permutation, result.device)
+        result = result[:, permutation]
+    return result
+
+
+def to_ipoint_permutation(schema: type["EntitySchema"], order: tuple[int, ...]) -> Tensor | None:
+    """Column permutation from topological ipoint order to basis order.
+
+    ``to_ipoint`` builds interpolation-point indices in topological order
+    (lower-dimensional sub-entities first). Schemas whose basis functions
+    use a different local ordering may override this hook to return the
+    column permutation that aligns the mapping with ``multi_index`` and
+    shape-function order.
+    """
+    mi = schema.multi_index(order, tensorprod=False)
+    natural_to_topological = multi_index_sort(mi)
+    return bm.argsort(natural_to_topological)
 
 
 def ipoints(mesh: "Mesh", order: int | tuple[int, ...], names: Iterable[str]) -> Tensor:
