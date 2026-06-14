@@ -1,3 +1,5 @@
+from typing import TYPE_CHECKING
+
 from ...backend import bm
 from ...backend import Index, Tensor
 from .entity_schema import (
@@ -6,6 +8,9 @@ from .entity_schema import (
     _require_bcs_tuple,
     _require_order_tuple,
 )
+
+if TYPE_CHECKING:
+    from ...quadrature import Quadrature
 
 __all__ = ["NodeSchema", "PointQuadrature"]
 
@@ -52,22 +57,13 @@ class NodeSchema(ShapedEntitySchema):
     def shape_function(
         cls,
         bcs: tuple[Tensor, ...],
-        p: tuple[int, ...],
-        *,
-        index: Index | None = None,
-        variables: str = "u",
-        mi=None,
+        p: tuple[int, ...]
     ) -> Tensor:
         bcs = _require_bcs_tuple(bcs, "node shape_function", 1)
         p = _require_order_tuple(p, "node shape_function", 1)
         if bcs[0].shape[-1] != 1:
             raise ValueError(f"node shape_function expects last dimension 1, got {bcs[0].shape[-1]}")
-        phi = bm.ones((bcs[0].shape[0], 1), dtype=bcs[0].dtype)
-        if variables == "u":
-            return phi
-        if variables == "x":
-            return phi[None, ...]
-        raise ValueError(f"Unsupported variables: {variables!r}")
+        return bm.ones((bcs[0].shape[0], 1), dtype=bcs[0].dtype)
 
     @classmethod
     def grad_shape_function(
@@ -123,7 +119,9 @@ class NodeSchema(ShapedEntitySchema):
         return bm.broadcast_to(grad[:, None, :, :], (node.shape[0], nq, 1, dim))
 
     @classmethod
-    def quadrature_formula(cls, q: int = None, qtype: str | None = None) -> PointQuadrature:
+    def quadrature_formula(cls, q: int, qtype: str | None = "legendre", device=None) -> "Quadrature":
+        if qtype not in (None, "legendre"):
+            raise ValueError(f"unsupported node quadrature type: {qtype!r}")
         if q < 1:
             raise ValueError(f"node quadrature order must be positive, got {q}")
         return PointQuadrature()
@@ -150,6 +148,8 @@ class NodeSchema(ShapedEntitySchema):
     def multi_index(cls, order: tuple[int, ...], *, internal: bool = False, tensorprod: bool = True) -> Tensor:
         order = _require_order_tuple(order, "node multi_index", 1)[0]
 
-        if internal:
-            return bm.asarray([[order]], dtype=bm.int32)
-        return bm.asarray([[order]], dtype=bm.int32)
+        mi = bm.asarray([[order]], dtype=bm.int32)
+        if tensorprod:
+            from ..topology.ipoints import multi_index_tensorprod
+            return multi_index_tensorprod(mi)
+        return mi

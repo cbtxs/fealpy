@@ -1,3 +1,5 @@
+from typing import TYPE_CHECKING
+
 from ...backend import bm
 from ...backend import Index, Tensor
 from ..topology.ipoints import MultiIndex as _MI
@@ -7,6 +9,9 @@ from .entity_schema import (
     _require_bcs_tuple,
     _require_order_tuple,
 )
+
+if TYPE_CHECKING:
+    from ...quadrature import Quadrature
 
 __all__ = ["TriangleSchema"]
 
@@ -39,8 +44,10 @@ class TriangleSchema(ShapedEntitySchema):
             mi = _MI.multi_index_inner(p, 3)
         else:
             mi = _MI.multi_index_matrix(p, 3)
-        arg = cls.multi_index_sort(mi)
-        return mi[arg]
+        if tensorprod:
+            from ..topology.ipoints import multi_index_tensorprod
+            return multi_index_tensorprod(mi)
+        return mi
 
     @classmethod
     def barycenter(cls, ctx: EntityContext, index: Index | None) -> Tensor:
@@ -51,25 +58,15 @@ class TriangleSchema(ShapedEntitySchema):
     @classmethod
     def shape_function(
         cls,
-        ctx: EntityContext,
         bcs: tuple[Tensor, ...],
-        p: tuple[int, ...],
-        *,
-        index: Index | None = None,
-        variables: str = "u",
-        mi=None,
+        p: tuple[int, ...]
     ) -> Tensor:
         bcs = _require_bcs_tuple(bcs, "triangle shape_function", 1)
         p = _require_order_tuple(p, "triangle shape_function", 1)
         if bcs[0].shape[-1] != 3:
             raise ValueError(f"triangle shape_function expects last dimension 3, got {bcs[0].shape[-1]}")
-        mi = cls.multi_index(p) if mi is None else mi
-        phi = bm.simplex_shape_function(bcs[0], p[0], mi)
-        if variables == "u":
-            return phi
-        if variables == "x":
-            return phi[None, ...]
-        raise ValueError(f"Unsupported variables: {variables!r}")
+        mi = cls.multi_index(p)
+        return bm.simplex_shape_function(bcs[0], p[0], mi)
 
     @classmethod
     def grad_shape_function(
@@ -135,7 +132,7 @@ class TriangleSchema(ShapedEntitySchema):
         return bm.broadcast_to(grad[:, None, :, :], (tri.shape[0], nq, grad.shape[1], grad.shape[2]))
 
     @classmethod
-    def quadrature_formula(cls, q: int, qtype: str = "legendre", device=None):
+    def quadrature_formula(cls, q: int, qtype: str | None = "legendre", device=None) -> "Quadrature":
         if qtype != "legendre":
             raise ValueError(f"unsupported quadrature type: {qtype}")
         if q > 9:

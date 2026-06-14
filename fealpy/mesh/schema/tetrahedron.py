@@ -1,3 +1,5 @@
+from typing import TYPE_CHECKING
+
 from ...backend import bm
 from ...backend import Index, Tensor
 from ..topology.ipoints import MultiIndex as _MI
@@ -7,6 +9,9 @@ from .entity_schema import (
     _require_bcs_tuple,
     _require_order_tuple,
 )
+
+if TYPE_CHECKING:
+    from ...quadrature import Quadrature
 
 __all__ = ["TetrahedronSchema"]
 
@@ -32,24 +37,14 @@ class TetrahedronSchema(ShapedEntitySchema):
     @classmethod
     def shape_function(
         cls,
-        ctx: EntityContext,
         bcs: tuple[Tensor, ...],
-        p: tuple[int, ...],
-        *,
-        index: Index | None = None,
-        variables: str = "u",
-        mi=None,
+        p: tuple[int, ...]
     ) -> Tensor:
         bcs = _require_bcs_tuple(bcs, "tetrahedron shape_function", 1)
         p = _require_order_tuple(p, "tetrahedron shape_function", 1)
         if bcs[0].shape[-1] != 4:
             raise ValueError(f"tetrahedron shape_function expects last dimension 4, got {bcs[0].shape[-1]}")
-        phi = bm.simplex_shape_function(bcs[0], p[0], mi)
-        if variables == "u":
-            return phi
-        if variables == "x":
-            return phi[None, ...]
-        raise ValueError(f"Unsupported variables: {variables!r}")
+        return bm.simplex_shape_function(bcs[0], p[0])
 
     @classmethod
     def grad_shape_function(
@@ -148,8 +143,10 @@ class TetrahedronSchema(ShapedEntitySchema):
             mi = _MI.multi_index_inner(order, 4)
         else:
             mi = _MI.multi_index_matrix(order, 4)
-        arg = cls.multi_index_sort(mi)
-        return mi[arg]
+        if tensorprod:
+            from ..topology.ipoints import multi_index_tensorprod
+            return multi_index_tensorprod(mi)
+        return mi
 
     @classmethod
     def normal(cls, ctx: EntityContext, index: Index | None) -> Tensor:
@@ -163,7 +160,7 @@ class TetrahedronSchema(ShapedEntitySchema):
         return bm.zeros((tet.shape[0], 0, 3), dtype=ctx.block.positions.dtype)
 
     @classmethod
-    def quadrature_formula(cls, q: int, qtype: str | None = "legendre", device=None):
+    def quadrature_formula(cls, q: int, qtype: str | None = "legendre", device=None) -> "Quadrature":
         if qtype not in (None, "legendre"):
             raise ValueError(f"unsupported tetrahedron quadrature type: {qtype!r}")
         if q > 7:

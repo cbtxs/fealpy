@@ -1,3 +1,5 @@
+from typing import TYPE_CHECKING
+
 from ...backend import bm
 from ...backend import Index, Tensor
 from ..topology.ipoints import MultiIndex as _MI
@@ -7,6 +9,9 @@ from .entity_schema import (
     _require_bcs_tuple,
     _require_order_tuple,
 )
+
+if TYPE_CHECKING:
+    from ...quadrature import Quadrature
 
 __all__ = ["HexahedronSchema"]
 
@@ -56,18 +61,12 @@ class HexahedronSchema(ShapedEntitySchema):
     @classmethod
     def shape_function(
         cls,
-        ctx: EntityContext,
         bcs: tuple[Tensor, ...],
-        p: tuple[int, ...],
-        *,
-        index: Index | None = None,
-        variables: str = "u",
-        mi=None,
+        p: tuple[int, ...]
     ) -> Tensor:
         bcs = _require_bcs_tuple(bcs, "hexahedron shape_function", 3)
         p = _require_order_tuple(p, "hexahedron shape_function", 3)
 
-        arg = cls.multi_index_sort(cls.multi_index(p, tensorprod=False))
         mi0 = _MI.multi_index_matrix(p[0], 2)
         mi1 = _MI.multi_index_matrix(p[1], 2)
         mi2 = _MI.multi_index_matrix(p[2], 2)
@@ -75,12 +74,8 @@ class HexahedronSchema(ShapedEntitySchema):
             bm.simplex_shape_function(bcs[2], p[2], mi2),
             bm.simplex_shape_function(bcs[1], p[1], mi1),
             bm.simplex_shape_function(bcs[0], p[0], mi0),
-        )[..., arg]
-        if variables == "u":
-            return phi
-        if variables == "x":
-            return phi[None, ...]
-        raise ValueError(f"Unsupported variables: {variables!r}")
+        )
+        return phi
 
     @classmethod
     def grad_shape_function(
@@ -131,20 +126,18 @@ class HexahedronSchema(ShapedEntitySchema):
             ix = _MI.multi_index_inner(px, 2)
             iy = _MI.multi_index_inner(py, 2)
             iz = _MI.multi_index_inner(pz, 2)
-            shape = (max(px - 1, 0), max(py - 1, 0), max(pz - 1, 0), 2)
         else:
             ix = _MI.multi_index_matrix(px, 2)
             iy = _MI.multi_index_matrix(py, 2)
             iz = _MI.multi_index_matrix(pz, 2)
-            shape = (px + 1, py + 1, pz + 1, 2)
-        multi_index0 = bm.broadcast_to(ix[:, None, None, :], shape).reshape(-1, 2)
+        shape = (iz.shape[0], iy.shape[0], ix.shape[0], 2)
+        multi_index0 = bm.broadcast_to(ix[None, None, :, :], shape).reshape(-1, 2)
         multi_index1 = bm.broadcast_to(iy[None, :, None, :], shape).reshape(-1, 2)
-        multi_index2 = bm.broadcast_to(iz[None, None, :, :], shape).reshape(-1, 2)
+        multi_index2 = bm.broadcast_to(iz[:, None, None, :], shape).reshape(-1, 2)
         mi = bm.concat([multi_index0, multi_index1, multi_index2], axis=-1)
-        arg = cls.multi_index_sort(mi)
-        mi = mi[arg]
         if tensorprod:
-            return cls.multi_index_tensorprod(mi, (2, 4))
+            from ..topology.ipoints import multi_index_tensorprod
+            return multi_index_tensorprod(mi, (2, 4))
         return mi
 
     @classmethod
@@ -249,7 +242,7 @@ class HexahedronSchema(ShapedEntitySchema):
         return bm.zeros((cell.shape[0], 0, 3), dtype=ctx.block.positions.dtype)
 
     @classmethod
-    def quadrature_formula(cls, q: int, qtype: str | None = "legendre", device=None):
+    def quadrature_formula(cls, q: int, qtype: str | None = "legendre", device=None) -> "Quadrature":
         if qtype not in (None, "legendre"):
             raise ValueError(f"unsupported hexahedron quadrature type: {qtype!r}")
         from fealpy.quadrature import GaussLegendreQuadrature, TensorProductQuadrature

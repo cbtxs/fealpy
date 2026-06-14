@@ -1,12 +1,17 @@
+from typing import TYPE_CHECKING
+
 from ...backend import bm
 from ...backend import Index, Tensor
-from ..topology.ipoints import MultiIndex as _MI, multi_index_tensorprod
+from ..topology.ipoints import MultiIndex as _MI
 from .entity_schema import (
     EntityContext,
     ShapedEntitySchema,
     _require_bcs_tuple,
     _require_order_tuple,
 )
+
+if TYPE_CHECKING:
+    from ...quadrature import Quadrature
 
 __all__ = ["QuadrilateralSchema"]
 
@@ -37,6 +42,7 @@ class QuadrilateralSchema(ShapedEntitySchema):
         multi_index1 = bm.broadcast_to(iy[:, None, :], shape).reshape(-1, 2)
         mi = bm.concat([multi_index0, multi_index1], axis=1)
         if tensorprod:
+            from ..topology.ipoints import multi_index_tensorprod
             return multi_index_tensorprod(mi, (2,))
         return mi
 
@@ -121,7 +127,7 @@ class QuadrilateralSchema(ShapedEntitySchema):
         return bm.concat((gphi0, gphi1), axis=-1)
 
     @classmethod
-    def quadrature_formula(cls, q: int, qtype: str | None = "legendre", device=None):
+    def quadrature_formula(cls, q: int, qtype: str | None = "legendre", device=None) -> "Quadrature":
         from ...quadrature import GaussLegendreQuadrature, TensorProductQuadrature
         qf = GaussLegendreQuadrature(q, device=device)
         return TensorProductQuadrature((qf, qf))
@@ -192,8 +198,8 @@ class QuadrilateralSchema(ShapedEntitySchema):
     def jacobi_matrix(
         cls,
         ctx: EntityContext,
-        bcs: tuple[Tensor, ...] | None = None,
-        index: Index | None = None,
+        bcs: tuple[Tensor, ...],
+        index: Index | None,
     ) -> Tensor:
         bcs = _require_bcs_tuple(bcs, "quadrilateral jacobi_matrix", 2)
         node = ctx.block.positions

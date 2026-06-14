@@ -1,3 +1,5 @@
+from typing import TYPE_CHECKING
+
 from ...backend import bm
 from ...backend import Index, Tensor
 from ..topology.ipoints import MultiIndex as _MI
@@ -7,6 +9,9 @@ from .entity_schema import (
     _require_bcs_tuple,
     _require_order_tuple,
 )
+
+if TYPE_CHECKING:
+    from ...quadrature import Quadrature
 
 __all__ = ["EdgeSchema"]
 
@@ -40,6 +45,9 @@ class EdgeSchema(ShapedEntitySchema):
             mi = _MI.multi_index_inner(p, 2)
         else:
             mi = _MI.multi_index_matrix(p, 2)
+        if tensorprod:
+            from ..topology.ipoints import multi_index_tensorprod
+            return multi_index_tensorprod(mi)
         return mi
 
     @classmethod
@@ -67,22 +75,13 @@ class EdgeSchema(ShapedEntitySchema):
     def shape_function(
         cls,
         bcs: tuple[Tensor, ...],
-        p: tuple[int, ...],
-        *,
-        index: Index | None = None,
-        variables: str = "u",
-        mi=None,
+        p: tuple[int, ...]
     ) -> Tensor:
         bcs = _require_bcs_tuple(bcs, "edge shape_function", 1)
         p = _require_order_tuple(p, "edge shape_function", 1)
         if bcs[0].shape[-1] != 2:
             raise ValueError(f"edge shape_function expects last dimension 2, got {bcs[0].shape[-1]}")
-        phi = bm.simplex_shape_function(bcs[0], p[0], mi)
-        if variables == "u":
-            return phi
-        if variables == "x":
-            return phi[None, ...]
-        raise ValueError(f"Unsupported variables: {variables!r}")
+        return bm.simplex_shape_function(bcs[0], p[0])
 
     @classmethod
     def grad_shape_function(
@@ -138,7 +137,7 @@ class EdgeSchema(ShapedEntitySchema):
         return bm.broadcast_to(grad[:, None, :, :], (nc, nq, grad.shape[1], grad.shape[2]))
 
     @classmethod
-    def quadrature_formula(cls, q: int, qtype: str | None = "legendre", device=None):
+    def quadrature_formula(cls, q: int, qtype: str | None = "legendre", device=None) -> "Quadrature":
         if qtype not in (None, "legendre"):
             raise ValueError(f"unsupported edge quadrature type: {qtype!r}")
         from fealpy.quadrature import GaussLegendreQuadrature

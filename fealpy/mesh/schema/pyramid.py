@@ -1,3 +1,5 @@
+from typing import TYPE_CHECKING
+
 from ...backend import bm
 from ...backend import Index, Tensor
 from ..topology.ipoints import MultiIndex as _MI
@@ -7,6 +9,9 @@ from .entity_schema import (
     _require_bcs_tuple,
     _require_order_tuple,
 )
+
+if TYPE_CHECKING:
+    from ...quadrature import Quadrature
 
 __all__ = ["PyramidSchema"]
 
@@ -91,24 +96,14 @@ class PyramidSchema(ShapedEntitySchema):
     @classmethod
     def shape_function(
         cls,
-        ctx: EntityContext,
         bcs: tuple[Tensor, ...],
-        p: tuple[int, ...],
-        *,
-        index: Index | None = None,
-        variables: str = "u",
-        mi: Tensor | None = None,
+        p: tuple[int, ...]
     ) -> Tensor:
         bcs = _require_bcs_tuple(bcs, "pyramid shape_function", 3)
         p = _require_order_tuple(p, "pyramid shape_function", 1)
         if p[0] != 1:
             raise NotImplementedError("pyramid shape_function currently only supports p=1")
-        phi = cls.geometry_shape_function(bcs)
-        if variables == "u":
-            return phi
-        if variables == "x":
-            return phi[None, ...]
-        raise ValueError(f"Unsupported variables: {variables!r}")
+        return cls.geometry_shape_function(bcs)
 
     @classmethod
     def grad_shape_function(
@@ -136,7 +131,7 @@ class PyramidSchema(ShapedEntitySchema):
     def jacobi_matrix(
         cls,
         ctx: EntityContext,
-        bcs: tuple[Tensor, Tensor, Tensor],
+        bcs: tuple[Tensor, ...],
         index: Index | None
     ) -> Tensor:
         pyramid = ctx.sector.indices if index is None else ctx.sector.indices[index]
@@ -191,10 +186,17 @@ class PyramidSchema(ShapedEntitySchema):
     @classmethod
     def multi_index(cls, order: tuple[int, ...], *, internal: bool = False, tensorprod: bool = True) -> Tensor:
         p = _require_order_tuple(order, "pyramid multi_index", 1)[0]
-        return _MI.multi_index_matrix(p, 5) # TODO: not correct
+        if internal:
+            mi = _MI.multi_index_inner(p, 5)
+        else:
+            mi = _MI.multi_index_matrix(p, 5) # TODO: not correct
+        if tensorprod:
+            from ..topology.ipoints import multi_index_tensorprod
+            return multi_index_tensorprod(mi)
+        return mi
 
     @classmethod
-    def quadrature_formula(cls, q: int, qtype: str | None = "legendre", device=None):
+    def quadrature_formula(cls, q: int, qtype: str | None = "legendre", device=None) -> "Quadrature":
         if qtype not in (None, "legendre"):
             raise ValueError(f"unsupported pyramid quadrature type: {qtype!r}")
         from fealpy.quadrature import GaussLegendreQuadrature, TensorProductQuadrature

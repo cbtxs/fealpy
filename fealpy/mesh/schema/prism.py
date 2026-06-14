@@ -1,3 +1,5 @@
+from typing import TYPE_CHECKING
+
 from ...backend import bm
 from ...backend import Index, Tensor
 from ..topology.ipoints import MultiIndex as _MI
@@ -7,6 +9,9 @@ from .entity_schema import (
     _require_bcs_tuple,
     _require_order_tuple,
 )
+
+if TYPE_CHECKING:
+    from ...quadrature import Quadrature
 
 __all__ = ["PrismSchema"]
 
@@ -41,7 +46,7 @@ class PrismSchema(ShapedEntitySchema):
         return ctx.block.positions[prism[:, [0, 3, 1, 4, 2, 5]]]
 
     @classmethod
-    def barycenter(cls, ctx: EntityContext, index: Index | None = None) -> Tensor:
+    def barycenter(cls, ctx: EntityContext, index: Index | None) -> Tensor:
         """Compute barycenters of prism entities.
 
         Return shape: (NC, GD).
@@ -50,7 +55,7 @@ class PrismSchema(ShapedEntitySchema):
         return bm.mean(points, axis=1)
 
     @classmethod
-    def measure(cls, ctx: EntityContext, index: Index | None = None) -> Tensor:
+    def measure(cls, ctx: EntityContext, index: Index | None) -> Tensor:
         """Compute the volume of a prism.
 
         ∫_K dx = ∫_{\hat K} sqrt(det(G)) dξ, where G = J^T J.
@@ -62,21 +67,14 @@ class PrismSchema(ShapedEntitySchema):
         return 0.5 * bm.einsum("q,cq->c", ws, l)
 
     @classmethod
-    def normal(cls, ctx: EntityContext, index: Index | None = None) -> Tensor:
+    def normal(cls, ctx: EntityContext, index: Index | None) -> Tensor:
         """Prism volume entities have no normal directions in 3D."""
         prism = cls._entity(ctx, index)
         GD = cls.geo_dimension(ctx)
         return bm.zeros((prism.shape[0], 0, GD), dtype=ctx.block.positions.dtype)
 
     @classmethod
-    def tangent(cls, ctx: EntityContext, index: Index | None = None) -> Tensor:
-        """Tangent directions are not defined for prism volume entities."""
-        prism = cls._entity(ctx, index)
-        GD = cls.geo_dimension(ctx)
-        return bm.zeros((prism.shape[0], 0, GD), dtype=ctx.block.positions.dtype)
-
-    @classmethod
-    def tangent(cls, ctx: EntityContext, index: Index | None = None) -> Tensor:
+    def tangent(cls, ctx: EntityContext, index: Index | None) -> Tensor:
         """Compute tangent directions of prism entities.
 
         Return shape: (NC, 3, GD).
@@ -86,7 +84,7 @@ class PrismSchema(ShapedEntitySchema):
 
     # quadrature
     @classmethod
-    def quadrature_formula(cls, q: int, qtype: str = "legendre", device=None):
+    def quadrature_formula(cls, q: int, qtype: str | None = "legendre", device=None) -> "Quadrature":
         from ...quadrature import (
             GaussLegendreQuadrature,
             TensorProductQuadrature,
@@ -101,30 +99,19 @@ class PrismSchema(ShapedEntitySchema):
     @classmethod
     def shape_function(
         cls,
-        ctx: EntityContext,
         bcs: tuple[Tensor, ...],
-        p: tuple[int, ...],
-        *,
-        index: Index | None = None,
-        variables: str = "u",
-        mi: Tensor | None = None
+        p: tuple[int, ...]
     ) -> Tensor:
         bcs = _require_bcs_tuple(bcs, "prism shape_function", 2)
         p = _require_order_tuple(p, "prism shape_function", 2)
 
-        arg = cls.multi_index_sort(cls.multi_index(p, tensorprod=False))
         mi0 = _MI.multi_index_matrix(p[0], 3)
         mi1 = _MI.multi_index_matrix(p[1], 2)
         phi = bm.tensorprod(
             bm.simplex_shape_function(bcs[1], p[1], mi1),
             bm.simplex_shape_function(bcs[0], p[0], mi0),
-        )[..., arg]
-        if variables == "u":
-            return phi
-        if variables == "x":
-            return phi[None, ...]
-
-        raise ValueError(f"Unsupported variables: {variables!r}")
+        )
+        return phi
 
     @classmethod
     def grad_shape_function(
@@ -207,14 +194,14 @@ class PrismSchema(ShapedEntitySchema):
             mi0 = _MI.multi_index_matrix(p0, 3)
             mi1 = _MI.multi_index_matrix(p1, 2)
 
-        mi0 = bm.repeat(mi0[:, None, :], mi1.shape[0], axis=1)
-        mi1 = bm.repeat(mi1[None, :, :], mi0.shape[0], axis=0)
+        shape = (mi1.shape[0], mi0.shape[0])
+        mi0 = bm.broadcast_to(mi0[None, :, :], shape + (3,))
+        mi1 = bm.broadcast_to(mi1[:, None, :], shape + (2,))
 
         mi = bm.concat([mi0, mi1], axis=-1).reshape(-1, 5)
-        arg = cls.multi_index_sort(mi)
-        mi = mi[arg]
         if tensorprod:
-            return cls.multi_index_tensorprod(mi, (3,))
+            from ..topology.ipoints import multi_index_tensorprod
+            return multi_index_tensorprod(mi, (3,))
         return mi
 
     @classmethod
@@ -222,13 +209,13 @@ class PrismSchema(ShapedEntitySchema):
         cls,
         ctx: EntityContext,
         bcs: tuple[Tensor, ...],
-        index: Index | None = None
+        index: Index | None
     ) -> Tensor:
         """Convert barycentric coordinates to Cartesian coordinates.
 
         x = sum_i phi_i x_i on the physical prism.
         """
-        phi = cls.shape_function(bcs)
+        phi = cls.shape_function(bcs, (1, 1))
         points = cls._tp_points(ctx, index)
         return bm.einsum("cim,qi->cqm", points, phi)
 
@@ -238,8 +225,7 @@ class PrismSchema(ShapedEntitySchema):
         cls,
         ctx: EntityContext,
         bcs: tuple[Tensor, ...],
-        index: Index | None = None,
-        return_grad: bool = False
+        index: Index | None
     ) -> Tensor:
         """Compute the Jacobian matrix of the reference-to-physical prism map.
 
@@ -266,12 +252,10 @@ class PrismSchema(ShapedEntitySchema):
         prism = ctx.sector.indices if index is None else ctx.sector.indices[index]
         node = ctx.block.positions
 
-        gphi = cls.grad_shape_function(ctx, bcs, p=1, variables="u")
+        gphi = cls.grad_shape_function(ctx, bcs, p=(1, 1), variables="u")
         points = node[prism[:, [0, 3, 1, 4, 2, 5]]]
         J = bm.einsum("cim,qin->cqmn", points, gphi)
 
-        if return_grad:
-            return J, gphi
         return J
 
     @classmethod
@@ -287,7 +271,8 @@ class PrismSchema(ShapedEntitySchema):
 
         G = J^T J, where J is the Jacobian matrix of the reference-to-physical map.
         """
-        J, gphi = cls.jacobi_matrix(ctx, bcs, index=index, return_grad=True)
+        J = cls.jacobi_matrix(ctx, bcs, index=index)
+        gphi = cls.grad_shape_function(ctx, bcs, p=(1, 1), variables="u")
         TD = J.shape[-1]
         shape = J.shape[0:-2] + (TD, TD)
         data = [[0 for _ in range(TD)] for _ in range(TD)]
