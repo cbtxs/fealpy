@@ -15,6 +15,7 @@ class WingModelConfig:
     span: float = 1200.0
     sweep_deg: float = 12.4
     sweep_reference: str = "leading_edge"
+    sweep_start_y: float = 400.0
 
     # Piecewise-linear chord distribution: (spanwise y, chord length).
     chord_stations: tuple = (
@@ -116,6 +117,9 @@ class WingShellMesher:
         if abs(cfg.rib_y[-1] - cfg.span) > 1.0e-9:
             raise ValueError("The last rib station must equal span.")
 
+        if cfg.sweep_start_y < -1.0e-9 or cfg.sweep_start_y > cfg.span + 1.0e-9:
+            raise ValueError("sweep_start_y must lie within the wing span.")
+
         valid_refs = {"leading_edge", "quarter_chord", "trailing_edge"}
         if cfg.sweep_reference not in valid_refs:
             raise ValueError(
@@ -171,16 +175,17 @@ class WingShellMesher:
         sweep = math.tan(math.radians(cfg.sweep_deg))
         c_root = self.chord_length(0.0)
         c_y = self.chord_length(y)
+        swept_y = max(0.0, y - cfg.sweep_start_y)
 
         if cfg.sweep_reference == "leading_edge":
-            return y * sweep
+            return swept_y * sweep
 
         if cfg.sweep_reference == "quarter_chord":
-            x_q_y = 0.25 * c_root + y * sweep
+            x_q_y = 0.25 * c_root + swept_y * sweep
             return x_q_y - 0.25 * c_y
 
         if cfg.sweep_reference == "trailing_edge":
-            x_te_y = c_root + y * sweep
+            x_te_y = c_root + swept_y * sweep
             return x_te_y - c_y
 
         raise RuntimeError("Invalid sweep_reference.")
@@ -561,6 +566,7 @@ if __name__ == "__main__":
     cfg = WingModelConfig(
         span=1200.0,
         sweep_deg=12.4,
+        sweep_start_y=400.0,
         chord_stations=((0.0, 200.0), (400.0, 150.0), (1200.0, 50.0)),
         rib_y=(0.0, 200.0, 400.0, 600.0, 800.0, 975.0, 1200.0),
         mesh_size=15.0,
