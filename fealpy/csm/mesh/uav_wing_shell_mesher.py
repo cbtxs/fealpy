@@ -47,6 +47,7 @@ class WingModelConfig:
     airfoil_p: float = 0.40
     airfoil_t: float = 0.12
     n_profile: int = 81
+    profile_spacing: str = "uniform"
 
     # Thickness is not modeled geometrically. It is kept for FE/CalculiX setup.
     shell_thickness: dict = field(
@@ -59,8 +60,9 @@ class WingModelConfig:
         }
     )
 
-    mesh_size: float = 30.0
+    mesh_size: float = 15.0
     recombine: bool = True
+    structured_span_mesh: bool = True
     gmsh_terminal: bool = False
     gmsh_verbosity: int = 2
 
@@ -75,7 +77,9 @@ class WingShellMesher:
         self.n_upper = 0
 
         self.point_tags = []
+        self.point_coords = {}
         self.line_cache = {}
+        self.line_points = {}
 
         self.skin_surfaces = []
         self.rib_surfaces = []
@@ -117,6 +121,12 @@ class WingShellMesher:
             raise ValueError(
                 "sweep_reference must be one of: "
                 "leading_edge, quarter_chord, trailing_edge."
+            )
+
+        valid_profile_spacing = {"uniform", "cosine"}
+        if cfg.profile_spacing not in valid_profile_spacing:
+            raise ValueError(
+                "profile_spacing must be one of: uniform, cosine."
             )
 
         for name, xc in cfg.spar_xc.items():
@@ -179,11 +189,18 @@ class WingShellMesher:
         cfg = self.cfg
         extra_x = list(cfg.spar_xc.values())
 
-        beta = [
-            math.pi * i / (cfg.n_profile - 1)
-            for i in range(cfg.n_profile)
-        ]
-        x_values = [0.5 * (1.0 - math.cos(b)) for b in beta]
+        if cfg.profile_spacing == "cosine":
+            beta = [
+                math.pi * i / (cfg.n_profile - 1)
+                for i in range(cfg.n_profile)
+            ]
+            x_values = [0.5 * (1.0 - math.cos(b)) for b in beta]
+        else:
+            x_values = [
+                i / (cfg.n_profile - 1)
+                for i in range(cfg.n_profile)
+            ]
+
         x_values.extend(extra_x)
         x_values = sorted(set(round(x, 14) for x in x_values))
 
@@ -269,6 +286,7 @@ class WingShellMesher:
 
         line = self.occ.addLine(pa, pb)
         self.line_cache[key] = line
+        self.line_points[line] = (pa, pb)
 
         return line
 
@@ -291,7 +309,9 @@ class WingShellMesher:
         n_profile = len(self.x_profile)
 
         self.point_tags = []
+        self.point_coords = {}
         self.line_cache = {}
+        self.line_points = {}
         self.skin_surfaces = []
         self.rib_surfaces = []
         self.spar_surfaces = {}
@@ -302,7 +322,9 @@ class WingShellMesher:
 
             for xbar, zbar in zip(self.x_profile, self.z_profile):
                 x, yy, z = self.station_point(y, xbar, zbar)
-                row.append(self.occ.addPoint(x, yy, z, cfg.mesh_size))
+                point = self.occ.addPoint(x, yy, z, cfg.mesh_size)
+                row.append(point)
+                self.point_coords[point] = (x, yy, z)
 
             self.point_tags.append(row)
 
@@ -417,6 +439,15 @@ class WingShellMesher:
         gmsh.option.setNumber("Mesh.CharacteristicLengthMax", cfg.mesh_size)
         gmsh.option.setNumber("Mesh.Algorithm", 8)
 
+        if cfg.structured_span_mesh:
+            for line, (pa, pb) in self.line_points.items():
+                p0 = self.point_coords[pa]
+                p1 = self.point_coords[pb]
+                if abs(p0[1] - p1[1]) > 1.0e-7:
+                    length = math.dist(p0, p1)
+                    n_points = max(2, int(round(length / cfg.mesh_size)) + 1)
+                    gmsh.model.mesh.setTransfiniteCurve(line, n_points)
+
         if cfg.recombine:
             gmsh.option.setNumber("Mesh.RecombineAll", 1)
 
@@ -441,78 +472,6 @@ class WingShellMesher:
             filename = self.cfg.output_basename + ".msh"
 
         gmsh.write(filename)
-        return filename
-
-    def write_calculix_inp(self, filename=None):
-        if not self.mesh_generated:
-            raise RuntimeError("Call generate_mesh() before write_calculix_inp().")
-
-        if filename is None:
-            filename = self.cfg.output_basename + ".inp"
-
-        node_tags, node_coords, _ = gmsh.model.mesh.getNodes()
-        nodes = {}
-
-        for i, tag in enumerate(node_tags):
-            nodes[int(tag)] = (
-                node_coords[3 * i],
-                node_coords[3 * i + 1],
-                node_coords[3 * i + 2],
-            )
-
-        group_elements = self.collect_surface_elements()
-        used_nodes = sorted(
-            {
-                node
-                for element_blocks in group_elements.values()
-                for _, _, connectivities in element_blocks
-                for conn in connectivities
-                for node in conn
-            }
-        )
-
-        root_nodes = [
-            tag
-            for tag in used_nodes
-            if abs(nodes[tag][1]) <= 1.0e-7
-        ]
-        tip_nodes = [
-            tag
-            for tag in used_nodes
-            if abs(nodes[tag][1] - self.cfg.span) <= 1.0e-7
-        ]
-
-        with open(filename, "w", encoding="utf-8") as f:
-            f.write("** UAV wing shell mesh generated by wing_geo_model.py\n")
-            f.write("** Units: mm\n")
-            f.write("*NODE\n")
-
-            for tag in sorted(nodes):
-                x, y, z = nodes[tag]
-                f.write(f"{tag}, {x:.12g}, {y:.12g}, {z:.12g}\n")
-
-            all_element_tags = []
-
-            for group_name, element_blocks in group_elements.items():
-                for calculix_type, element_tags, connectivities in element_blocks:
-                    f.write(f"*ELEMENT, TYPE={calculix_type}, ELSET={group_name}\n")
-
-                    for element_tag, conn in zip(element_tags, connectivities):
-                        all_element_tags.append(element_tag)
-                        conn_text = ", ".join(str(node) for node in conn)
-                        f.write(f"{element_tag}, {conn_text}\n")
-
-            self.write_id_set(f, "ELSET", "all_shells", sorted(all_element_tags))
-            self.write_id_set(f, "NSET", "root_nodes", root_nodes)
-            self.write_id_set(f, "NSET", "tip_nodes", tip_nodes)
-
-            f.write("** Shell thickness table, not applied as geometry:\n")
-            for name, thickness in self.cfg.shell_thickness.items():
-                f.write(f"** {name}: {thickness:.12g}\n")
-
-            f.write("** Define materials, shell sections, boundary conditions and loads\n")
-            f.write("** in a separate CalculiX input file or include file.\n")
-
         return filename
 
     def collect_surface_elements(self):
@@ -561,22 +520,8 @@ class WingShellMesher:
 
         return result
 
-    @staticmethod
-    def write_id_set(file_obj, set_type, set_name, ids):
-        if not ids:
-            return
-
-        file_obj.write(f"*{set_type}, {set_type}={set_name}\n")
-
-        for i in range(0, len(ids), 16):
-            chunk = ids[i : i + 16]
-            file_obj.write(", ".join(str(item) for item in chunk) + "\n")
-
     def write_files(self):
-        msh = self.write_msh()
-        inp = self.write_calculix_inp()
-
-        return msh, inp
+        return self.write_msh()
 
     def view(self):
         gmsh.fltk.run()
@@ -618,9 +563,9 @@ if __name__ == "__main__":
         sweep_deg=12.4,
         chord_stations=((0.0, 200.0), (400.0, 150.0), (1200.0, 50.0)),
         rib_y=(0.0, 200.0, 400.0, 600.0, 800.0, 975.0, 1200.0),
-        mesh_size=30.0,
+        mesh_size=15.0,
         gmsh_terminal=True,
-        gmsh_verbosity=3
+        gmsh_verbosity=4
     )
 
     show_gui = "-nopopup" not in sys.argv
