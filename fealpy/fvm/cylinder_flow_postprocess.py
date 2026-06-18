@@ -67,7 +67,7 @@ def _wall_velocity(case, points: TensorLike) -> TensorLike:
 def _wall_sn_grad_viscous_force(
     mesh,
     case,
-    cylinder_edges: TensorLike,
+    cylinder_faces: TensorLike,
     owner: TensorLike,
     sf: TensorLike,
     uh: TensorLike,
@@ -78,7 +78,7 @@ def _wall_sn_grad_viscous_force(
     This matches the force-postprocessing convention used by OpenFOAM wall
     patches more closely than sampling the owner-cell reconstructed gradient.
     """
-    face_centers = mesh.entity_barycenter("face")[cylinder_edges]
+    face_centers = mesh.entity_barycenter("face")[cylinder_faces]
     cell_centers = mesh.entity_barycenter("cell")[owner]
     area = bm.sqrt(bm.einsum("ij,ij->i", sf, sf))
     normal = sf / area[:, None]
@@ -131,20 +131,20 @@ def cylinder_force_coefficients(
     is the force exerted by the fluid on the cylinder,
     ``p n - mu dev(gradU + gradU.T) n`` integrated per unit depth by default.
     """
-    bd_edge = mesh.boundary_face_index()
-    face_centers = mesh.entity_barycenter("face")[bd_edge]
+    boundary_faces = mesh.boundary_face_index()
+    face_centers = mesh.entity_barycenter("face")[boundary_faces]
     cylinder_flag = case.is_cylinder_boundary(face_centers)
-    cylinder_edges = bd_edge[cylinder_flag]
-    if cylinder_edges.shape[0] == 0:
+    cylinder_faces = boundary_faces[cylinder_flag]
+    if cylinder_faces.shape[0] == 0:
         raise ValueError("No cylinder boundary faces were selected.")
 
-    owner = mesh.edge_to_cell()[cylinder_edges, 0]
-    sf = mesh.edge_normal()[cylinder_edges]
+    owner = mesh.edge_to_cell()[cylinder_faces, 0]
+    sf = mesh.edge_normal()[cylinder_faces]
     pressure_force = pressure[owner, None] * sf
 
     if viscous_method == "wall_sn_grad":
         viscous_force = _wall_sn_grad_viscous_force(
-            mesh, case, cylinder_edges, owner, sf, uh, vh
+            mesh, case, cylinder_faces, owner, sf, uh, vh
         )
     elif viscous_method == "cell_gradient":
         viscous_force = bm.zeros_like(pressure_force)
@@ -181,7 +181,7 @@ def cylinder_force_coefficients(
         viscous_lift_coefficient = 2.0 * _as_float(viscous_total[1]) / dynamic_scale
 
     return {
-        "cylinder_faces": int(cylinder_edges.shape[0]),
+        "cylinder_faces": int(cylinder_faces.shape[0]),
         "force_x": _as_float(total_force[0]),
         "force_y": _as_float(total_force[1]),
         "pressure_force_x": _as_float(pressure_total[0]),

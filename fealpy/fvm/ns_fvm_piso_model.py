@@ -11,7 +11,7 @@ from fealpy.model import PDEModelManager
 from .collocated_piso_solver import CollocatedPisoSolver
 from .cell_average_error import cell_average_l2_error
 from .engineering_boundary_conditions import BoundaryConditionData
-from .solver_controls import PisoSolverControls
+from .solver_controls import PisoSolverControls, positive_scalar
 
 
 def _call_boundary_condition_factory(factory, mesh, pde):
@@ -63,8 +63,8 @@ class NSFVMPISOModel(ComputationalModel, CollocatedPisoSolver):
                     break
             else:
                 mu_value = 1.0
-        self.rho = self._as_positive_scalar(rho_value, "rho")
-        self.mu = self._as_positive_scalar(mu_value, "mu")
+        self.rho = positive_scalar(rho_value, "rho")
+        self.mu = positive_scalar(mu_value, "mu")
 
         mesh_type = options.get("mesh_type", "uniform_quad")
         if mesh_type == "uniform_qrad":
@@ -110,12 +110,10 @@ class NSFVMPISOModel(ComputationalModel, CollocatedPisoSolver):
         else:
             boundary_conditions = boundary_input
         default_pressure_nonorthogonal_iter = 1 if mesh_type == "uniform_quad" else 3
-        legacy_momentum_route = options.get("momentum_explicit_correction", "openfoam")
-        if legacy_momentum_route not in (None, "openfoam"):
+        if "momentum_explicit_correction" in options:
             raise ValueError(
-                "momentum_explicit_correction='current' has been removed from "
-                "PISO; the boundary-corrected explicit momentum source is now "
-                "the only supported route."
+                "momentum_explicit_correction is no longer a PISO option; "
+                "boundary-corrected explicit momentum correction is always used."
             )
         if "transient_flux_correction_limiter" in options:
             raise ValueError(
@@ -139,9 +137,9 @@ class NSFVMPISOModel(ComputationalModel, CollocatedPisoSolver):
             n_correctors=2 if n_correctors is None else int(n_correctors),
             snapshot_interval=1 if snapshot_interval is None else int(snapshot_interval),
             snapshot_start_step=1 if snapshot_start_step is None else int(snapshot_start_step),
-            pressure_gradient_method=options.get("pressure_gradient_method", "extended_lsq"),
-            velocity_gradient_method=options.get("velocity_gradient_method", "extended_lsq"),
-            rhie_chow_pressure_gradient_method=options.get("rhie_chow_pressure_gradient_method", "extended_lsq"),
+            pressure_gradient_method=options.get("pressure_gradient_method", "layered_lsq"),
+            velocity_gradient_method=options.get("velocity_gradient_method", "layered_lsq"),
+            rhie_chow_pressure_gradient_method=options.get("rhie_chow_pressure_gradient_method", "layered_lsq"),
             face_interpolation_method=options.get("face_interpolation_method", "average"),
             rhie_chow_velocity_interpolation=options.get("rhie_chow_velocity_interpolation"),
             use_transient_flux_correction=bool(options.get("use_transient_flux_correction", True)),
@@ -186,9 +184,9 @@ class NSFVMPISOModel(ComputationalModel, CollocatedPisoSolver):
     def initial_solution(self) -> Tuple[TensorLike, TensorLike, TensorLike]:
         """Return the initial velocity, face velocity, and pressure fields."""
         t0 = self.controls.duration[0]
-        U0 = self.pde.velocity_0(self.points, t0)
-        Uf0 = self.pde.velocity_0(self.epoints, t0)
-        p0 = self.pde.pressure_0(self.points, t0)
+        U0 = self.pde.velocity_0(self.cell_center, t0)
+        Uf0 = self.pde.velocity_0(self.face_center, t0)
+        p0 = self.pde.pressure_0(self.cell_center, t0)
         return U0, Uf0, p0
 
     def compute_error(self) -> Tuple[float, float, float]:

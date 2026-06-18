@@ -42,17 +42,15 @@ class FVMLinearSolver:
         self.config = config or FVMLinearSolverConfig()
 
     def solve(self, A, b, matrix_type: Optional[str] = None, solver: Optional[str] = None):
-        solver_name = self._select_solver(solver)
+        solver_name = self.select_solver(solver)
         matrix_type = matrix_type or self.config.default_matrix_type
 
         if solver_name == "cupy":
-            return self._solve_with_cupy(A, b, matrix_type)
-        if solver_name == "scipy":
-            return spsolve(A.copy(), b, solver_name)
+            return self.solve_with_cupy(A, b, matrix_type)
+        return self.solve_with_fealpy_solver(A, b, solver_name)
 
-        return spsolve(A, b, solver_name)
-
-    def _select_solver(self, solver: Optional[str]) -> str:
+    def select_solver(self, solver: Optional[str]) -> str:
+        """Return the concrete sparse solver selected for this solve."""
         if solver is not None:
             return solver
         if self.config.solver != "auto":
@@ -61,7 +59,14 @@ class FVMLinearSolver:
             return "cupy"
         return "mumps"
 
-    def _solve_with_cupy(self, A, b, matrix_type: str):
+    def solve_with_fealpy_solver(self, A, b, solver_name: str):
+        """Solve through FEALPy's sparse direct-solver boundary."""
+        if solver_name == "scipy":
+            return spsolve(A.copy(), b, solver_name)
+        return spsolve(A, b, solver_name)
+
+    def solve_with_cupy(self, A, b, matrix_type: str):
+        """Solve on the CuPy sparse route after backend array conversion."""
         import cupyx.scipy.sparse.linalg as cpx_linalg
 
         A_gpu = self._matrix_to_cupy(A)
@@ -122,3 +127,34 @@ class FVMLinearSolver:
             return value
 
         return bm.tensor(value.get())
+
+
+def init_fvm_linear_solver(
+    linear_solver=None,
+    linear_solver_config=None,
+    *,
+    reference=None,
+) -> FVMLinearSolver:
+    """Return an FVM linear-solver object from explicit solver inputs."""
+    if linear_solver is not None and hasattr(linear_solver, "solve"):
+        return linear_solver
+
+    config = linear_solver_config
+    if isinstance(config, dict):
+        config = FVMLinearSolverConfig(**config)
+    if config is not None:
+        return FVMLinearSolver(config)
+
+    device = "cpu"
+    if reference is not None:
+        try:
+            device = str(bm.get_device(reference))
+        except Exception:
+            device = "cpu"
+    return FVMLinearSolver(
+        FVMLinearSolverConfig(
+            backend=bm.backend_name,
+            device=device,
+            solver=linear_solver or "auto",
+        )
+    )

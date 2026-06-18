@@ -8,6 +8,7 @@ from fealpy.fvm import FVMGeometry, GradientReconstruct
 from fealpy.fvm.gradient_reconstruct import (
     GreenGaussGradientReconstruct,
     LSQGradientReconstruct,
+    least_squares_rhs,
 )
 
 
@@ -24,7 +25,55 @@ def test_lsq_recovers_linear_gradient_on_quad_and_tri_meshes():
         assert np.linalg.norm(grad - np.array([1.0, 2.0])) < 1.0e-10
 
 
-def test_extended_lsq_recovers_3d_linear_gradient_on_tetra_mesh():
+def test_gradient_reconstruct_reuses_supplied_fvm_geometry(monkeypatch):
+    import fealpy.fvm.gradient_reconstruct as gradient_module
+
+    pde = Exp0002()
+    mesh = pde.init_mesh["uniform_quad"](nx=2, ny=2)
+    geometry = FVMGeometry(mesh)
+    points = mesh.entity_barycenter("cell")
+    field = points[:, 0] + 2.0 * points[:, 1]
+
+    def forbidden_geometry(*args, **kwargs):
+        raise AssertionError("GradientReconstruct should reuse supplied FVMGeometry")
+
+    monkeypatch.setattr(gradient_module, "FVMGeometry", forbidden_geometry)
+
+    reconstruct = GradientReconstruct(mesh, geometry=geometry)
+    grad = np.asarray(reconstruct.cell_gradient(field))
+
+    assert reconstruct.fvm_geometry is geometry
+    assert np.linalg.norm(grad - np.array([1.0, 2.0])) < 1.0e-10
+
+
+def test_least_squares_rhs_matches_stencil_accumulation_for_scalar_and_vector_fields():
+    N = np.array([
+        [0, 1, 2, 1],
+        [1, 0, 2, 2],
+        [2, 0, 1, 0],
+    ])
+    weighted_d = np.array([
+        [[0.0, 0.0], [1.0, 0.2], [0.4, 0.8], [-0.3, 0.5]],
+        [[0.0, 0.0], [-0.6, 0.1], [0.7, -0.2], [0.2, 0.9]],
+        [[0.0, 0.0], [-0.4, -0.8], [0.3, -0.5], [0.5, 0.4]],
+    ])
+
+    scalar = np.array([1.0, 2.5, -0.5])
+    expected_scalar = np.zeros((3, 2))
+    for k in range(N.shape[1]):
+        expected_scalar += (scalar[N[:, k]] - scalar)[:, None] * weighted_d[:, k, :]
+
+    vector = np.stack([scalar, -2.0 * scalar + 0.5], axis=-1)
+    expected_vector = np.zeros((3, 2, 2))
+    for k in range(N.shape[1]):
+        delta = vector[N[:, k]] - vector
+        expected_vector += delta[:, :, None] * weighted_d[:, k, None, :]
+
+    np.testing.assert_allclose(least_squares_rhs(scalar, N, weighted_d), expected_scalar)
+    np.testing.assert_allclose(least_squares_rhs(vector, N, weighted_d), expected_vector)
+
+
+def test_layered_lsq_recovers_3d_linear_gradient_on_tetra_mesh():
     mesh = TetrahedronMesh.from_box(box=[0, 1, 0, 1, 0, 1], nx=2, ny=2, nz=2)
     points = mesh.entity_barycenter("cell")
     field = points[:, 0] + 2.0 * points[:, 1] + 3.0 * points[:, 2]
@@ -35,7 +84,7 @@ def test_extended_lsq_recovers_3d_linear_gradient_on_tetra_mesh():
     assert np.linalg.norm(grad - np.array([1.0, 2.0, 3.0])) < 1.0e-10
 
 
-def test_weighted_lsq_recovers_3d_linear_gradient_on_tetra_interior_cells():
+def test_face_weighted_lsq_recovers_3d_linear_gradient_on_tetra_interior_cells():
     mesh = TetrahedronMesh.from_box(box=[0, 1, 0, 1, 0, 1], nx=2, ny=2, nz=2)
     points = mesh.entity_barycenter("cell")
     field = points[:, 0] + 2.0 * points[:, 1] + 3.0 * points[:, 2]
@@ -44,7 +93,7 @@ def test_weighted_lsq_recovers_3d_linear_gradient_on_tetra_interior_cells():
         return points[:, 0] + 2.0 * points[:, 1] + 3.0 * points[:, 2]
 
     grad = np.asarray(
-        GradientReconstruct(mesh, method="weighted_lsq", gd=gd).cell_gradient(field)
+        GradientReconstruct(mesh, method="face_weighted_lsq", gd=gd).cell_gradient(field)
     )
     geometry = FVMGeometry(mesh)
     interior = np.ones(mesh.number_of_cells(), dtype=bool)
@@ -63,7 +112,7 @@ def test_green_gauss_allocates_3d_gradient_shape_on_tetra_mesh():
     assert grad.shape == (mesh.number_of_cells(), mesh.geo_dimension())
 
 
-def test_extended_lsq_layer_weights_keep_linear_consistency():
+def test_layered_lsq_layer_weights_keep_linear_consistency():
     pde = Exp0002()
 
     for meshtype in ["uniform_quad", "uniform_tri"]:
@@ -78,7 +127,7 @@ def test_extended_lsq_layer_weights_keep_linear_consistency():
         assert np.linalg.norm(grad - np.array([1.0, 2.0])) < 1.0e-10
 
 
-def test_extended_lsq_layer_weights_change_nonlinear_reconstruction():
+def test_layered_lsq_layer_weights_change_nonlinear_reconstruction():
     pde = Exp0002()
     mesh = pde.init_mesh["uniform_tri"](nx=4, ny=4)
     points = mesh.entity_barycenter("cell")
@@ -93,7 +142,7 @@ def test_extended_lsq_layer_weights_change_nonlinear_reconstruction():
     assert np.linalg.norm(equal - first_layer_heavy) > 1.0e-4
 
 
-def test_extended_lsq_reuses_geometry_between_fields(monkeypatch):
+def test_layered_lsq_reuses_geometry_between_fields(monkeypatch):
     pde = Exp0002()
     mesh = pde.init_mesh["uniform_tri"](nx=4, ny=4)
     points = mesh.entity_barycenter("cell")
@@ -119,7 +168,7 @@ def test_extended_lsq_reuses_geometry_between_fields(monkeypatch):
     assert np.linalg.norm(second_grad - np.array([-0.5, 1.0])) < 1.0e-10
 
 
-def test_extended_lsq_reuses_cached_matrix_without_dirichlet_boundary():
+def test_layered_lsq_reuses_cached_matrix_without_dirichlet_boundary():
     pde = Exp0002()
     mesh = pde.init_mesh["uniform_tri"](nx=4, ny=4)
     points = mesh.entity_barycenter("cell")
@@ -127,33 +176,137 @@ def test_extended_lsq_reuses_cached_matrix_without_dirichlet_boundary():
     reconstruct = GradientReconstruct(mesh)
 
     reconstruct.cell_gradient(field)
-    cached_matrix = reconstruct._extended_lsq_cache[2]
+    cached_matrix = reconstruct.lsq_reconstruct._layered_lsq_cache[2]
     reconstruct.cell_gradient(field)
-    matrix = reconstruct._extended_lsq_cache[2]
+    matrix = reconstruct.lsq_reconstruct._layered_lsq_cache[2]
 
     assert matrix is cached_matrix
 
 
-def test_weighted_lsq_reuses_cached_inverse_between_fields(monkeypatch):
+def test_face_weighted_lsq_reuses_cached_inverse_between_fields(monkeypatch):
     pde = Exp0002()
     mesh = pde.init_mesh["uniform_tri"](nx=4, ny=4)
     points = mesh.entity_barycenter("cell")
     first_field = points[:, 0] + 2.0 * points[:, 1]
     second_field = points[:, 0] ** 2 - points[:, 1]
-    reconstruct = GradientReconstruct(mesh, method="weighted_lsq")
+    reconstruct = GradientReconstruct(mesh, method="face_weighted_lsq")
 
     call_count = 0
-    original = LSQGradientReconstruct._invert_lsq_matrix
+    original = LSQGradientReconstruct.invert_lsq_matrix
 
     def counting_invert(self, A, method):
         nonlocal call_count
         call_count += 1
         return original(self, A, method)
 
-    monkeypatch.setattr(LSQGradientReconstruct, "_invert_lsq_matrix", counting_invert)
+    monkeypatch.setattr(LSQGradientReconstruct, "invert_lsq_matrix", counting_invert)
 
     reconstruct.cell_gradient(first_field)
     reconstruct.cell_gradient(second_field)
+
+    assert call_count == 1
+
+
+def test_face_weighted_lsq_accumulates_internal_rhs_in_one_scatter(monkeypatch):
+    pde = Exp0002()
+    mesh = pde.init_mesh["uniform_tri"](nx=4, ny=4)
+    points = mesh.entity_barycenter("cell")
+    field = points[:, 0] + 2.0 * points[:, 1]
+    reconstruct = GradientReconstruct(mesh, method="face_weighted_lsq")
+
+    call_count = 0
+    original = LSQGradientReconstruct.add_lsq_rhs_samples
+
+    def counting_add_rhs(self, *args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(LSQGradientReconstruct, "add_lsq_rhs_samples", counting_add_rhs)
+
+    reconstruct.cell_gradient(field)
+
+    assert call_count == 1
+
+
+def test_face_weighted_lsq_reuses_internal_scatter_geometry_between_fields(monkeypatch):
+    import fealpy.fvm.gradient_reconstruct as gradient_module
+
+    pde = Exp0002()
+    mesh = pde.init_mesh["uniform_tri"](nx=4, ny=4)
+    points = mesh.entity_barycenter("cell")
+    first_field = points[:, 0] + 2.0 * points[:, 1]
+    second_field = points[:, 0] ** 2 - points[:, 1]
+    reconstruct = GradientReconstruct(mesh, method="face_weighted_lsq")
+
+    reconstruct.cell_gradient(first_field)
+    call_count = 0
+    original = gradient_module.bm.concatenate
+
+    def counting_concatenate(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(gradient_module.bm, "concatenate", counting_concatenate)
+
+    reconstruct.cell_gradient(second_field)
+
+    assert call_count == 0
+
+
+def test_face_weighted_lsq_reuses_boundary_geometry_between_fields(monkeypatch):
+    pde = Exp0002()
+    mesh = pde.init_mesh["uniform_tri"](nx=4, ny=4)
+    points = mesh.entity_barycenter("cell")
+    first_field = points[:, 0] + 2.0 * points[:, 1]
+    second_field = -points[:, 0] + 0.5 * points[:, 1]
+
+    def gd(points):
+        return points[:, 0] + 2.0 * points[:, 1]
+
+    reconstruct = GradientReconstruct(mesh, method="face_weighted_lsq", gd=gd)
+    call_count = 0
+    import fealpy.fvm.gradient_reconstruct as gradient_module
+
+    original = gradient_module.selected_boundary_faces
+
+    def counting_selected_boundary_faces(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(
+        gradient_module,
+        "selected_boundary_faces",
+        counting_selected_boundary_faces,
+    )
+
+    reconstruct.cell_gradient(first_field)
+    reconstruct.cell_gradient(second_field)
+
+    assert call_count == 1
+
+
+def test_green_gauss_accumulates_internal_flux_in_one_scatter(monkeypatch):
+    import fealpy.fvm.gradient_reconstruct as gradient_module
+
+    pde = Exp0002()
+    mesh = pde.init_mesh["uniform_quad"](nx=4, ny=4)
+    field = np.ones(mesh.number_of_cells())
+    reconstruct = GradientReconstruct(mesh, method="green_gauss")
+
+    call_count = 0
+    original = gradient_module.bm.index_add
+
+    def counting_index_add(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(gradient_module.bm, "index_add", counting_index_add)
+
+    reconstruct.cell_gradient(field)
 
     assert call_count == 1
 
@@ -182,7 +335,7 @@ def test_green_gauss_variant_delegates_to_green_gauss_reconstructor(monkeypatch)
     assert call_count == 1
 
 
-def test_extended_lsq_uses_dirichlet_boundary_data_when_given():
+def test_layered_lsq_uses_dirichlet_boundary_data_when_given():
     pde = Exp0002()
     mesh = pde.init_mesh["uniform_quad"](nx=4, ny=4)
     field = np.zeros(mesh.number_of_cells())
@@ -196,16 +349,16 @@ def test_extended_lsq_uses_dirichlet_boundary_data_when_given():
         threshold=lambda points: np.abs(points[:, 0]) < 1.0e-12,
     ).cell_gradient(field))
 
-    bd_edge = mesh.boundary_face_index()
-    face_center = mesh.entity_barycenter("face")[bd_edge]
-    owner = mesh.edge_to_cell()[bd_edge, 0]
+    boundary_faces = mesh.boundary_face_index()
+    face_center = mesh.entity_barycenter("face")[boundary_faces]
+    owner = mesh.edge_to_cell()[boundary_faces, 0]
     left_owner = set(np.asarray(owner[np.abs(face_center[:, 0]) < 1.0e-12]).tolist())
     nonzero_owner = set(np.where(np.linalg.norm(grad, axis=1) > 1.0e-12)[0].tolist())
 
     assert nonzero_owner == left_owner
 
 
-def test_extended_lsq_boundary_weight_zero_keeps_default_result():
+def test_layered_lsq_boundary_weight_zero_keeps_default_result():
     pde = Exp0002()
     mesh = pde.init_mesh["uniform_quad"](nx=4, ny=4)
     points = mesh.entity_barycenter("cell")
@@ -224,7 +377,7 @@ def test_extended_lsq_boundary_weight_zero_keeps_default_result():
     assert np.linalg.norm(with_zero_weight - default) < 1.0e-12
 
 
-def test_extended_lsq_neumann_boundary_data_enforces_normal_derivative():
+def test_layered_lsq_neumann_boundary_data_enforces_normal_derivative():
     pde = Exp0002()
     mesh = pde.init_mesh["uniform_quad"](nx=4, ny=4)
     field = np.zeros(mesh.number_of_cells())
@@ -239,21 +392,21 @@ def test_extended_lsq_neumann_boundary_data_enforces_normal_derivative():
         threshold=lambda points: np.abs(points[:, 0]) < 1.0e-12,
     ).cell_gradient(field))
 
-    bd_edge = mesh.boundary_face_index()
-    face_center = mesh.entity_barycenter("face")[bd_edge]
+    boundary_faces = mesh.boundary_face_index()
+    face_center = mesh.entity_barycenter("face")[boundary_faces]
     selected = np.abs(face_center[:, 0]) < 1.0e-12
-    selected_edge = bd_edge[selected]
-    owner = mesh.edge_to_cell()[selected_edge, 0]
+    selected_faces = boundary_faces[selected]
+    owner = mesh.edge_to_cell()[selected_faces, 0]
     unit_normal = (
-        mesh.edge_normal()[selected_edge]
-        / mesh.entity_measure("face")[selected_edge, None]
+        mesh.edge_normal()[selected_faces]
+        / mesh.entity_measure("face")[selected_faces, None]
     )
     normal_component = np.einsum("ij,ij->i", grad[owner], unit_normal)
 
     assert np.linalg.norm(normal_component - 1.0) < 1.0e-12
 
 
-def test_extended_lsq_neumann_boundary_data_supports_vector_fields():
+def test_layered_lsq_neumann_boundary_data_supports_vector_fields():
     pde = Exp0002()
     mesh = pde.init_mesh["uniform_quad"](nx=4, ny=4)
     field = np.zeros((mesh.number_of_cells(), 2))
@@ -271,14 +424,14 @@ def test_extended_lsq_neumann_boundary_data_supports_vector_fields():
         threshold=lambda points: np.abs(points[:, 0]) < 1.0e-12,
     ).cell_gradient(field))
 
-    bd_edge = mesh.boundary_face_index()
-    face_center = mesh.entity_barycenter("face")[bd_edge]
+    boundary_faces = mesh.boundary_face_index()
+    face_center = mesh.entity_barycenter("face")[boundary_faces]
     selected = np.abs(face_center[:, 0]) < 1.0e-12
-    selected_edge = bd_edge[selected]
-    owner = mesh.edge_to_cell()[selected_edge, 0]
+    selected_faces = boundary_faces[selected]
+    owner = mesh.edge_to_cell()[selected_faces, 0]
     unit_normal = (
-        mesh.edge_normal()[selected_edge]
-        / mesh.entity_measure("face")[selected_edge, None]
+        mesh.edge_normal()[selected_faces]
+        / mesh.entity_measure("face")[selected_faces, None]
     )
     normal_component = np.einsum("icd,id->ic", grad[owner], unit_normal)
 
@@ -286,7 +439,7 @@ def test_extended_lsq_neumann_boundary_data_supports_vector_fields():
     assert np.linalg.norm(normal_component - np.array([1.0, 2.0])) < 1.0e-12
 
 
-def test_extended_lsq_dirichlet_boundary_data_supports_vector_fields():
+def test_layered_lsq_dirichlet_boundary_data_supports_vector_fields():
     pde = Exp0002()
     mesh = pde.init_mesh["uniform_quad"](nx=4, ny=4)
     field = np.zeros((mesh.number_of_cells(), 2))
@@ -303,9 +456,9 @@ def test_extended_lsq_dirichlet_boundary_data_supports_vector_fields():
         threshold=lambda points: np.abs(points[:, 0]) < 1.0e-12,
     ).cell_gradient(field))
 
-    bd_edge = mesh.boundary_face_index()
-    face_center = mesh.entity_barycenter("face")[bd_edge]
-    owner = mesh.edge_to_cell()[bd_edge, 0]
+    boundary_faces = mesh.boundary_face_index()
+    face_center = mesh.entity_barycenter("face")[boundary_faces]
+    owner = mesh.edge_to_cell()[boundary_faces, 0]
     left_owner = set(np.asarray(owner[np.abs(face_center[:, 0]) < 1.0e-12]).tolist())
     nonzero_owner = set(np.where(np.linalg.norm(grad, axis=(1, 2)) > 1.0e-12)[0].tolist())
 
@@ -313,7 +466,7 @@ def test_extended_lsq_dirichlet_boundary_data_supports_vector_fields():
     assert nonzero_owner == left_owner
 
 
-def test_extended_lsq_rejects_invalid_layer_weights():
+def test_layered_lsq_rejects_invalid_layer_weights():
     pde = Exp0002()
     mesh = pde.init_mesh["uniform_quad"](nx=4, ny=4)
     field = mesh.entity_barycenter("cell")[:, 0]
@@ -326,46 +479,7 @@ def test_extended_lsq_rejects_invalid_layer_weights():
         GradientReconstruct(mesh, layer_weights=(1.0, -1.0)).cell_gradient(field)
 
 
-def test_face_lsq_recovers_linear_gradient_on_quad_mesh():
-    pde = Exp0002()
-    mesh = pde.init_mesh["uniform_quad"](nx=4, ny=4)
-    points = mesh.entity_barycenter("cell")
-    field = points[:, 0] + 2.0 * points[:, 1] + 3.0
-
-    grad = np.asarray(GradientReconstruct(
-        mesh, method="face_lsq"
-    ).cell_gradient(field))
-
-    assert np.linalg.norm(grad - np.array([1.0, 2.0])) < 1.0e-10
-
-
-def test_face_lsq_recovers_linear_gradient_on_tri_mesh_with_dirichlet_value():
-    pde = Exp0002()
-    mesh = pde.init_mesh["uniform_tri"](nx=4, ny=4)
-    points = mesh.entity_barycenter("cell")
-    field = points[:, 0] + 2.0 * points[:, 1] + 3.0
-
-    def gd(points):
-        return points[:, 0] + 2.0 * points[:, 1] + 3.0
-
-    grad = np.asarray(GradientReconstruct(
-        mesh, method="face_lsq", gd=gd
-    ).cell_gradient(field))
-
-    assert np.linalg.norm(grad - np.array([1.0, 2.0])) < 1.0e-10
-
-
-def test_face_lsq_reports_rank_deficient_stencil_without_boundary_value():
-    pde = Exp0002()
-    mesh = pde.init_mesh["uniform_tri"](nx=4, ny=4)
-    points = mesh.entity_barycenter("cell")
-    field = points[:, 0] + 2.0 * points[:, 1] + 3.0
-
-    with pytest.raises(ValueError, match="rank deficient"):
-        GradientReconstruct(mesh, method="face_lsq").cell_gradient(field)
-
-
-def test_weighted_lsq_matches_reference():
+def test_face_weighted_lsq_matches_reference():
     pde = Exp0002()
     mesh = pde.init_mesh["uniform_tri"](nx=4, ny=4)
     points = mesh.entity_barycenter("cell")
@@ -376,55 +490,24 @@ def test_weighted_lsq_matches_reference():
 
     grad = np.asarray(GradientReconstruct(
         mesh,
-        method="weighted_lsq",
+        method="face_weighted_lsq",
         gd=gd,
     ).cell_gradient(field))
-    expected = _weighted_lsq_reference(mesh, field, gd=gd)
+    expected = _face_weighted_lsq_reference(mesh, field, gd=gd)
 
     assert np.linalg.norm(grad - expected) < 1.0e-12
-
-
-def test_legacy_weighted_lsq_alias_name_is_removed():
-    pde = Exp0002()
-    mesh = pde.init_mesh["uniform_tri"](nx=4, ny=4)
-    points = mesh.entity_barycenter("cell")
-    field = points[:, 0] ** 2 - 0.5 * points[:, 1] ** 2 + points[:, 0] * points[:, 1]
-
-    with pytest.raises(ValueError, match="Unknown cell_gradient variant"):
-        GradientReconstruct(mesh, method="openfoam" + "_least_squares").cell_gradient(
-            field
-        )
-
-
-def test_gradient_reconstruct_uses_generic_internal_names():
-    pde = Exp0002()
-    mesh = pde.init_mesh["uniform_quad"](nx=2, ny=2)
-    reconstruct = GradientReconstruct(mesh, method="weighted_lsq")
-
-    internal_names = {
-        name for name in dir(reconstruct)
-        if name.startswith("_openfoam") or name == "_openfoam_lsq_cache"
-    }
-
-    assert internal_names == set()
 
 
 def test_lsq_common_helpers_document_normal_equations():
     source = inspect.getsource(LSQGradientReconstruct)
 
-    assert hasattr(LSQGradientReconstruct, "_add_lsq_matrix_samples")
-    assert hasattr(LSQGradientReconstruct, "_add_lsq_rhs_samples")
-    assert not hasattr(GradientReconstruct, "_add_lsq_matrix_samples")
-    assert not hasattr(GradientReconstruct, "_add_lsq_rhs_samples")
-    assert not hasattr(GradientReconstruct, "_weighted_lsq_coefficients")
-    assert not hasattr(GradientReconstruct, "_weighted_lsq_geometry")
-    assert not hasattr(GradientReconstruct, "_threshold_coordinate_axis")
-    assert not hasattr(GradientReconstruct, "_validate_boundary_face_flag")
+    assert hasattr(LSQGradientReconstruct, "add_lsq_matrix_samples")
+    assert hasattr(LSQGradientReconstruct, "add_lsq_rhs_samples")
     assert "A_K = sum" in source
     assert "b_K = sum" in source
 
 
-def test_weighted_lsq_recovers_linear_gradient_with_boundary_values():
+def test_face_weighted_lsq_recovers_linear_gradient_with_boundary_values():
     pde = Exp0002()
 
     for meshtype in ["uniform_quad", "uniform_tri"]:
@@ -437,11 +520,11 @@ def test_weighted_lsq_recovers_linear_gradient_with_boundary_values():
 
         grad = np.asarray(GradientReconstruct(
             mesh,
-            method="weighted_lsq",
+            method="face_weighted_lsq",
             gd=gd,
         ).cell_gradient(field))
 
-        expected = _weighted_lsq_reference(mesh, field, gd=gd)
+        expected = _face_weighted_lsq_reference(mesh, field, gd=gd)
         interior = _interior_cell_mask(mesh)
 
         assert np.linalg.norm(grad - expected) < 1.0e-12
@@ -450,7 +533,7 @@ def test_weighted_lsq_recovers_linear_gradient_with_boundary_values():
             assert np.linalg.norm(grad - np.array([1.0, 2.0])) < 1.0e-10
 
 
-def test_weighted_lsq_supports_vector_fields():
+def test_face_weighted_lsq_supports_vector_fields():
     pde = Exp0002()
     mesh = pde.init_mesh["uniform_tri"](nx=4, ny=4)
     points = mesh.entity_barycenter("cell")
@@ -467,11 +550,11 @@ def test_weighted_lsq_supports_vector_fields():
 
     grad = np.asarray(GradientReconstruct(
         mesh,
-        method="weighted_lsq",
+        method="face_weighted_lsq",
         gd=gd,
     ).cell_gradient(field))
 
-    expected = _weighted_lsq_reference(mesh, field, gd=gd)
+    expected = _face_weighted_lsq_reference(mesh, field, gd=gd)
     interior = _interior_cell_mask(mesh)
 
     assert grad.shape == (mesh.number_of_cells(), 2, 2)
@@ -480,7 +563,7 @@ def test_weighted_lsq_supports_vector_fields():
     assert np.linalg.norm(grad[interior, 1, :] - np.array([-0.5, 1.0])) < 1.0e-10
 
 
-def test_weighted_lsq_uses_patch_normal_delta_on_skewed_boundary():
+def test_face_weighted_lsq_uses_patch_normal_delta_on_skewed_boundary():
     node = np.array([
         [0.0, 0.0],
         [2.0, 0.0],
@@ -497,16 +580,16 @@ def test_weighted_lsq_uses_patch_normal_delta_on_skewed_boundary():
 
     grad = np.asarray(GradientReconstruct(
         mesh,
-        method="weighted_lsq",
+        method="face_weighted_lsq",
         gd=gd,
     ).cell_gradient(field))
-    expected = _weighted_lsq_reference(
+    expected = _face_weighted_lsq_reference(
         mesh,
         field,
         gd=gd,
         boundary_delta="normal",
     )
-    full_delta = _weighted_lsq_reference(
+    full_delta = _face_weighted_lsq_reference(
         mesh,
         field,
         gd=gd,
@@ -539,15 +622,15 @@ def test_green_gauss_neumann_uses_true_normal_distance_on_skewed_quad():
         threshold=lambda points: np.abs(points[:, 1]) < 1.0e-12,
     ).cell_gradient(field))
 
-    bd_edge = mesh.boundary_face_index()
-    face_center = mesh.entity_barycenter("face")[bd_edge]
+    boundary_faces = mesh.boundary_face_index()
+    face_center = mesh.entity_barycenter("face")[boundary_faces]
     selected = np.abs(face_center[:, 1]) < 1.0e-12
-    selected_edge = bd_edge[selected]
-    owner = mesh.edge_to_cell()[selected_edge, 0]
+    selected_faces = boundary_faces[selected]
+    owner = mesh.edge_to_cell()[selected_faces, 0]
     cell_center = mesh.entity_barycenter("cell")
     face_measure = mesh.entity_measure("face")
     face_normal = mesh.edge_normal()
-    unit_normal = face_normal[selected_edge] / face_measure[selected_edge, None]
+    unit_normal = face_normal[selected_faces] / face_measure[selected_faces, None]
     normal_distance = np.abs(np.einsum(
         "ij,ij->i",
         face_center[selected] - cell_center[owner],
@@ -558,29 +641,14 @@ def test_green_gauss_neumann_uses_true_normal_distance_on_skewed_quad():
     np.add.at(
         expected,
         owner,
-        normal_distance[:, None] * face_normal[selected_edge],
+        normal_distance[:, None] * face_normal[selected_faces],
     )
     expected /= mesh.entity_measure("cell")[:, None]
 
     assert np.linalg.norm(grad - expected) < 1.0e-12
 
 
-def test_gradient_reconstruct_keeps_only_variant_api():
-    pde = Exp0002()
-    mesh = pde.init_mesh["uniform_quad"](nx=2, ny=2)
-    reconstruct = GradientReconstruct(mesh)
-
-    assert hasattr(reconstruct, "cell_gradient")
-    assert not hasattr(reconstruct, "face_gradient")
-    assert not hasattr(reconstruct, "LSQ")
-    assert not hasattr(reconstruct, "AverageGradientreDirichlet")
-    assert not hasattr(reconstruct, "AverageGradientreNeumann")
-    assert not hasattr(reconstruct, "reconstruct")
-    assert not hasattr(reconstruct, "QuadraticLSQ")
-    assert not hasattr(reconstruct, "OpenFOAMLSQ")
-
-
-def _weighted_lsq_reference(
+def _face_weighted_lsq_reference(
     mesh,
     U,
     gd=None,
@@ -591,9 +659,9 @@ def _weighted_lsq_reference(
     NC = mesh.number_of_cells()
     cell_centers = np.asarray(mesh.entity_barycenter("cell"))
     face_centers = np.asarray(mesh.entity_barycenter("face"))
-    e2c = np.asarray(mesh.edge_to_cell()[:, :2])
-    owner = e2c[:, 0]
-    neighbour = e2c[:, 1]
+    face_to_cell = np.asarray(mesh.edge_to_cell()[:, :2])
+    owner = face_to_cell[:, 0]
+    neighbour = face_to_cell[:, 1]
     is_internal = owner != neighbour
     Sf = np.asarray(mesh.edge_normal())
     magSf = np.linalg.norm(Sf, axis=1)
@@ -622,29 +690,43 @@ def _weighted_lsq_reference(
     np.add.at(b, own, (1.0 - w)[:, None] * rhs if U.ndim == 1 else (1.0 - w)[:, None, None] * rhs)
     np.add.at(b, nei, w[:, None] * rhs if U.ndim == 1 else w[:, None, None] * rhs)
 
-    bdedge = mesh.boundary_face_index()
-    bd_owner = owner[bdedge]
-    bd_d = face_centers[bdedge] - cell_centers[bd_owner]
+    boundary_faces = mesh.boundary_face_index()
+    boundary_owner = owner[boundary_faces]
+    boundary_d = face_centers[boundary_faces] - cell_centers[boundary_owner]
     if boundary_delta == "normal":
-        unit_normal = Sf[bdedge] / magSf[bdedge, None]
-        bd_d = unit_normal * np.einsum("ij,ij->i", unit_normal, bd_d)[:, None]
+        unit_normal = Sf[boundary_faces] / magSf[boundary_faces, None]
+        boundary_d = unit_normal * np.einsum(
+            "ij,ij->i", unit_normal, boundary_d
+        )[:, None]
     elif boundary_delta != "full":
         raise ValueError("boundary_delta must be 'normal' or 'full'.")
-    bd_scale = magSf[bdedge] / np.einsum("ij,ij->i", bd_d, bd_d)
-    bd_outer = bd_scale[:, None, None] * np.einsum("ni,nj->nij", bd_d, bd_d)
-    np.add.at(A, bd_owner, bd_outer)
+    boundary_scale = magSf[boundary_faces] / np.einsum(
+        "ij,ij->i", boundary_d, boundary_d
+    )
+    boundary_outer = boundary_scale[:, None, None] * np.einsum(
+        "ni,nj->nij", boundary_d, boundary_d
+    )
+    np.add.at(A, boundary_owner, boundary_outer)
     if gd is not None:
-        bd_value = gd(face_centers[bdedge])
+        boundary_value = gd(face_centers[boundary_faces])
         if bc_type == "neumann":
-            unit_normal = Sf[bdedge] / magSf[bdedge, None]
-            normal_distance = np.abs(np.einsum("ij,ij->i", bd_d, unit_normal))
-            bd_value = U[bd_owner] + bd_value * normal_distance
-        bd_delta = bd_value - U[bd_owner]
+            unit_normal = Sf[boundary_faces] / magSf[boundary_faces, None]
+            normal_distance = np.abs(
+                np.einsum("ij,ij->i", boundary_d, unit_normal)
+            )
+            boundary_value = U[boundary_owner] + boundary_value * normal_distance
+        boundary_delta_u = boundary_value - U[boundary_owner]
         if U.ndim == 1:
-            bd_rhs = bd_scale[:, None] * bd_delta[:, None] * bd_d
+            boundary_rhs = (
+                boundary_scale[:, None] * boundary_delta_u[:, None] * boundary_d
+            )
         else:
-            bd_rhs = bd_scale[:, None, None] * bd_delta[:, :, None] * bd_d[:, None, :]
-        np.add.at(b, bd_owner, bd_rhs)
+            boundary_rhs = (
+                boundary_scale[:, None, None]
+                * boundary_delta_u[:, :, None]
+                * boundary_d[:, None, :]
+            )
+        np.add.at(b, boundary_owner, boundary_rhs)
 
     if U.ndim == 1:
         return np.stack([np.linalg.solve(A[cell], b[cell]) for cell in range(NC)])
@@ -658,9 +740,9 @@ def _weighted_lsq_reference(
 
 
 def _linear_owner_weight_reference(mesh):
-    e2c = np.asarray(mesh.edge_to_cell()[:, :2])
-    owner = e2c[:, 0]
-    neighbour = e2c[:, 1]
+    face_to_cell = np.asarray(mesh.edge_to_cell()[:, :2])
+    owner = face_to_cell[:, 0]
+    neighbour = face_to_cell[:, 1]
     face_centers = np.asarray(mesh.entity_barycenter("face"))
     cell_centers = np.asarray(mesh.entity_barycenter("cell"))
     Sf = np.asarray(mesh.edge_normal())
@@ -675,7 +757,7 @@ def _linear_owner_weight_reference(mesh):
 
 def _interior_cell_mask(mesh):
     mask = np.ones(mesh.number_of_cells(), dtype=bool)
-    e2c = np.asarray(mesh.edge_to_cell()[:, :2])
-    bdedge = np.asarray(mesh.boundary_face_index())
-    mask[e2c[bdedge, 0]] = False
+    face_to_cell = np.asarray(mesh.edge_to_cell()[:, :2])
+    boundary_faces = np.asarray(mesh.boundary_face_index())
+    mask[face_to_cell[boundary_faces, 0]] = False
     return mask

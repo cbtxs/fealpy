@@ -3,7 +3,7 @@ import inspect
 import pytest
 
 
-def _cavity_solver(convection_coef=None, *, linear_solver=None):
+def _cavity_solver(convection_coef=None, *, controls=None, linear_solver=None):
     from fealpy.fvm import (
         BoundaryConditionData,
         CollocatedSimpleSolver,
@@ -26,7 +26,7 @@ def _cavity_solver(convection_coef=None, *, linear_solver=None):
         convection_coef=case.rho if convection_coef is None else convection_coef,
         source=case.source,
         boundary_conditions=BoundaryConditionData(case.dirichlet_velocity).to_pde_boundary(mesh),
-        controls=SimpleSolverControls(space_degree=0),
+        controls=controls or SimpleSolverControls(space_degree=0),
         log_level="ERROR",
         **solver_kwargs,
     )
@@ -86,7 +86,6 @@ def test_collocated_simple_solver_runs_without_model_adapter():
 
     uh, vh, ph = solver.solve(max_iter=1, tol=1.0e-3)
 
-    assert not hasattr(solver, "pde")
     assert uh.shape == (solver.NC,)
     assert vh.shape == (solver.NC,)
     assert ph.shape == (solver.NC,)
@@ -109,6 +108,115 @@ def test_collocated_simple_solver_accepts_string_linear_solver_choice():
     solver = _cavity_solver(convection_coef=0.0, linear_solver="scipy")
 
     assert solver.linear_solver.config.solver == "scipy"
+
+
+def test_simple_temporary_velocity_reuses_steady_source_rhs(monkeypatch):
+    from fealpy.backend import backend_manager as bm
+    from fealpy.fvm import SimpleSolverControls
+
+    bm.set_backend("numpy")
+
+    class ZeroLinearSolver:
+        def solve(self, matrix, rhs):
+            return bm.zeros(rhs.shape[0], dtype=rhs.dtype)
+
+    solver = _cavity_solver(
+        convection_coef=0.0,
+        controls=SimpleSolverControls(
+            space_degree=0,
+            momentum_nonorthogonal_max_iter=0,
+            pressure_nonorthogonal_max_iter=0,
+        ),
+        linear_solver=ZeroLinearSolver(),
+    )
+    call_count = 0
+
+    def counted_source_vector(source):
+        nonlocal call_count
+        call_count += 1
+        return bm.ones(solver.GD * solver.NC, dtype=solver.cm.dtype)
+
+    monkeypatch.setattr(solver, "momentum_source_vector", counted_source_vector)
+
+    p = bm.zeros(solver.NC, dtype=solver.cm.dtype)
+    uf = bm.zeros((solver.mesh.number_of_faces(), solver.GD), dtype=solver.cm.dtype)
+    u0 = bm.zeros(solver.GD * solver.NC, dtype=solver.cm.dtype)
+
+    solver.temporary_velocity(p, uf, u0)
+    solver.temporary_velocity(p, uf, u0)
+
+    assert call_count == 1
+
+
+def test_simple_pressure_gauge_matrix_does_not_use_bilinear_assembly(monkeypatch):
+    from fealpy.backend import backend_manager as bm
+    from fealpy.fem import BilinearForm
+
+    solver = _cavity_solver(convection_coef=0.0)
+    coef = bm.ones(solver.mesh.number_of_faces(), dtype=solver.cm.dtype)
+
+    def fail_assembly(self):
+        raise AssertionError("pressure gauge matrix should use cached FVM structure")
+
+    monkeypatch.setattr(BilinearForm, "assembly", fail_assembly)
+
+    matrix = solver.pressure_gauge_matrix(coef)
+
+    assert matrix.shape == (solver.NC + 1, solver.NC + 1)
+
+
+def test_simple_pressure_gauge_matrix_matches_bilinear_reference():
+    import numpy as np
+    from fealpy.backend import backend_manager as bm
+    from fealpy.fem import BilinearForm, BlockForm
+    from fealpy.sparse import COOTensor
+    from fealpy.fvm import ScalarDiffusionIntegrator
+
+    solver = _cavity_solver(convection_coef=0.0)
+    coef = bm.linspace(0.3, 1.4, solver.mesh.number_of_faces())
+    matrix = solver.pressure_gauge_matrix(coef)
+
+    reference = BilinearForm(solver.space).add_integrator(
+        ScalarDiffusionIntegrator(q=2, coef=coef, geometry=solver.fvm_geometry)
+    ).assembly()
+    gauge_index = bm.stack(
+        [
+            bm.zeros(solver.NC, dtype=bm.int32),
+            bm.arange(solver.NC, dtype=bm.int32),
+        ],
+        axis=0,
+    )
+    gauge = COOTensor(gauge_index, solver.cm, spshape=(1, solver.NC))
+    reference = BlockForm([[reference, gauge.T], [gauge, None]])
+    reference = reference.assembly_sparse_matrix(format="csr")
+
+    diff = matrix.to_scipy() - reference.to_scipy()
+
+    np.testing.assert_allclose(diff.data, 0.0, atol=1.0e-13)
+
+
+def test_scalar_diffusion_matrix_assembler_matches_bilinear_reference():
+    import numpy as np
+    from fealpy.backend import backend_manager as bm
+    from fealpy.fem import BilinearForm
+    from fealpy.fvm.scalar_diffusion_integrator import (
+        ScalarDiffusionIntegrator,
+        ScalarDiffusionMatrixAssembler,
+    )
+
+    solver = _cavity_solver(convection_coef=0.0)
+    coef = bm.linspace(0.3, 1.4, solver.mesh.number_of_faces())
+    matrix = ScalarDiffusionMatrixAssembler(
+        solver.space,
+        geometry=solver.fvm_geometry,
+    ).assembly(coef)
+
+    reference = BilinearForm(solver.space).add_integrator(
+        ScalarDiffusionIntegrator(q=2, coef=coef, geometry=solver.fvm_geometry)
+    ).assembly()
+    diff = matrix.to_scipy() - reference.to_scipy()
+
+    np.testing.assert_allclose(diff.data, 0.0, atol=1.0e-13)
 
 
 def test_stokes_simple_model_uses_collocated_simple_algorithm_core():

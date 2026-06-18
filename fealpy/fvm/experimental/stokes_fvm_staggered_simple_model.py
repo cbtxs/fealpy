@@ -14,15 +14,17 @@ from fealpy.fvm import (
     ScalarDiffusionIntegrator,
     ScalarSourceIntegrator,
     GradientReconstruct,
-    DivergenceReconstruct,
-    DirichletBC,
     cell_average_l2_error,
 )
+from .legacy_boundary_conditions import ExperimentalDirichletBC as DirichletBC
 from .staggered_mesh_manager import StaggeredMeshManager
+from .staggered_divergence_reconstruct import (
+    StaggeredDivergenceReconstruct,
+    staggered_mass_residual,
+)
 from ..simple_residual import (
     cell_l2_norm,
     relative_l2_update,
-    staggered_mass_residual,
 )
 
 class StokesFVMStaggeredSimpleModel(ComputationalModel):
@@ -54,7 +56,7 @@ class StokesFVMStaggeredSimpleModel(ComputationalModel):
         self.umesh = self.staggered_mesh.umesh
         self.vmesh = self.staggered_mesh.vmesh
         self.pmesh = self.staggered_mesh.pmesh
-        self.div = DivergenceReconstruct(self.pmesh)
+        self.div = StaggeredDivergenceReconstruct(self.pmesh)
         self.pcm = self.pmesh.entity_measure("cell")
         self.ucm = self.umesh.entity_measure("cell")
         self.vcm = self.vmesh.entity_measure("cell")

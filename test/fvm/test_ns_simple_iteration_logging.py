@@ -41,7 +41,7 @@ def test_simple_iteration_mass_uses_pressure_corrected_face_velocity(monkeypatch
     raw_uf = object()
     corrected_uf = object()
 
-    def fake_mass_residual(mesh, uf):
+    def fake_mass_residual(mesh, uf, geometry=None):
         return 2.0 if uf is raw_uf else 1.0e-8
 
     monkeypatch.setattr(simple_residual, "collocated_mass_residual", fake_mass_residual)
@@ -71,7 +71,11 @@ def test_simple_iteration_pressure_criterion_uses_pressure_correction_l2(monkeyp
     import fealpy.fvm.simple_residual as simple_residual
 
     bm.set_backend("numpy")
-    monkeypatch.setattr(simple_residual, "collocated_mass_residual", lambda mesh, uf: 0.0)
+    monkeypatch.setattr(
+        simple_residual,
+        "collocated_mass_residual",
+        lambda mesh, uf, geometry=None: 0.0,
+    )
     monkeypatch.setattr(simple_residual, "cell_l2_norm", lambda mesh, value: 2.5)
     monkeypatch.setattr(simple_residual, "relative_l2_update", lambda mesh, update, p: 1.0e-8)
 

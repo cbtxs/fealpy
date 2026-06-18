@@ -1,21 +1,120 @@
 """Shared internal operators for collocated Navier-Stokes FVM solvers."""
 
+from typing import Optional
+
 from fealpy.typing import TensorLike
 from fealpy.backend import backend_manager as bm
 from fealpy.functionspace import ScaledMonomialSpace, TensorFunctionSpace
-from fealpy.fem import BilinearForm, LinearForm, BlockForm
-from fealpy.sparse import COOTensor, CSRTensor, spdiags
+from fealpy.fem import BilinearForm, LinearForm
+from fealpy.sparse import CSRTensor, spdiags
 
-from .convection_integrator import ConvectionIntegrator
-from .scalar_diffusion_integrator import ScalarDiffusionIntegrator
-from .scalar_cross_diffusion_integrator import ScalarCrossDiffusionIntegrator
+from .convection_integrator import ConvectionMatrixAssembler
+from .scalar_cross_diffusion_integrator import CrossDiffusionRHSAssembler
+from .scalar_diffusion_integrator import (
+    ScalarDiffusionIntegrator,
+    ScalarDiffusionMatrixAssembler,
+)
 from .scalar_source_integrator import ScalarSourceIntegrator
 from .gradient_reconstruct import GradientReconstruct
 from .face_gradient import reconstruct_face_gradient
 from .div_reconstruct import DivergenceReconstruct
 from .dirichlet_bc import DirichletBC
-from .fvm_geometry import FVMGeometry
-from .fvm_linear_solver import FVMLinearSolver, FVMLinearSolverConfig
+from .fvm_geometry import FVMGeometry, selected_boundary_faces
+
+
+class PressureGaugeMatrixAssembler:
+    r"""Assemble the pressure Laplacian plus a volume-weighted gauge row.
+
+    The matrix corresponds to ``ScalarDiffusionIntegrator`` on the pressure
+    space plus one Lagrange-multiplier row and column for the pressure gauge.
+    Its sparsity pattern is fixed by the mesh; each call updates only the
+    values induced by the current face response coefficient.
+    """
+
+    def __init__(
+        self,
+        space,
+        *,
+        geometry: Optional[FVMGeometry] = None,
+        cell_measure: Optional[TensorLike] = None,
+    ) -> None:
+        self.space = space
+        self.mesh = getattr(space, "mesh", None)
+        self.geometry = geometry if geometry is not None else FVMGeometry(self.mesh)
+        self.NC = self.mesh.number_of_cells()
+        self.sparse_shape = (self.NC + 1, self.NC + 1)
+        self.cell_measure = (
+            self.mesh.entity_measure("cell") if cell_measure is None else cell_measure
+        )
+        self.pressure_diffusion = ScalarDiffusionMatrixAssembler(
+            space,
+            geometry=self.geometry,
+        )
+
+        base_counts = (
+            self.pressure_diffusion.crow[1:] - self.pressure_diffusion.crow[:-1]
+        )
+        base_rows = bm.repeat(
+            bm.arange(
+                self.NC,
+                dtype=self.pressure_diffusion.col.dtype,
+                device=bm.get_device(self.pressure_diffusion.col),
+            ),
+            base_counts,
+        )
+        cell = bm.arange(self.NC, dtype=base_rows.dtype, device=bm.get_device(base_rows))
+        gauge_col = bm.full(
+            (self.NC,),
+            self.NC,
+            dtype=base_rows.dtype,
+            device=bm.get_device(base_rows),
+        )
+        rows = bm.concatenate([base_rows, cell, gauge_col])
+        cols = bm.concatenate([self.pressure_diffusion.col, gauge_col, cell])
+        self.gauge_values = bm.concatenate([self.cell_measure, self.cell_measure])
+
+        nrow, ncol = self.sparse_shape
+        flat = bm.astype(rows, bm.int64) * ncol + bm.astype(cols, bm.int64)
+        order = bm.argsort(flat)
+        flat_sorted = flat[order]
+        group_start = bm.ones(
+            (flat.shape[0],),
+            dtype=bm.bool,
+            device=bm.get_device(flat),
+        )
+        group_start = bm.set_at(
+            group_start,
+            slice(1, None),
+            flat_sorted[1:] != flat_sorted[:-1],
+        )
+        unique_flat = flat_sorted[group_start]
+        group_id_sorted = bm.cumsum(group_start, axis=0) - 1
+        self.entry_to_value = group_id_sorted[bm.argsort(order)]
+
+        row = unique_flat // ncol
+        col = unique_flat % ncol
+        counts = bm.bincount(row, minlength=nrow)
+        counts = bm.astype(counts, base_rows.dtype)
+        self.crow = bm.concatenate(
+            [
+                bm.zeros((1,), dtype=base_rows.dtype, device=bm.get_device(base_rows)),
+                bm.cumsum(counts, axis=0),
+            ],
+            axis=0,
+        )
+        self.col = bm.astype(col, base_rows.dtype)
+
+    def assembly(self, coef: TensorLike) -> CSRTensor:
+        """Return the pressure-gauge matrix for the current face coefficient."""
+        pressure_matrix = self.pressure_diffusion.assembly(coef)
+        local_values = bm.concatenate([pressure_matrix.values, self.gauge_values])
+        values = bm.zeros(
+            (self.col.shape[0],),
+            dtype=local_values.dtype,
+            device=bm.get_device(local_values),
+        )
+        values = bm.index_add(values, self.entry_to_value, local_values, axis=0)
+        return CSRTensor(self.crow, self.col, values, spshape=self.sparse_shape)
 
 
 class CollocatedNSFVMOperators:
@@ -26,37 +125,15 @@ class CollocatedNSFVMOperators:
     use component-major dof vectors with shape ``(GD*NC,)``.
     """
 
-    @staticmethod
-    def _as_positive_scalar(value, name: str) -> float:
-        if callable(value):
-            value = value()
-        try:
-            scalar = float(value)
-        except TypeError:
-            scalar = float(bm.to_numpy(value))
-        if scalar <= 0.0:
-            raise ValueError(f"{name} must be positive.")
-        return scalar
+    # Setup and algebraic shape conversion.
 
-    @staticmethod
-    def _as_nonnegative_scalar(value, name: str) -> float:
-        if callable(value):
-            value = value()
-        try:
-            scalar = float(value)
-        except TypeError:
-            scalar = float(bm.to_numpy(value))
-        if scalar < 0.0:
-            raise ValueError(f"{name} must be non-negative.")
-        return scalar
-
-    def _init_collocated_discretization(
+    def init_collocated_discretization(
         self,
         degree: int,
         velocity_dirichlet,
         *,
-        pressure_gradient_method: str = "extended_lsq",
-        velocity_gradient_method: str = "extended_lsq",
+        pressure_gradient_method: str = "layered_lsq",
+        velocity_gradient_method: str = "layered_lsq",
         velocity_dirichlet_threshold=None,
         pressure_dirichlet=None,
         pressure_dirichlet_threshold=None,
@@ -67,8 +144,9 @@ class CollocatedNSFVMOperators:
         self.GD = self.mesh.geo_dimension()
         self.space = ScaledMonomialSpace(self.mesh, degree)
         self.velocity_space = TensorFunctionSpace(self.space, shape=(self.GD, -1))
-        self.points = self.mesh.entity_barycenter("cell")
-        self.epoints = self.mesh.entity_barycenter("face")
+        self.cell_center = self.mesh.entity_barycenter("cell")
+        self.face_center = self.mesh.entity_barycenter("face")
+        self.fvm_geometry = FVMGeometry(self.mesh)
 
         self.pressure_gradient = GradientReconstruct(
             self.mesh,
@@ -76,6 +154,7 @@ class CollocatedNSFVMOperators:
             gd=pressure_dirichlet,
             bc_type="dirichlet" if pressure_dirichlet is not None else None,
             threshold=pressure_dirichlet_threshold,
+            geometry=self.fvm_geometry,
         )
         self.velocity_gradient = GradientReconstruct(
             self.mesh,
@@ -83,8 +162,8 @@ class CollocatedNSFVMOperators:
             gd=velocity_dirichlet,
             bc_type="dirichlet",
             threshold=velocity_dirichlet_threshold,
+            geometry=self.fvm_geometry,
         )
-        self.fvm_geometry = FVMGeometry(self.mesh)
         self.velocity_dirichlet = velocity_dirichlet
         self.velocity_dirichlet_threshold = velocity_dirichlet_threshold
         if with_divergence:
@@ -94,9 +173,10 @@ class CollocatedNSFVMOperators:
                 self.mesh,
                 velocity_dirichlet,
                 threshold=velocity_dirichlet_threshold,
+                geometry=self.fvm_geometry,
             )
 
-        self.e2c = self.fvm_geometry.face_to_cell
+        self.face_to_cell = self.fvm_geometry.face_to_cell
         self.last_nonorthogonal_iterations = 0
         self.last_momentum_nonorthogonal_iterations = 0
         self.last_pressure_nonorthogonal_iterations = 0
@@ -130,27 +210,7 @@ class CollocatedNSFVMOperators:
             axis=-1,
         )
 
-    def _init_linear_solver(self, options):
-        linear_solver = options.get("linear_solver")
-        if linear_solver is not None and hasattr(linear_solver, "solve"):
-            return linear_solver
-
-        config = options.get("linear_solver_config")
-        if isinstance(config, dict):
-            config = FVMLinearSolverConfig(**config)
-        if config is not None:
-            return FVMLinearSolver(config)
-
-        try:
-            device = str(bm.get_device(self.cm))
-        except Exception:
-            device = "cpu"
-        config = FVMLinearSolverConfig(
-            backend=bm.backend_name,
-            device=device,
-            solver=linear_solver or "auto",
-        )
-        return FVMLinearSolver(config)
+    # Momentum equation components.
 
     def momentum_diffusion_matrix(self, diffusion_coef):
         """Assemble and cache the shared momentum diffusion matrix."""
@@ -166,21 +226,27 @@ class CollocatedNSFVMOperators:
 
         if key not in cache:
             cache[key] = BilinearForm(self.velocity_space).add_integrator(
-                ScalarDiffusionIntegrator(q=self.p + 2, coef=diffusion_coef)
+                ScalarDiffusionIntegrator(
+                    q=self.p + 2,
+                    coef=diffusion_coef,
+                    geometry=self.fvm_geometry,
+                )
             ).assembly()
         return cache[key]
 
     def momentum_convection_matrix(self, convection_face_velocity, interpolation: str):
         """Assemble the momentum convection matrix for the active face velocity."""
-        bform = BilinearForm(self.velocity_space)
-        bform.add_integrator(
-            ConvectionIntegrator(
-                q=self.p + 2,
-                coef=convection_face_velocity,
+        cache = getattr(self, "_momentum_convection_matrix_assembler_cache", None)
+        if cache is None:
+            cache = {}
+            self._momentum_convection_matrix_assembler_cache = cache
+        if interpolation not in cache:
+            cache[interpolation] = ConvectionMatrixAssembler(
+                self.velocity_space,
                 interpolation=interpolation,
+                geometry=self.fvm_geometry,
             )
-        )
-        return bform.assembly()
+        return cache[interpolation].assembly(convection_face_velocity)
 
     def momentum_time_matrix(self, density, time_step):
         """Return the implicit backward-Euler momentum time matrix.
@@ -260,6 +326,163 @@ class CollocatedNSFVMOperators:
             ScalarSourceIntegrator(source, q=self.p + 2)
         ).assembly()
 
+    def velocity_neumann_boundary_data(self):
+        """Return velocity Neumann boundary faces and normal derivatives."""
+        threshold = getattr(self, "velocity_neumann_threshold", None)
+        value = getattr(self, "velocity_neumann_data", None)
+        if threshold is None or value is None:
+            return None, None
+
+        boundary_faces = selected_boundary_faces(self.fvm_geometry, threshold)
+        if boundary_faces is None or boundary_faces.shape[0] == 0:
+            return boundary_faces, bm.zeros((0, self.GD), dtype=self.cm.dtype)
+        points = self.fvm_geometry.face_center[boundary_faces]
+        return boundary_faces, bm.array(value(points), dtype=self.cm.dtype)
+
+    def velocity_neumann_diffusion_source(self, diffusion_coef):
+        r"""Return cell-integrated velocity Neumann diffusion RHS.
+
+        ``velocity_neumann_data(points)`` is interpreted as the outward normal
+        derivative density ``dU/dn`` on selected boundary faces.  The finite
+        volume contribution is ``mu_f * dU/dn * |S_f|`` scattered to owner
+        cells and returned in component-major momentum-vector layout.
+        """
+        boundary_faces, sn_grad = self.velocity_neumann_boundary_data()
+        if boundary_faces is None or boundary_faces.shape[0] == 0:
+            return bm.zeros((self.GD * self.NC,), dtype=self.cm.dtype)
+
+        if isinstance(diffusion_coef, (int, float)):
+            coef = diffusion_coef
+        else:
+            coef = bm.array(diffusion_coef)
+            if coef.shape != ():
+                coef = coef[boundary_faces]
+        contribution = coef * self.fvm_geometry.mag_S_f[boundary_faces]
+        cell_source = bm.zeros((self.NC, self.GD), dtype=sn_grad.dtype)
+        cell_source = bm.index_add(
+            cell_source,
+            self.fvm_geometry.owner[boundary_faces],
+            contribution[:, None] * sn_grad,
+            axis=0,
+        )
+        return self.cell_vector_to_dofs(cell_source)
+
+    def boundary_corrected_velocity_face_gradient(self, velocity, interpolation_method: str):
+        """Return face velocity gradients with Dirichlet/natural/Neumann patches."""
+        cell_gradient = self.velocity_gradient.cell_gradient(velocity)
+        kwargs = {}
+
+        dirichlet_faces, dirichlet_values = self.boundary_conditions.boundary_face_velocity(
+            "velocity",
+            mesh=self.mesh,
+        )
+        if dirichlet_faces is not None and dirichlet_faces.shape[0] > 0:
+            kwargs["dirichlet_faces"] = dirichlet_faces
+            kwargs["dirichlet_values"] = dirichlet_values
+
+        neumann_faces = []
+        neumann_values = []
+        natural_faces = selected_boundary_faces(
+            self.fvm_geometry,
+            getattr(self, "velocity_natural_threshold", None),
+        )
+        if natural_faces is not None and natural_faces.shape[0] > 0:
+            neumann_faces.append(natural_faces)
+            neumann_values.append(
+                bm.zeros((natural_faces.shape[0], velocity.shape[1]), dtype=velocity.dtype)
+            )
+
+        velocity_neumann_faces, velocity_neumann_values = self.velocity_neumann_boundary_data()
+        if velocity_neumann_faces is not None and velocity_neumann_faces.shape[0] > 0:
+            neumann_faces.append(velocity_neumann_faces)
+            neumann_values.append(bm.array(velocity_neumann_values, dtype=velocity.dtype))
+
+        if neumann_faces:
+            kwargs["neumann_faces"] = bm.concatenate(neumann_faces, axis=0)
+            kwargs["neumann_sn_grad"] = bm.concatenate(neumann_values, axis=0)
+
+        return reconstruct_face_gradient(
+            self.mesh,
+            cell_gradient,
+            geometry=self.fvm_geometry,
+            cell_values=velocity,
+            interpolation_method=interpolation_method,
+            **kwargs,
+        )
+
+    def momentum_nonorthogonal_rhs(self, velocity: TensorLike) -> TensorLike:
+        """Assemble the explicit momentum RHS from non-orthogonal diffusion.
+
+        ``nonorthogonal`` is the algorithm-level correction.  The underlying
+        operator is the cross-diffusion face flux assembled by
+        ``CrossDiffusionRHSAssembler``.
+        """
+        grad_f = self.boundary_corrected_velocity_face_gradient(
+            velocity,
+            interpolation_method="average",
+        )
+        assembler = getattr(self, "_cross_diffusion_rhs_assembler", None)
+        if assembler is None:
+            assembler = CrossDiffusionRHSAssembler(
+                self.velocity_space,
+                geometry=self.fvm_geometry,
+            )
+            self._cross_diffusion_rhs_assembler = assembler
+        return assembler.assembly(
+            grad_f=grad_f,
+            coef=getattr(self, "diffusion_coef", getattr(self, "mu", 1.0)),
+            boundary_policy="all",
+        )
+
+    # Face interpolation and flux algebra.
+
+    def face_interpolate_cell_scalar(self, cell_values, method: str = "linear"):
+        """Linearly interpolate a cell scalar to faces using face geometry."""
+        face_to_cell = self.face_to_cell[:, :2]
+        if method == "linear":
+            owner_weight = self.fvm_geometry.linear_owner_weight()
+        elif method == "average":
+            owner_weight = 0.5 * bm.ones_like(self.fvm_geometry.mag_S_f)
+            owner_weight = bm.where(self.fvm_geometry.is_internal, owner_weight, 1.0)
+        else:
+            raise ValueError("method must be 'average' or 'linear'.")
+        return (
+            owner_weight * cell_values[face_to_cell[:, 0]]
+            + (1.0 - owner_weight) * cell_values[face_to_cell[:, 1]]
+        )
+
+    def face_interpolate_cell_vector(self, cell_vectors, method: str = "linear"):
+        """Linearly interpolate a cell vector to faces using face geometry."""
+        face_to_cell = self.face_to_cell[:, :2]
+        if method == "linear":
+            owner_weight = self.fvm_geometry.linear_owner_weight()
+        elif method == "average":
+            owner_weight = 0.5 * bm.ones_like(self.fvm_geometry.mag_S_f)
+            owner_weight = bm.where(self.fvm_geometry.is_internal, owner_weight, 1.0)
+        else:
+            raise ValueError("method must be 'average' or 'linear'.")
+        return (
+            owner_weight[:, None] * cell_vectors[face_to_cell[:, 0]]
+            + (1.0 - owner_weight)[:, None] * cell_vectors[face_to_cell[:, 1]]
+        )
+
+    def face_flux(self, face_velocity):
+        """Return the signed surface flux ``phi_f = u_f dot S_f``."""
+        return bm.einsum("ij,ij->i", face_velocity, self.fvm_geometry.S_f)
+
+    def divergence_from_flux(self, face_flux):
+        """Scatter signed face fluxes to the cell flux imbalance."""
+        return self.fvm_geometry.scatter_face_flux_to_cells(face_flux)
+
+    def enforce_face_flux(self, face_velocity, target_flux):
+        """Adjust only the normal component of a vector face velocity."""
+        Sf = self.fvm_geometry.S_f
+        current_flux = self.face_flux(face_velocity)
+        Sf_dot_Sf = bm.einsum("ij,ij->i", Sf, Sf)
+        return face_velocity + ((target_flux - current_flux) / Sf_dot_Sf)[:, None] * Sf
+
+    # Pressure equation components.
+
     def pressure_gradient_source(self, pressure):
         """Return the cell-integrated pressure-gradient source vector."""
         grad_p = self.pressure_gradient.cell_gradient(pressure)
@@ -270,32 +493,16 @@ class CollocatedNSFVMOperators:
             ]
         )
 
-    def pressure_response_face_coefficient(self, a_p, interpolation_method=None):
+    def pressure_response_face_coefficient(self, a_p, interpolation_method: str):
         """Interpolate cell pressure response ``V/a_P`` to faces."""
-        if interpolation_method is None:
-            interpolation_method = getattr(self, "face_interpolation_method", None)
-        if interpolation_method is None:
-            controls = getattr(self, "controls", None)
-            if controls is not None and hasattr(controls, "face_interpolation"):
-                interpolation_method = controls.face_interpolation(
-                    "pressure_response_interpolation"
-                )
-            elif controls is not None and hasattr(controls, "face_interpolation_method"):
-                interpolation_method = controls.face_interpolation_method
-            else:
-                interpolation_method = "linear"
-
         response = self.cm / a_p[: self.NC]
-        return self.face_interpolate_cell_scalar(
-            response,
-            method=interpolation_method,
-        )
+        return self.face_interpolate_cell_scalar(response, method=interpolation_method)
 
     def pressure_orthogonal_flux(self, pressure, response_coef):
         """Return the implicit orthogonal pressure-Laplacian flux."""
         _, mag_E_f, _ = self.fvm_geometry.over_relaxed_decomposition()
         coefficient = response_coef * mag_E_f / self.fvm_geometry.mag_d_f
-        jump = pressure[self.e2c[:, 0]] - pressure[self.e2c[:, 1]]
+        jump = pressure[self.face_to_cell[:, 0]] - pressure[self.face_to_cell[:, 1]]
         return coefficient * jump
 
     def add_pressure_dirichlet_flux(
@@ -324,62 +531,16 @@ class CollocatedNSFVMOperators:
             / self.fvm_geometry.mag_d_f[selected]
         )
         owner = self.fvm_geometry.owner[selected]
-        bd_value = boundary_value(face_centers[flag])
-        bd_flux = coefficient * (pressure[owner] - bd_value)
-        return bm.set_at(flux, selected, bd_flux)
+        boundary_pressure = boundary_value(face_centers[flag])
+        boundary_flux = coefficient * (pressure[owner] - boundary_pressure)
+        return bm.set_at(flux, selected, boundary_flux)
 
-    def compute_cross_diffusion(self, velocity: TensorLike) -> TensorLike:
-        """Assemble the explicit non-orthogonal momentum diffusion correction."""
-        grad_u = self.velocity_gradient.cell_gradient(velocity)
-        grad_f = reconstruct_face_gradient(self.mesh, grad_u)
-        return LinearForm(self.velocity_space).add_integrator(
-            ScalarCrossDiffusionIntegrator(
-                grad_f=grad_f,
-                coef=getattr(self, "diffusion_coef", getattr(self, "mu", 1.0)),
-                geometry=self.fvm_geometry,
-                boundary_policy="all",
-            )
-        ).assembly()
-
-    def face_interpolate_cell_scalar(self, cell_values, method: str = "linear"):
-        """Linearly interpolate a cell scalar to faces using face geometry."""
-        e2c = self.e2c[:, :2]
-        if method == "linear":
-            owner_weight = self.fvm_geometry.linear_owner_weight()
-        elif method == "average":
-            owner_weight = 0.5 * bm.ones_like(self.fvm_geometry.mag_S_f)
-            owner_weight = bm.where(self.fvm_geometry.is_internal, owner_weight, 1.0)
-        else:
-            raise ValueError("method must be 'average' or 'linear'.")
-        return owner_weight * cell_values[e2c[:, 0]] + (1.0 - owner_weight) * cell_values[e2c[:, 1]]
-
-    def face_interpolate_cell_vector(self, cell_vectors, method: str = "linear"):
-        """Linearly interpolate a cell vector to faces using face geometry."""
-        e2c = self.e2c[:, :2]
-        if method == "linear":
-            owner_weight = self.fvm_geometry.linear_owner_weight()
-        elif method == "average":
-            owner_weight = 0.5 * bm.ones_like(self.fvm_geometry.mag_S_f)
-            owner_weight = bm.where(self.fvm_geometry.is_internal, owner_weight, 1.0)
-        else:
-            raise ValueError("method must be 'average' or 'linear'.")
-        return (
-            owner_weight[:, None] * cell_vectors[e2c[:, 0]]
-            + (1.0 - owner_weight)[:, None] * cell_vectors[e2c[:, 1]]
-        )
-
-    def face_flux(self, face_velocity):
-        """Return the signed surface flux ``phi_f = u_f dot S_f``."""
-        return bm.einsum("ij,ij->i", face_velocity, self.fvm_geometry.S_f)
-
-    def divergence_from_flux(self, phi):
-        """Scatter signed face fluxes to the cell flux imbalance."""
-        return self.fvm_geometry.scatter_face_flux_to_cells(phi)
-
-    def _pressure_nonorthogonal_cross_flux(
+    def pressure_nonorthogonal_cross_flux(
         self,
         pressure: TensorLike,
         response_coef: TensorLike,
+        *,
+        interpolation_method: str,
     ) -> TensorLike:
         """Return the explicit non-orthogonal flux induced by a pressure field.
 
@@ -389,54 +550,40 @@ class CollocatedNSFVMOperators:
         matching the pressure Laplacian correction route.
         """
         grad_p = self.pressure_gradient.cell_gradient(pressure)
-        controls = getattr(self, "controls", None)
-        face_method = getattr(
-            self,
-            "face_interpolation_method",
-            getattr(controls, "face_interpolation_method", "average"),
+        grad_f = reconstruct_face_gradient(
+            self.mesh,
+            grad_p,
+            geometry=self.fvm_geometry,
+            interpolation_method=interpolation_method,
         )
-        grad_f = reconstruct_face_gradient(self.mesh, grad_p, interpolation_method=face_method)
         T_f = self.fvm_geometry.bounded_over_relaxed_decomposition()[2]
         cross_flux = response_coef * bm.einsum("ij,ij->i", T_f, grad_f)
         return bm.where(self.fvm_geometry.is_boundary, 0.0, cross_flux)
 
-    def _assemble_pressure_gauge_matrix(self, coef, q: int):
-        A = BilinearForm(self.space).add_integrator(
-            ScalarDiffusionIntegrator(q=q, coef=coef)
-        ).assembly()
-        gauge_index = bm.stack(
-            [
-                bm.zeros(self.NC, dtype=bm.int32),
-                bm.arange(self.NC, dtype=bm.int32),
-            ],
-            axis=0,
-        )
-        A1 = COOTensor(gauge_index, self.cm, spshape=(1, self.NC))
-        A = BlockForm([[A, A1.T], [A1, None]])
-        return A.assembly_sparse_matrix(format="csr")
+    def pressure_gauge_matrix(self, coef):
+        """Assemble the pressure Laplacian with a volume-weighted gauge row."""
+        assembler = getattr(self, "_pressure_gauge_matrix_assembler", None)
+        if assembler is None:
+            assembler = PressureGaugeMatrixAssembler(
+                self.space,
+                geometry=self.fvm_geometry,
+                cell_measure=self.cm,
+            )
+            self._pressure_gauge_matrix_assembler = assembler
+        return assembler.assembly(coef)
 
-    def _boundary_face_coefficient(self, coef):
-        """Return boundary-face coefficients from scalar or face-wise data."""
-        if isinstance(coef, (int, float)):
-            return coef
+    def pressure_diffusion_matrix(self, coef):
+        """Assemble the scalar pressure Laplacian without boundary constraints."""
+        assembler = getattr(self, "_scalar_diffusion_matrix_assembler", None)
+        if assembler is None:
+            assembler = ScalarDiffusionMatrixAssembler(
+                self.space,
+                geometry=self.fvm_geometry,
+            )
+            self._scalar_diffusion_matrix_assembler = assembler
+        return assembler.assembly(coef)
 
-        coef = bm.array(coef)
-        if coef.shape == ():
-            return coef
-
-        boundary_faces = bm.nonzero(self.fvm_geometry.is_boundary)[0]
-        if coef.shape[0] == self.mesh.number_of_faces():
-            return coef[boundary_faces]
-        if coef.shape[0] == boundary_faces.shape[0]:
-            return coef
-        return coef
-
-    def enforce_face_flux(self, face_velocity, target_flux):
-        """Adjust only the normal component of a vector face velocity."""
-        Sf = self.fvm_geometry.S_f
-        current_flux = self.face_flux(face_velocity)
-        Sf_dot_Sf = bm.einsum("ij,ij->i", Sf, Sf)
-        return face_velocity + ((target_flux - current_flux) / Sf_dot_Sf)[:, None] * Sf
+    # Velocity-pressure correction components.
 
     def velocity_pressure_correction(self, cell_velocity, pressure_field, a_p):
         """Apply ``U <- U - rAU grad(p)`` for the supplied pressure argument.

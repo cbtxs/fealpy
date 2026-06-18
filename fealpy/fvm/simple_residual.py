@@ -8,9 +8,8 @@ velocity coupling schemes report:
 * relative update sizes for relaxed fixed-point iterations;
 * normalized finite-volume mass imbalance from signed face fluxes.
 
-Keeping these definitions in one place is useful because collocated and
-staggered SIMPLE solvers should stop on the same mathematical residuals even
-though their face-velocity representations differ.
+Keeping these definitions in one place is useful because collocated SIMPLE-like
+solvers should stop on the same mathematical residuals.
 
 PISO solvers can reuse the same normalized face-flux residual definition, but
 they often already hold scalar face fluxes instead of vector face velocities.
@@ -21,7 +20,6 @@ residuals.
 
 from fealpy.backend import backend_manager as bm
 
-from .div_reconstruct import DivergenceReconstruct
 from .fvm_geometry import FVMGeometry
 from .solver_diagnostics import log_simple_iteration, simple_iteration_log_message
 
@@ -59,7 +57,13 @@ def relative_l2_update(mesh, update, reference, floor=1.0):
     return update_norm / (reference_norm + floor)
 
 
-def normalized_flux_residual(mesh, cell_flux_imbalance, face_flux, eps=1.0e-30):
+def normalized_flux_residual(
+    mesh,
+    cell_flux_imbalance,
+    face_flux,
+    eps=1.0e-30,
+    geometry=None,
+):
     """Return a dimensionless finite-volume continuity residual.
 
     ``cell_flux_imbalance`` is the cell residual
@@ -72,7 +76,8 @@ def normalized_flux_residual(mesh, cell_flux_imbalance, face_flux, eps=1.0e-30):
     balances.  A value near zero means that the supplied face fluxes satisfy
     discrete incompressibility relative to their own flux scale.
     """
-    is_internal = FVMGeometry(mesh).is_internal
+    geometry = geometry if geometry is not None else FVMGeometry(mesh)
+    is_internal = geometry.is_internal
     numerator = _as_float(bm.sum(bm.abs(cell_flux_imbalance)))
     denominator = bm.sum(bm.abs(face_flux))
     denominator = denominator + bm.sum(bm.abs(face_flux[is_internal]))
@@ -83,17 +88,22 @@ def normalized_flux_residual(mesh, cell_flux_imbalance, face_flux, eps=1.0e-30):
     return numerator / denominator
 
 
-def collocated_mass_residual(mesh, face_velocity):
+def collocated_mass_residual(mesh, face_velocity, geometry=None):
     """Mass residual for collocated vector face velocities.
 
     The scalar flux is ``phi_f = dot(u_f, S_f)`` where ``S_f`` is the oriented
     face area vector.  The cell imbalance is obtained by scattering this same
     face flux with the owner-oriented geometry convention.
     """
-    geometry = FVMGeometry(mesh)
+    geometry = geometry if geometry is not None else FVMGeometry(mesh)
     face_flux = bm.einsum("ij,ij->i", face_velocity, geometry.S_f)
     cell_flux_imbalance = geometry.scatter_face_flux_to_cells(face_flux)
-    return normalized_flux_residual(mesh, cell_flux_imbalance, face_flux)
+    return normalized_flux_residual(
+        mesh,
+        cell_flux_imbalance,
+        face_flux,
+        geometry=geometry,
+    )
 
 
 def simple_iteration_residual(
@@ -106,6 +116,7 @@ def simple_iteration_residual(
     nonorthogonal_iterations,
     momentum_nonorthogonal_iterations,
     stopping_face_velocity=None,
+    geometry=None,
 ):
     """Return one SIMPLE residual record.
 
@@ -124,11 +135,19 @@ def simple_iteration_residual(
         mesh, pressure_correction, pressure
     )
     pressure_correction_l2 = cell_l2_norm(mesh, pressure_correction)
-    mass_before_pressure_correction = collocated_mass_residual(mesh, face_velocity)
+    mass_before_pressure_correction = collocated_mass_residual(
+        mesh,
+        face_velocity,
+        geometry=geometry,
+    )
     if stopping_face_velocity is None:
         mass = mass_before_pressure_correction
     else:
-        mass = collocated_mass_residual(mesh, stopping_face_velocity)
+        mass = collocated_mass_residual(
+            mesh,
+            stopping_face_velocity,
+            geometry=geometry,
+        )
     return {
         "mass": mass,
         "mass_before_pressure_correction": mass_before_pressure_correction,
@@ -153,6 +172,7 @@ def simple_pressure_update_step(
     nonorthogonal_iterations,
     momentum_nonorthogonal_iterations,
     stopping_face_velocity=None,
+    geometry=None,
 ):
     """Return fixed-relaxation pressure update and append its residual row."""
     pressure_update = pressure_relax * pressure_correction
@@ -165,6 +185,7 @@ def simple_pressure_update_step(
         nonorthogonal_iterations=nonorthogonal_iterations,
         momentum_nonorthogonal_iterations=momentum_nonorthogonal_iterations,
         stopping_face_velocity=stopping_face_velocity,
+        geometry=geometry,
     )
     residuals.append(residual)
     return pressure_update, residual
@@ -178,22 +199,13 @@ def simple_tolerances(tol, tol_mass, tol_pressure_correction):
     )
 
 
+def pressure_correction_converged(residual, tol_mass, tol_pressure_correction):
+    """Return whether SIMPLE pressure-correction residuals satisfy stopping criteria."""
+    if residual["mass"] >= tol_mass:
+        return False
+    return residual["pressure_correction"] < tol_pressure_correction
+
+
 def log_simple_residual(logger, iteration, residual):
     """Log one SIMPLE pressure-correction residual record."""
     log_simple_iteration(logger, iteration, residual)
-
-
-def staggered_mass_residual(mesh, edge_velocity):
-    """Mass residual for scalar staggered velocities on pressure faces.
-
-    ``edge_velocity`` is interpreted as the normal velocity component stored on
-    the pressure-mesh face.  On the current structured staggered meshes the
-    signed scalar face measure is recovered from the oriented area vector by
-    summing its components, because each pressure face is axis-aligned.  This
-    helper is therefore a residual definition for the current staggered mesh
-    contract, not a generic unstructured normal-flux conversion.
-    """
-    signed_face_measure = bm.sum(mesh.edge_normal(), axis=1)
-    face_flux = edge_velocity * signed_face_measure
-    cell_flux_imbalance = DivergenceReconstruct(mesh).StagReconstruct(edge_velocity)
-    return normalized_flux_residual(mesh, cell_flux_imbalance, face_flux)

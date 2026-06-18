@@ -12,6 +12,12 @@ from .stokes_fvm_rc_model import StokesFVMRCModel
 from .stokes_fvm_staggered_model import StokesFVMStaggeredModel
 from .stokes_fvm_staggered_simple_model import StokesFVMStaggeredSimpleModel
 from .staggered_mesh_manager import StaggeredMeshManager
+from .legacy_boundary_conditions import ExperimentalDirichletBC, ExperimentalNeumannBC
+from .rhie_chow_coupled_operator import RhieChowCoupledOperator
+from .staggered_divergence_reconstruct import (
+    StaggeredDivergenceReconstruct,
+    staggered_mass_residual,
+)
 
 __all__ = [
     "NSFVMRCModel",
@@ -22,4 +28,9 @@ __all__ = [
     "StokesFVMStaggeredModel",
     "StokesFVMStaggeredSimpleModel",
     "StaggeredMeshManager",
+    "ExperimentalDirichletBC",
+    "ExperimentalNeumannBC",
+    "RhieChowCoupledOperator",
+    "StaggeredDivergenceReconstruct",
+    "staggered_mass_residual",
 ]

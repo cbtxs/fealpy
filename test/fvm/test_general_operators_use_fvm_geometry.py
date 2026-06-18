@@ -1,6 +1,5 @@
 import numpy as np
 import pytest
-from pathlib import Path
 
 from fealpy.backend import backend_manager as bm
 from fealpy.fem import LinearForm
@@ -231,11 +230,7 @@ def test_collocated_mass_residual_scatter_uses_single_geometry(monkeypatch):
             calls.append(np.asarray(face_flux).copy())
             return super().scatter_face_flux_to_cells(face_flux)
 
-    def fail_if_called(*args, **kwargs):
-        raise AssertionError("collocated mass residual should scatter face flux directly")
-
     monkeypatch.setattr(residual_module, "FVMGeometry", CountingGeometry)
-    monkeypatch.setattr(residual_module, "DivergenceReconstruct", fail_if_called)
 
     residual = collocated_mass_residual(mesh, face_velocity)
 
@@ -278,7 +273,7 @@ def test_rhie_chow_interpolation_reuses_instance_geometry_for_owner_weights(monk
     face_velocity, _ = RhieChowInterpolation(
         mesh,
         velocity_interpolation="linear",
-    ).Ucell2edge(flat_velocity, ap)
+    ).cell_velocity_to_face(flat_velocity, ap)
 
     geometry = WeightedGeometry(mesh)
     weight = np.asarray(geometry.linear_owner_weight())
@@ -297,9 +292,10 @@ def test_rhie_chow_interpolation_reuses_instance_geometry_for_owner_weights(monk
     )
 
 
-def test_fvm_module_does_not_keep_backend_utils_adapter():
-    fvm_dir = Path(__file__).resolve().parents[2] / "fealpy" / "fvm"
+def test_rhie_chow_pressure_gradient_reuses_instance_geometry():
+    from fealpy.fvm import RhieChowInterpolation
 
-    assert not (fvm_dir / "backend_utils.py").exists()
-    for path in fvm_dir.glob("*.py"):
-        assert "backend_utils" not in path.read_text()
+    mesh = _quad_mesh()
+    rhie_chow = RhieChowInterpolation(mesh)
+
+    assert rhie_chow.gradient_reconstruct.fvm_geometry is rhie_chow.fvm_geometry

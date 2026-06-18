@@ -4,15 +4,43 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from fealpy.backend import backend_manager as bm
+
+
+def positive_scalar(value, name: str) -> float:
+    """Return ``value`` as a positive Python scalar."""
+    if callable(value):
+        value = value()
+    try:
+        scalar = float(value)
+    except TypeError:
+        scalar = float(bm.to_numpy(value))
+    if scalar <= 0.0:
+        raise ValueError(f"{name} must be positive.")
+    return scalar
+
+
+def nonnegative_scalar(value, name: str) -> float:
+    """Return ``value`` as a non-negative Python scalar."""
+    if callable(value):
+        value = value()
+    try:
+        scalar = float(value)
+    except TypeError:
+        scalar = float(bm.to_numpy(value))
+    if scalar < 0.0:
+        raise ValueError(f"{name} must be non-negative.")
+    return scalar
+
 
 @dataclass(frozen=True)
 class SimpleSolverControls:
     """Discretization controls for ``CollocatedSimpleSolver``."""
 
     space_degree: int = 0
-    pressure_gradient_method: str = "extended_lsq"
-    velocity_gradient_method: str = "extended_lsq"
-    rhie_chow_pressure_gradient_method: str = "extended_lsq"
+    pressure_gradient_method: str = "layered_lsq"
+    velocity_gradient_method: str = "layered_lsq"
+    rhie_chow_pressure_gradient_method: str = "layered_lsq"
     face_interpolation_method: str = "average"
     momentum_face_interpolation: str | None = None
     pressure_response_interpolation: str | None = None
@@ -60,9 +88,9 @@ class SimpleSolverControls:
 class PisoSolverControls:
     """Discretization and iteration controls for ``CollocatedPisoSolver``.
 
-    The momentum and pressure non-orthogonal counters both mean the number of
-    Picard-style solves actually executed for that equation.  OpenFOAM's
-    ``nNonOrthogonalCorrectors=m`` corresponds to ``m+1`` pressure solves here.
+    The momentum and pressure non-orthogonal counters control explicit
+    non-orthogonal correction solves.  A value of zero disables the explicit
+    cross correction while still solving the base equation once.
     """
 
     space_degree: int = 0
@@ -71,9 +99,9 @@ class PisoSolverControls:
     n_correctors: int = 2
     snapshot_interval: int = 1
     snapshot_start_step: int = 1
-    pressure_gradient_method: str = "extended_lsq"
-    velocity_gradient_method: str = "extended_lsq"
-    rhie_chow_pressure_gradient_method: str = "extended_lsq"
+    pressure_gradient_method: str = "layered_lsq"
+    velocity_gradient_method: str = "layered_lsq"
+    rhie_chow_pressure_gradient_method: str = "layered_lsq"
     face_interpolation_method: str = "average"
     rhie_chow_velocity_interpolation: str | None = None
     use_transient_flux_correction: bool = True
@@ -139,10 +167,10 @@ class PisoSolverControls:
         pressure_max_iter: int,
         pressure_tol: float,
     ) -> None:
-        if momentum_max_iter < 1:
-            raise ValueError("momentum_nonorthogonal_max_iter must be positive.")
-        if pressure_max_iter < 1:
-            raise ValueError("pressure_nonorthogonal_max_iter must be positive.")
+        if momentum_max_iter < 0:
+            raise ValueError("momentum_nonorthogonal_max_iter must be non-negative.")
+        if pressure_max_iter < 0:
+            raise ValueError("pressure_nonorthogonal_max_iter must be non-negative.")
         if momentum_tol <= 0.0:
             raise ValueError("momentum_nonorthogonal_tol must be positive.")
         if pressure_tol <= 0.0:

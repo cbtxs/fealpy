@@ -39,15 +39,17 @@ class DeviatoricStressSourceIntegrator(LinearInt, OpInt, FaceInt):
         *,
         index: Index = _S,
         region: Optional[Index] = None,
+        geometry: Optional[FVMGeometry] = None,
         batched: bool = False,
         method: Literal[None] = None,
     ) -> None:
         super().__init__()
         if region is not None and not (isinstance(index, slice) and index == _S):
-            raise ValueError("Use either 'region' or legacy 'index', not both.")
+            raise ValueError("Use either 'region' or 'index', not both.")
         self.grad_f = grad_f
         self.coef = coef
         self.index = index
+        self.geometry = geometry
         self.batched = batched
         self.set_region(region)
         self.assembly.set(method)
@@ -85,6 +87,14 @@ class DeviatoricStressSourceIntegrator(LinearInt, OpInt, FaceInt):
                 "when local indices are given."
             )
 
+        if (
+            self.geometry is not None
+            and region is None
+            and isinstance(index, slice)
+            and index == _S
+        ):
+            return mesh, self.geometry, index
+
         return mesh, FVMGeometry(mesh, index=index), index
 
     @variantmethod
@@ -101,11 +111,11 @@ class DeviatoricStressSourceIntegrator(LinearInt, OpInt, FaceInt):
             if coef.shape != () and coef.shape[0] == mesh.number_of_faces():
                 coef = coef[index]
 
-        face_flux = _deviatoric_stress_face_flux(grad_f, geometry.S_f, coef)
+        face_flux = deviatoric_stress_face_flux(grad_f, geometry.S_f, coef)
         return geometry.scatter_face_flux_to_cells(face_flux)
 
 
-def _deviatoric_stress_face_flux(
+def deviatoric_stress_face_flux(
     grad_f: TensorLike,
     face_normal: TensorLike,
     coef: Optional[CoefLike] = None,

@@ -1,7 +1,6 @@
 import numpy as np
 import pytest
 
-import fealpy.fvm as fvm
 from fealpy.backend import backend_manager as bm
 from fealpy.fvm import (
     FVMGeometry,
@@ -179,18 +178,6 @@ def test_bounded_over_relaxed_decomposition_returns_stabilized_Ef_and_Tf(mesh):
     )
 
 
-def test_geometry_layer_does_not_export_legacy_vector_decomposition():
-    assert not hasattr(fvm, "VectorDecomposition")
-
-
-def test_decomposition_quantities_are_not_initialized_as_basic_geometry():
-    geometry = FVMGeometry(_meshes()[0])
-
-    assert not hasattr(geometry, "E_f")
-    assert not hasattr(geometry, "mag_E_f")
-    assert not hasattr(geometry, "T_f")
-
-
 @pytest.mark.parametrize("mesh", _meshes())
 def test_linear_owner_weight_matches_exported_face_interpolation(mesh):
     geometry = FVMGeometry(mesh)
@@ -278,13 +265,3 @@ def test_scatter_face_flux_to_cells_supports_vector_fluxes(mesh):
     scattered = np.asarray(geometry.scatter_face_flux_to_cells(face_flux))
 
     np.testing.assert_allclose(scattered, expected, rtol=1.0e-13, atol=1.0e-13)
-
-
-def test_geometry_interface_does_not_expose_deprecated_nonorthogonal_names():
-    geometry = FVMGeometry(_meshes()[0])
-
-    assert not hasattr(geometry, "orthogonal_flux_coeff")
-    assert not hasattr(geometry, "delta_coeff")
-    assert not hasattr(geometry, "correction_vector")
-    assert not hasattr(geometry, "average_owner_weight")
-    assert not hasattr(geometry, "distance_owner_weight")

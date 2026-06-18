@@ -43,7 +43,6 @@ def test_piso_cylinder_runner_writes_standard_outputs(tmp_path: Path):
     model, outputs = example.run_piso_cylinder(args)
 
     assert model.mesh.number_of_cells() > 0
-    assert not hasattr(model, "transient_flux_correction_limiter")
     assert outputs["output_dir"] == tmp_path
     assert (tmp_path / "solution.vtu").exists()
     assert (tmp_path / "flow_overview.png").exists()
@@ -55,23 +54,23 @@ def test_piso_cylinder_runner_writes_standard_outputs(tmp_path: Path):
     assert (tmp_path / "snapshots" / "solution_000002.vtu").exists()
 
 
-def test_piso_cylinder_parser_accepts_weighted_lsq_gradient_alias():
+def test_piso_cylinder_parser_accepts_face_weighted_lsq_gradient_method():
     example = load_piso_example()
 
     args = example.create_parser().parse_args(
         [
             "--pressure_gradient_method",
-            "weighted_lsq",
+            "face_weighted_lsq",
             "--velocity_gradient_method",
-            "weighted_lsq",
+            "face_weighted_lsq",
             "--rhie_chow_pressure_gradient_method",
-            "weighted_lsq",
+            "face_weighted_lsq",
         ]
     )
 
-    assert args.pressure_gradient_method == "weighted_lsq"
-    assert args.velocity_gradient_method == "weighted_lsq"
-    assert args.rhie_chow_pressure_gradient_method == "weighted_lsq"
+    assert args.pressure_gradient_method == "face_weighted_lsq"
+    assert args.velocity_gradient_method == "face_weighted_lsq"
+    assert args.rhie_chow_pressure_gradient_method == "face_weighted_lsq"
 
 
 def test_piso_cylinder_uses_patch_velocity_dirichlet_only():
@@ -137,9 +136,16 @@ def test_piso_pressure_flux_includes_pressure_dirichlet_outlet():
 
     a_p = bm.ones(2 * model.NC)
     pressure = bm.ones(model.NC)
-    coef = model.pressure_response_face_coefficient(a_p)
+    coef = model.pressure_response_face_coefficient(
+        a_p,
+        model.controls.face_interpolation_method,
+    )
     flux = model.pressure_orthogonal_flux(pressure, coef)
-    flux = flux - model._pressure_nonorthogonal_cross_flux(pressure, coef)
+    flux = flux - model.pressure_nonorthogonal_cross_flux(
+        pressure,
+        coef,
+        interpolation_method=model.controls.face_interpolation_method,
+    )
     flux = model.add_pressure_dirichlet_flux(
         flux,
         pressure,

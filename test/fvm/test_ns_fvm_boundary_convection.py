@@ -2,12 +2,12 @@ from fealpy.backend import backend_manager as bm
 
 
 def _boundary_convection_rhs(model, uf):
-    bd_face = model.mesh.boundary_face_index()
-    owner = model.mesh.edge_to_cell()[bd_face, 0]
-    face_center = model.mesh.entity_barycenter("face")[bd_face]
+    boundary_faces = model.mesh.boundary_face_index()
+    owner = model.mesh.edge_to_cell()[boundary_faces, 0]
+    face_center = model.mesh.entity_barycenter("face")[boundary_faces]
     velocity_bc = model.pde.dirichlet_velocity(face_center)
-    Sf = model.mesh.edge_normal()[bd_face]
-    flux = bm.einsum("ij,ij->i", uf[bd_face], Sf)
+    Sf = model.mesh.edge_normal()[boundary_faces]
+    flux = bm.einsum("ij,ij->i", uf[boundary_faces], Sf)
 
     fx = bm.zeros(model.NC)
     fy = bm.zeros(model.NC)
@@ -60,22 +60,13 @@ def test_dirichlet_bc_convection_apply_handles_vector_dirichlet_data():
     assert float(bm.max(bm.abs(actual - expected))) < 1.0e-12
 
 
-def test_dirichlet_bc_exposes_only_general_convection_apply():
-    bm.set_backend("numpy")
-    from fealpy.fvm import DirichletBC
-
-    assert hasattr(DirichletBC, "ConvectionApply")
-    assert not hasattr(DirichletBC, "ConvectionApplyX")
-    assert not hasattr(DirichletBC, "ConvectionApplyY")
-
-
 def test_simple_momentum_rhs_includes_dirichlet_boundary_convection(monkeypatch):
     bm.set_backend("numpy")
     import fealpy.fvm.ns_fvm_simple_model as simple_model
 
     monkeypatch.setattr(
         simple_model.NSFVMSimpleModel,
-        "compute_cross_diffusion",
+        "momentum_nonorthogonal_rhs",
         lambda self, uh: bm.zeros(2 * self.NC),
     )
 
@@ -126,8 +117,10 @@ def test_simple_momentum_rhs_includes_dirichlet_boundary_convection(monkeypatch)
 
 def test_staggered_divergence_includes_signed_boundary_fluxes():
     bm.set_backend("numpy")
-    from fealpy.fvm import DivergenceReconstruct
-    from fealpy.fvm.experimental import StaggeredMeshManager
+    from fealpy.fvm.experimental import (
+        StaggeredDivergenceReconstruct,
+        StaggeredMeshManager,
+    )
     from fealpy.model import PDEModelManager
 
     pde = PDEModelManager("navier_stokes").get_example(6)
@@ -141,7 +134,9 @@ def test_staggered_divergence_includes_signed_boundary_fluxes():
         bm.ones_like(vh),
     )
 
-    div = DivergenceReconstruct(staggered_mesh.pmesh).StagReconstruct(edge_velocity)
+    div = StaggeredDivergenceReconstruct(staggered_mesh.pmesh).StagReconstruct(
+        edge_velocity
+    )
     div_l2 = bm.sqrt(
         bm.sum(staggered_mesh.pmesh.entity_measure("cell") * div**2)
     )
@@ -179,7 +174,7 @@ def test_collocated_simple_records_common_residuals(monkeypatch):
             return bm.zeros((self.mesh.number_of_faces(), 2))
 
     monkeypatch.setattr(simple_solver, "RhieChowInterpolation", FakeRhieChow)
-    monkeypatch.setattr(simple_residual, "collocated_mass_residual", lambda mesh, uf: 0.0)
+    monkeypatch.setattr(simple_residual, "collocated_mass_residual", lambda mesh, uf, **kwargs: 0.0)
     monkeypatch.setattr(simple_residual, "cell_l2_norm", lambda mesh, value: 0.0)
     monkeypatch.setattr(simple_residual, "relative_l2_update", lambda mesh, update, p: 0.0)
     monkeypatch.setattr(
@@ -248,7 +243,7 @@ def test_collocated_simple_updates_cell_velocity_after_pressure_correction(monke
         return cell_velocity + 3.0
 
     monkeypatch.setattr(simple_solver, "RhieChowInterpolation", FakeRhieChow)
-    monkeypatch.setattr(simple_residual, "collocated_mass_residual", lambda mesh, uf: 0.0)
+    monkeypatch.setattr(simple_residual, "collocated_mass_residual", lambda mesh, uf, **kwargs: 0.0)
     monkeypatch.setattr(simple_residual, "cell_l2_norm", lambda mesh, value: 1.0)
     monkeypatch.setattr(simple_residual, "relative_l2_update", lambda mesh, update, p: 1.0)
     monkeypatch.setattr(simple_model.NSFVMSimpleModel, "temporary_velocity", fake_temporary_velocity)
@@ -260,7 +255,7 @@ def test_collocated_simple_updates_cell_velocity_after_pressure_correction(monke
     monkeypatch.setattr(
         simple_model.NSFVMSimpleModel,
         "correct_face_velocity_with_pressure_correction",
-        lambda self, uf, p_corr, response_coef, bd_edge, bdedgeu: uf,
+        lambda self, uf, p_corr, response_coef, boundary_faces, boundary_velocity: uf,
     )
     monkeypatch.setattr(
         simple_model.NSFVMSimpleModel,
@@ -309,12 +304,19 @@ def test_collocated_simple_relaxes_face_flux_pressure_correction(monkeypatch):
     def fake_temporary_velocity(self, p, uf, u0):
         return bm.ones(2 * self.NC), bm.zeros(2 * self.NC)
 
-    def fake_correct_face_velocity(self, uf, p_corr, response_coef, bd_edge, bdedgeu):
+    def fake_correct_face_velocity(
+        self,
+        uf,
+        p_corr,
+        response_coef,
+        boundary_faces,
+        boundary_velocity,
+    ):
         received.append(p_corr.copy())
         return uf
 
     monkeypatch.setattr(simple_solver, "RhieChowInterpolation", FakeRhieChow)
-    monkeypatch.setattr(simple_residual, "collocated_mass_residual", lambda mesh, uf: 0.0)
+    monkeypatch.setattr(simple_residual, "collocated_mass_residual", lambda mesh, uf, **kwargs: 0.0)
     monkeypatch.setattr(simple_residual, "cell_l2_norm", lambda mesh, value: 1.0)
     monkeypatch.setattr(simple_residual, "relative_l2_update", lambda mesh, update, p: 1.0)
     monkeypatch.setattr(simple_model.NSFVMSimpleModel, "temporary_velocity", fake_temporary_velocity)

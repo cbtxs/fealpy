@@ -1,10 +1,20 @@
-from .scalar_diffusion_integrator import ScalarDiffusionIntegrator
-from .scalar_cross_diffusion_integrator import ScalarCrossDiffusionIntegrator
+from .scalar_diffusion_integrator import (
+    ScalarDiffusionIntegrator,
+    ScalarDiffusionMatrixAssembler,
+)
+from .scalar_cross_diffusion_integrator import (
+    CrossDiffusionRHSAssembler,
+    ScalarCrossDiffusionIntegrator,
+)
 from .scalar_source_integrator import ScalarSourceIntegrator
 from .deviatoric_stress_source import DeviatoricStressSourceIntegrator
-from .fvm_geometry import FVMGeometry, face_interpolation_owner_weight
+from .fvm_geometry import (
+    FVMGeometry,
+    boundary_face_flag,
+    face_interpolation_owner_weight,
+)
 from .face_gradient import reconstruct_face_gradient
-from .convection_integrator import ConvectionIntegrator
+from .convection_integrator import ConvectionIntegrator, ConvectionMatrixAssembler
 from .cell_average_error import cell_average, cell_average_l2_error
 
 from .gradient_reconstruct import GradientReconstruct
@@ -22,10 +32,9 @@ from .simple_residual import (
     simple_iteration_residual,
     simple_pressure_update_step,
     simple_tolerances,
-    staggered_mass_residual,
+    pressure_correction_converged,
 )
 from . import solver_diagnostics
-from .pressure_correction_control import pressure_correction_converged
 from .solver_diagnostics import format_pressure_correction_log
 from .fvm_linear_solver import FVMLinearSolver, FVMLinearSolverConfig
 from .engineering_boundary_conditions import (

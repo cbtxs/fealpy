@@ -17,12 +17,14 @@ from fealpy.fvm import (
     FVMGeometry,
     GradientReconstruct,
     reconstruct_face_gradient,
-    DirichletBC,
-    NeumannBC,
     ConvectionIntegrator,
     cell_average_l2_error,
 )
-from ..rhie_chow import RhieChowCoupledOperator
+from .legacy_boundary_conditions import (
+    ExperimentalDirichletBC as DirichletBC,
+    ExperimentalNeumannBC as NeumannBC,
+)
+from .rhie_chow_coupled_operator import RhieChowCoupledOperator
 
 
 class StokesFVMRCModel(ComputationalModel):

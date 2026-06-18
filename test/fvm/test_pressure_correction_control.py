@@ -1,6 +1,6 @@
 import pytest
 
-from fealpy.fvm.pressure_correction_control import pressure_correction_converged
+from fealpy.fvm.simple_residual import pressure_correction_converged
 
 
 def test_pressure_correction_converged_uses_mass_and_pressure_correction():

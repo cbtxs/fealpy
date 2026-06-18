@@ -10,7 +10,7 @@ from fealpy.model import PDEModelManager
 from .collocated_simple_solver import CollocatedSimpleSolver
 from .cell_average_error import cell_average_l2_error
 from .engineering_boundary_conditions import BoundaryConditionData
-from .solver_controls import SimpleSolverControls
+from .solver_controls import SimpleSolverControls, positive_scalar
 
 
 def _call_boundary_condition_factory(factory, mesh, pde):
@@ -61,8 +61,8 @@ class NSFVMSimpleModel(ComputationalModel, CollocatedSimpleSolver):
                     break
             else:
                 mu_value = 1.0
-        self.rho = self._as_positive_scalar(rho_value, "rho")
-        self.mu = self._as_positive_scalar(mu_value, "mu")
+        self.rho = positive_scalar(rho_value, "rho")
+        self.mu = positive_scalar(mu_value, "mu")
 
         mesh_type = options.get("mesh_type") or getattr(pde, "default_mesh_type", "uniform_tri")
         mesh_refine = int(options.get("mesh_refine", 0) or 0)
@@ -103,9 +103,9 @@ class NSFVMSimpleModel(ComputationalModel, CollocatedSimpleSolver):
             boundary_conditions = boundary_input
         controls = SimpleSolverControls(
             space_degree=options.get("space_degree", 0),
-            pressure_gradient_method=options.get("pressure_gradient_method", "extended_lsq"),
-            velocity_gradient_method=options.get("velocity_gradient_method", "extended_lsq"),
-            rhie_chow_pressure_gradient_method=options.get("rhie_chow_pressure_gradient_method", "extended_lsq"),
+            pressure_gradient_method=options.get("pressure_gradient_method", "layered_lsq"),
+            velocity_gradient_method=options.get("velocity_gradient_method", "layered_lsq"),
+            rhie_chow_pressure_gradient_method=options.get("rhie_chow_pressure_gradient_method", "layered_lsq"),
             face_interpolation_method=options.get("face_interpolation_method", "average"),
             momentum_face_interpolation=options.get("momentum_face_interpolation"),
             pressure_response_interpolation=options.get("pressure_response_interpolation"),

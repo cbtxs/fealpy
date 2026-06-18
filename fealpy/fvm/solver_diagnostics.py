@@ -77,12 +77,11 @@ def simple_iteration_log_message(
 
 def log_simple_iteration(logger, iteration, residual):
     """Log one SIMPLE pressure-correction diagnostic record."""
-    pressure_criterion = residual.get("pressure_criterion", residual["pressure_update"])
     logger.info(
         simple_iteration_log_message(
             simple_iteration=iteration,
             nonorthogonal_iterations=residual["nonorthogonal_iterations"],
-            pressure_criterion=pressure_criterion,
+            pressure_criterion=residual["pressure_criterion"],
             mass_residual=residual["mass"],
             pressure_correction=residual["pressure_correction"],
         )
@@ -104,24 +103,24 @@ def record_piso_corrector_diagnostics(
     current_pressure,
     next_pressure,
     a_p,
-    phi,
+    current_face_flux,
     boundary_faces,
     boundary_velocity,
     face_response_coefficient,
     rhie_chow_face_velocity,
-    face_flux,
+    face_flux_operator,
 ):
     """Store one PISO corrector diagnostics row and call the optional callback."""
     target_face_velocity = rhie_chow_face_velocity(
         next_velocity,
         a_p,
         next_pressure,
-        phi,
+        current_face_flux,
         boundary_faces=boundary_faces,
         boundary_velocity=boundary_velocity,
         face_response_coefficient=face_response_coefficient,
     )
-    target_flux_error = face_flux(target_face_velocity) - phi
+    target_flux_error = face_flux_operator(target_face_velocity) - current_face_flux
     row = dict(diagnostics)
     row.update(
         {

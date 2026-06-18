@@ -4,7 +4,11 @@ import pytest
 from fealpy.backend import backend_manager as bm
 from fealpy.fem import LinearForm
 from fealpy.functionspace import ScaledMonomialSpace2d, TensorFunctionSpace
-from fealpy.fvm import FVMGeometry, ScalarCrossDiffusionIntegrator
+from fealpy.fvm import (
+    CrossDiffusionRHSAssembler,
+    FVMGeometry,
+    ScalarCrossDiffusionIntegrator,
+)
 from fealpy.mesh import TriangleMesh
 
 
@@ -33,20 +37,20 @@ def _bad_two_triangle_space():
 
 
 def _expected_scalar_scatter(mesh, face_flux):
-    e2c = np.asarray(mesh.edge_to_cell()[:, :2], dtype=np.int64)
+    face_to_cell = np.asarray(mesh.edge_to_cell()[:, :2], dtype=np.int64)
     expected = np.zeros(mesh.number_of_cells(), dtype=float)
-    internal = e2c[:, 0] != e2c[:, 1]
-    np.add.at(expected, e2c[:, 0], face_flux)
-    np.add.at(expected, e2c[internal, 1], -face_flux[internal])
+    internal = face_to_cell[:, 0] != face_to_cell[:, 1]
+    np.add.at(expected, face_to_cell[:, 0], face_flux)
+    np.add.at(expected, face_to_cell[internal, 1], -face_flux[internal])
     return expected
 
 
 def _expected_vector_scatter(mesh, face_flux):
-    e2c = np.asarray(mesh.edge_to_cell()[:, :2], dtype=np.int64)
+    face_to_cell = np.asarray(mesh.edge_to_cell()[:, :2], dtype=np.int64)
     expected = np.zeros((mesh.number_of_cells(), face_flux.shape[1]), dtype=float)
-    internal = e2c[:, 0] != e2c[:, 1]
-    np.add.at(expected, e2c[:, 0], face_flux)
-    np.add.at(expected, e2c[internal, 1], -face_flux[internal])
+    internal = face_to_cell[:, 0] != face_to_cell[:, 1]
+    np.add.at(expected, face_to_cell[:, 0], face_flux)
+    np.add.at(expected, face_to_cell[internal, 1], -face_flux[internal])
     return expected
 
 
@@ -175,6 +179,101 @@ def test_default_cross_diffusion_matches_bounded_over_relaxed_scatter():
         rtol=1.0e-13,
         atol=1.0e-13,
     )
+
+
+def test_cross_diffusion_rhs_assembler_matches_linear_form_scalar():
+    mesh, space = _box_space(nx=2, ny=1)
+    geometry = FVMGeometry(mesh)
+    grad_f = np.stack(
+        [
+            np.linspace(-0.3, 0.5, mesh.number_of_edges()),
+            np.linspace(0.1, 0.7, mesh.number_of_edges()),
+        ],
+        axis=1,
+    )
+    coef = np.linspace(0.8, 1.4, mesh.number_of_edges())
+
+    reference = LinearForm(space).add_integrator(
+        ScalarCrossDiffusionIntegrator(
+            np.zeros(mesh.number_of_cells()),
+            grad_f,
+            coef=coef,
+            geometry=geometry,
+        )
+    ).assembly()
+    fast = CrossDiffusionRHSAssembler(space, geometry=geometry).assembly(
+        uh=np.zeros(mesh.number_of_cells()),
+        grad_f=grad_f,
+        coef=coef,
+    )
+
+    np.testing.assert_allclose(np.asarray(fast), np.asarray(reference), rtol=1.0e-13, atol=1.0e-13)
+
+
+def test_cross_diffusion_rhs_assembler_matches_linear_form_vector_boundary_all():
+    mesh, scalar_space = _box_space(nx=2, ny=1)
+    space = TensorFunctionSpace(scalar_space, shape=(2, -1))
+    geometry = FVMGeometry(mesh)
+    grad_f = np.stack(
+        [
+            np.stack([
+                np.linspace(-0.3, 0.5, mesh.number_of_edges()),
+                np.linspace(0.1, 0.7, mesh.number_of_edges()),
+            ], axis=1),
+            np.stack([
+                np.linspace(0.4, 0.9, mesh.number_of_edges()),
+                np.linspace(-0.2, 0.3, mesh.number_of_edges()),
+            ], axis=1),
+        ],
+        axis=1,
+    )
+    coef = np.linspace(0.8, 1.4, mesh.number_of_edges())
+
+    reference = LinearForm(space).add_integrator(
+        ScalarCrossDiffusionIntegrator(
+            np.zeros((mesh.number_of_cells(), 2)),
+            grad_f,
+            coef=coef,
+            geometry=geometry,
+            boundary_policy="all",
+        )
+    ).assembly()
+    fast = CrossDiffusionRHSAssembler(space, geometry=geometry).assembly(
+        uh=np.zeros((mesh.number_of_cells(), 2)),
+        grad_f=grad_f,
+        coef=coef,
+        boundary_policy="all",
+    )
+
+    np.testing.assert_allclose(np.asarray(fast), np.asarray(reference), rtol=1.0e-13, atol=1.0e-13)
+
+
+def test_cross_diffusion_rhs_assembler_matches_linear_form_limited():
+    mesh, space = _bad_two_triangle_space()
+    geometry = FVMGeometry(mesh)
+    edge_to_cell = np.asarray(mesh.edge_to_cell()[:, :2])
+    is_internal = edge_to_cell[:, 0] != edge_to_cell[:, 1]
+    uh = np.array([0.0, 1.0])
+    grad_f = np.zeros((mesh.number_of_edges(), mesh.geo_dimension()))
+    grad_f[is_internal, 0] = 100.0
+
+    reference = LinearForm(space).add_integrator(
+        ScalarCrossDiffusionIntegrator(
+            uh,
+            grad_f,
+            geometry=geometry,
+            correction_method="limited",
+            limit_coeff=0.5,
+        )
+    ).assembly()
+    fast = CrossDiffusionRHSAssembler(space, geometry=geometry).assembly(
+        uh=uh,
+        grad_f=grad_f,
+        correction_method="limited",
+        limit_coeff=0.5,
+    )
+
+    np.testing.assert_allclose(np.asarray(fast), np.asarray(reference), rtol=1.0e-13, atol=1.0e-13)
 
 
 def test_default_cross_diffusion_reuses_fvm_geometry_bounded_decomposition(monkeypatch):

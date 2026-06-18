@@ -518,18 +518,18 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pressure_nonorthogonal_max_iter", default=3, type=int)
     parser.add_argument(
         "--pressure_gradient_method",
-        default="extended_lsq",
-        choices=("extended_lsq", "face_lsq", "weighted_lsq", "green_gauss"),
+        default="layered_lsq",
+        choices=("layered_lsq", "face_weighted_lsq", "green_gauss"),
     )
     parser.add_argument(
         "--velocity_gradient_method",
-        default="extended_lsq",
-        choices=("extended_lsq", "face_lsq", "weighted_lsq", "green_gauss"),
+        default="layered_lsq",
+        choices=("layered_lsq", "face_weighted_lsq", "green_gauss"),
     )
     parser.add_argument(
         "--rhie_chow_pressure_gradient_method",
-        default="extended_lsq",
-        choices=("extended_lsq", "face_lsq", "weighted_lsq", "green_gauss"),
+        default="layered_lsq",
+        choices=("layered_lsq", "face_weighted_lsq", "green_gauss"),
     )
     parser.add_argument(
         "--face_interpolation_method",

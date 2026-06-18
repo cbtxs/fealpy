@@ -14,6 +14,7 @@ def reconstruct_face_gradient(
     mesh,
     cell_gradient: TensorLike,
     *,
+    geometry: Optional[FVMGeometry] = None,
     cell_values: Optional[TensorLike] = None,
     interpolation_method: str = "average",
     dirichlet_faces: Optional[TensorLike] = None,
@@ -29,9 +30,9 @@ def reconstruct_face_gradient(
     faces are corrected by the supplied normal derivative for Dirichlet,
     Neumann, or generic boundary patch data.
     """
-    geometry = FVMGeometry(mesh)
+    geometry = geometry if geometry is not None else FVMGeometry(mesh)
     cell_gradient = bm.array(cell_gradient)
-    face_gradient = _interpolate_cell_gradient(geometry, cell_gradient, interpolation_method)
+    face_gradient = interpolate_cell_gradient(geometry, cell_gradient, interpolation_method)
 
     patch_sn_grads = []
     if dirichlet_faces is not None:
@@ -42,14 +43,13 @@ def reconstruct_face_gradient(
 
         cell_values = bm.array(cell_values)
         faces = bm.array(dirichlet_faces, dtype=bm.int64)
-        boundary_values = _normalize_patch_data(
-            mesh,
-            dirichlet_values,
-            faces,
-            cell_values.shape[1:],
-            cell_values.dtype,
-            "dirichlet_values",
-        )
+        boundary_values = bm.array(dirichlet_values, dtype=cell_values.dtype)
+        expected_shape = (faces.shape[0],) + cell_values.shape[1:]
+        if boundary_values.shape != expected_shape:
+            raise ValueError(
+                f"dirichlet_values must have shape {expected_shape} matching "
+                "dirichlet_faces."
+            )
         owner = geometry.owner[faces]
         distance = geometry.normal_distance(faces)
         if bm.any(distance <= 0.0):
@@ -72,14 +72,12 @@ def reconstruct_face_gradient(
         patch_sn_grads.append((faces, boundary_sn_grad, "boundary_sn_grad"))
 
     for faces, sn_grad, name in patch_sn_grads:
-        sn_grad = _normalize_patch_data(
-            mesh,
-            sn_grad,
-            faces,
-            cell_gradient.shape[1:-1],
-            cell_gradient.dtype,
-            name,
-        )
+        sn_grad = bm.array(sn_grad, dtype=cell_gradient.dtype)
+        expected_shape = (faces.shape[0],) + cell_gradient.shape[1:-1]
+        if sn_grad.shape != expected_shape:
+            raise ValueError(
+                f"{name} must have shape {expected_shape} matching its faces."
+            )
         owner_gradient = cell_gradient[geometry.owner[faces]]
         unit_normal = geometry.n_f[faces]
 
@@ -98,7 +96,7 @@ def reconstruct_face_gradient(
     return face_gradient
 
 
-def _interpolate_cell_gradient(geometry: FVMGeometry, cell_gradient: TensorLike, method: str) -> TensorLike:
+def interpolate_cell_gradient(geometry: FVMGeometry, cell_gradient: TensorLike, method: str) -> TensorLike:
     if method not in {"average", "linear"}:
         raise ValueError("interpolation_method must be 'average' or 'linear'.")
     if method == "linear":
@@ -111,32 +109,3 @@ def _interpolate_cell_gradient(geometry: FVMGeometry, cell_gradient: TensorLike,
     owner_weight = owner_weight.reshape(weight_shape)
     neighbour_weight = 1.0 - owner_weight
     return owner_weight * cell_gradient[geometry.owner] + neighbour_weight * cell_gradient[geometry.neighbour]
-
-
-def _normalize_patch_data(
-    mesh,
-    value: TensorLike,
-    faces: TensorLike,
-    value_shape: tuple[int, ...],
-    dtype,
-    name: str,
-) -> TensorLike:
-    value = bm.array(value, dtype=dtype)
-    n_face = faces.shape[0]
-    selected_shape = (n_face,) + value_shape
-    full_shape = (mesh.number_of_faces(),) + value_shape
-
-    if value.shape == selected_shape:
-        return value
-    if value.shape == full_shape:
-        return value[faces]
-    if value.shape == value_shape:
-        return bm.broadcast_to(value, selected_shape)
-    if value.shape == () and value_shape == ():
-        return bm.broadcast_to(value, selected_shape)
-    if value.shape == () and value_shape:
-        return bm.broadcast_to(value, selected_shape)
-    raise ValueError(
-        f"{name} has shape {value.shape}; expected {selected_shape}, "
-        f"{full_shape}, or {value_shape}."
-    )

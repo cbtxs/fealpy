@@ -13,9 +13,9 @@ from fealpy.solver import spsolve
 from fealpy.fvm import (
     ScalarDiffusionIntegrator,
     ScalarSourceIntegrator,
-    DirichletBC,
     cell_average_l2_error,
 )
+from .legacy_boundary_conditions import ExperimentalDirichletBC as DirichletBC
 from .staggered_mesh_manager import StaggeredMeshManager
 
 

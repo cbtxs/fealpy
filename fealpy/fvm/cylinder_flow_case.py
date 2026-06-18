@@ -445,8 +445,8 @@ class CylinderFlowCase:
         geometry = FVMGeometry(mesh)
         sf = np.asarray(bm.to_numpy(geometry.S_f))
         d = np.asarray(bm.to_numpy(geometry.d_f))
-        e2c = np.asarray(bm.to_numpy(mesh.edge_to_cell()), dtype=np.int64)
-        interior = e2c[:, 0] != e2c[:, 1]
+        face_to_cell = np.asarray(bm.to_numpy(geometry.face_to_cell), dtype=np.int64)
+        interior = face_to_cell[:, 0] != face_to_cell[:, 1]
         sf = sf[interior]
         d = d[interior]
         cosine = np.einsum("ij,ij->i", sf, d) / (

@@ -3,8 +3,10 @@ import numpy as np
 from fealpy.fem import BilinearForm, LinearForm
 from fealpy.functionspace import ScaledMonomialSpace2d, TensorFunctionSpace
 from fealpy.mesh import TriangleMesh
+from fealpy.fvm.convection_integrator import ConvectionMatrixAssembler
 from fealpy.fvm import (
     ConvectionIntegrator,
+    face_interpolation_owner_weight,
     GradientReconstruct,
     NSFVMPISOModel,
     NSFVMSimpleModel,
@@ -42,8 +44,8 @@ def _skew_two_cell_mesh():
 
 
 def _openfoam_owner_weight(mesh, face):
-    e2c = np.asarray(mesh.edge_to_cell()[:, :2])
-    owner, neighbour = e2c[face]
+    face_to_cell = np.asarray(mesh.edge_to_cell()[:, :2])
+    owner, neighbour = face_to_cell[face]
     face_center = np.asarray(mesh.entity_barycenter("face")[face])
     cell_center = np.asarray(mesh.entity_barycenter("cell"))
     sf = np.asarray(mesh.edge_normal()[face])
@@ -55,8 +57,10 @@ def _openfoam_owner_weight(mesh, face):
 def test_convection_integrator_can_use_openfoam_linear_face_weights():
     mesh = _skew_two_cell_mesh()
     space = ScaledMonomialSpace2d(mesh, 0)
-    e2c = np.asarray(mesh.edge_to_cell()[:, :2])
-    internal_face = int(np.flatnonzero(e2c[:, 0] != e2c[:, 1])[0])
+    face_to_cell = np.asarray(mesh.edge_to_cell()[:, :2])
+    internal_face = int(
+        np.flatnonzero(face_to_cell[:, 0] != face_to_cell[:, 1])[0]
+    )
     face_velocity = np.tile(np.array([[0.7, -0.2]]), (mesh.number_of_faces(), 1))
 
     local = np.asarray(
@@ -94,10 +98,121 @@ def test_convection_integrator_expands_face_stencil_for_tensor_space():
     assert matrix.shape == (2 * mesh.number_of_cells(),) * 2
 
 
+def test_convection_integrator_default_matches_central_face_stencil():
+    mesh = _skew_two_cell_mesh()
+    space = ScaledMonomialSpace2d(mesh, 0)
+    face_velocity = np.tile(np.array([[0.7, -0.2]]), (mesh.number_of_faces(), 1))
+
+    for interpolation in ("average", "linear"):
+        local = ConvectionIntegrator(
+            q=2,
+            coef=face_velocity,
+            interpolation=interpolation,
+        ).assembly(space)
+
+        if interpolation == "average":
+            owner_weight = np.where(
+                np.asarray(mesh.edge_to_cell()[:, 0] != mesh.edge_to_cell()[:, 1]),
+                0.5,
+                1.0,
+            )
+        else:
+            owner_weight = np.asarray(
+                face_interpolation_owner_weight(mesh, method="linear")
+            )
+        flux = np.einsum("ij,ij->i", np.asarray(mesh.edge_normal()), face_velocity)
+        expected = flux[:, None, None] * np.array(
+            [
+                [[weight, 1.0 - weight], [-weight, weight - 1.0]]
+                for weight in owner_weight
+            ]
+        )
+
+        np.testing.assert_allclose(np.asarray(local), expected, rtol=1.0e-13, atol=1.0e-13)
+
+
+def test_convection_integrator_default_skips_quadrature_fetch(monkeypatch):
+    mesh = _skew_two_cell_mesh()
+    space = ScaledMonomialSpace2d(mesh, 0)
+    face_velocity = np.tile(np.array([[0.7, -0.2]]), (mesh.number_of_faces(), 1))
+
+    def fail_quadrature(*args, **kwargs):
+        raise AssertionError("convection assembly should not fetch quadrature data")
+
+    def fail_basis(*args, **kwargs):
+        raise AssertionError("convection assembly should not fetch basis data")
+
+    monkeypatch.setattr(mesh, "quadrature_formula", fail_quadrature)
+    monkeypatch.setattr(space, "basis", fail_basis)
+
+    local = ConvectionIntegrator(
+        q=2,
+        coef=face_velocity,
+        interpolation="linear",
+    ).assembly(space)
+
+    assert local.shape == (mesh.number_of_faces(), 2, 2)
+
+
+def test_convection_integrator_fast_method_is_compatible_alias():
+    mesh = _skew_two_cell_mesh()
+    scalar_space = ScaledMonomialSpace2d(mesh, 0)
+    vector_space = TensorFunctionSpace(scalar_space, shape=(2, -1))
+    face_velocity = np.tile(np.array([[0.7, -0.2]]), (mesh.number_of_faces(), 1))
+
+    default = BilinearForm(vector_space).add_integrator(
+        ConvectionIntegrator(q=2, coef=face_velocity, interpolation="linear")
+    ).assembly()
+    fast = BilinearForm(vector_space).add_integrator(
+        ConvectionIntegrator(
+            q=2,
+            coef=face_velocity,
+            interpolation="linear",
+            method="fast",
+        )
+    ).assembly()
+    diff = fast.to_scipy() - default.to_scipy()
+
+    np.testing.assert_allclose(diff.data, 0.0, atol=1.0e-13)
+
+
+def test_convection_matrix_assembler_matches_bilinear_form_vector_matrix():
+    mesh = _skew_two_cell_mesh()
+    scalar_space = ScaledMonomialSpace2d(mesh, 0)
+    vector_space = TensorFunctionSpace(scalar_space, shape=(2, -1))
+    face_velocity = np.array(
+        [
+            [0.7, -0.2],
+            [0.1, 0.4],
+            [-0.3, 0.8],
+            [0.5, -0.1],
+            [-0.6, -0.2],
+        ]
+    )
+
+    for interpolation in ("average", "linear"):
+        reference = BilinearForm(vector_space).add_integrator(
+            ConvectionIntegrator(
+                q=2,
+                coef=face_velocity,
+                interpolation=interpolation,
+            )
+        ).assembly()
+        matrix = ConvectionMatrixAssembler(
+            vector_space,
+            interpolation=interpolation,
+        ).assembly(face_velocity)
+        diff = matrix.to_scipy() - reference.to_scipy()
+
+        np.testing.assert_allclose(diff.data, 0.0, atol=1.0e-13)
+
+
 def test_rhie_chow_can_use_openfoam_linear_velocity_interpolation():
     mesh = _skew_two_cell_mesh()
-    e2c = np.asarray(mesh.edge_to_cell()[:, :2])
-    internal_face = int(np.flatnonzero(e2c[:, 0] != e2c[:, 1])[0])
+    face_to_cell = np.asarray(mesh.edge_to_cell()[:, :2])
+    internal_face = int(
+        np.flatnonzero(face_to_cell[:, 0] != face_to_cell[:, 1])[0]
+    )
     weight = _openfoam_owner_weight(mesh, internal_face)
     velocity = np.array([[1.0, -2.0], [4.0, 3.0]])
     flat_velocity = velocity.flatten(order="F")
@@ -106,9 +221,9 @@ def test_rhie_chow_can_use_openfoam_linear_velocity_interpolation():
     uf, _ = RhieChowInterpolation(
         mesh,
         velocity_interpolation="linear",
-    ).Ucell2edge(flat_velocity, ap)
+    ).cell_velocity_to_face(flat_velocity, ap)
 
-    owner, neighbour = e2c[internal_face]
+    owner, neighbour = face_to_cell[internal_face]
     expected = weight * velocity[owner] + (1.0 - weight) * velocity[neighbour]
 
     assert abs(weight - 0.5) > 1.0e-3
@@ -175,8 +290,8 @@ def test_rhie_chow_gradient_difference_vanishes_for_linear_internal_pressure():
     })
     points = model.mesh.entity_barycenter("cell")
     pressure = linear_pressure(points)
-    e2c = model.mesh.edge_to_cell()[:, :2]
-    is_internal = np.asarray(e2c[:, 0] != e2c[:, 1])
+    face_to_cell = model.mesh.edge_to_cell()[:, :2]
+    is_internal = np.asarray(face_to_cell[:, 0] != face_to_cell[:, 1])
 
     grad_diff = np.asarray(RhieChowInterpolation(model.mesh).GradientDifference(pressure))
 
@@ -230,7 +345,7 @@ def _cell_velocity_for_model(model, points):
     return model.pde.velocity(points)
 
 
-def test_collocated_cross_diffusion_keeps_boundary_correction_for_current_bc_layer():
+def test_momentum_nonorthogonal_rhs_keeps_boundary_correction_for_current_bc_layer():
     cases = [
         (NSFVMSimpleModel, {"pde": 6, "nx": 4, "ny": 4, "space_degree": 0}),
         (
@@ -251,7 +366,7 @@ def test_collocated_cross_diffusion_keeps_boundary_correction_for_current_bc_lay
         points = model.mesh.entity_barycenter("cell")
         velocity = _cell_velocity_for_model(model, points)
 
-        actual = np.asarray(model.compute_cross_diffusion(velocity))
+        actual = np.asarray(model.momentum_nonorthogonal_rhs(velocity))
         expected = _boundary_all_cross_diffusion(model, velocity)
 
         assert np.linalg.norm(actual - expected) < 1.0e-12

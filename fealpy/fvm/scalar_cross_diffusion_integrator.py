@@ -22,6 +22,10 @@ _BOUNDARY_POLICIES = {"all", "zero"}
 class ScalarCrossDiffusionIntegrator(LinearInt, OpInt, FaceInt):
     """Assemble explicit non-orthogonal diffusion correction as a cell RHS.
 
+    At solver level this term is part of a non-orthogonal correction loop.  At
+    operator level it is the cross-diffusion source induced by the tangential
+    correction vector in the face-vector decomposition.
+
     The implicit matrix part is handled by ``ScalarDiffusionIntegrator``.  This
     integrator only scatters a face correction flux,
 
@@ -234,3 +238,68 @@ def scalar_cross_diffusion_face_flux(
     if face_flux.ndim == 2:
         return bm.where(is_boundary[:, None], 0.0, face_flux)
     raise ValueError(f"Unsupported face_flux_correction shape: {face_flux.shape}")
+
+
+class CrossDiffusionRHSAssembler:
+    r"""Assemble explicit non-orthogonal diffusion RHS by direct face scatter.
+
+    The solver-level name is ``nonorthogonal`` correction.  This assembler keeps
+    the lower-level ``cross_diffusion`` wording because it only builds the
+    explicit tangential diffusion flux/RHS used by that correction.
+
+    This is the high-frequency performance path equivalent to
+    ``LinearForm + ScalarCrossDiffusionIntegrator``.  The mathematical object is
+    a dense cell RHS,
+
+    .. math::
+
+        b_K = \sum_{f \in \partial K} \mu_f \nabla_f \phi \cdot T_f,
+
+    so there is no sparse matrix graph to cache.  The cached state is the FVM
+    face geometry and scatter layout supplied by ``FVMGeometry``.
+    """
+
+    def __init__(self, space: _FS, *, geometry: Optional[FVMGeometry]=None) -> None:
+        self.space = space
+        self.mesh = getattr(space, "mesh", None)
+        self.geometry = geometry if geometry is not None else FVMGeometry(self.mesh)
+        self.face_to_cell = self.geometry.face_to_cell
+        self.is_tensor_space = getattr(space, "scalar_space", None) is not None
+        self.dof_priority = getattr(space, "dof_priority", True)
+
+    def assembly(
+        self,
+        *,
+        uh=None,
+        grad_f=None,
+        coef: Optional[CoefLike]=None,
+        face_flux_correction=None,
+        correction_vector=None,
+        correction_method: str="bounded_over_relaxed",
+        boundary_policy: Optional[str]=None,
+        limit_coeff: float=0.5,
+        limiter_small: float=1.0e-30,
+        nonorthogonal_eps: float=0.05,
+    ) -> TensorLike:
+        """Return the explicit correction RHS for the current face gradients."""
+        face_flux = scalar_cross_diffusion_face_flux(
+            self.space,
+            self.geometry,
+            self.face_to_cell,
+            uh=uh,
+            grad_f=grad_f,
+            coef=coef,
+            face_flux_correction=face_flux_correction,
+            correction_vector=correction_vector,
+            correction_method=correction_method,
+            boundary_policy=boundary_policy,
+            limit_coeff=limit_coeff,
+            limiter_small=limiter_small,
+            nonorthogonal_eps=nonorthogonal_eps,
+        )
+        rhs = self.geometry.scatter_face_flux_to_cells(face_flux)
+        if not self.is_tensor_space or rhs.ndim == 1:
+            return rhs
+        if self.dof_priority:
+            return bm.swapaxes(rhs, 0, 1).reshape(-1)
+        return rhs.reshape(-1)

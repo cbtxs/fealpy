@@ -12,11 +12,11 @@ from fealpy.fvm import (
     ConvectionIntegrator,
     ScalarSourceIntegrator,
     GradientReconstruct,
-    DivergenceReconstruct,
-    DirichletBC,
     cell_average_l2_error,
 )
+from .legacy_boundary_conditions import ExperimentalDirichletBC as DirichletBC
 from .staggered_mesh_manager import StaggeredMeshManager
+from .staggered_divergence_reconstruct import StaggeredDivergenceReconstruct
 from fealpy.decorator import cartesian
 
 
@@ -56,7 +56,7 @@ class NSFVMStaggeredPISOModel(ComputationalModel):
         self.vspace = ScaledMonomialSpace2d(self.vmesh, p=0)
         self.pspace = ScaledMonomialSpace2d(self.pmesh, p=0)
 
-        self.div = DivergenceReconstruct(self.pmesh)
+        self.div = StaggeredDivergenceReconstruct(self.pmesh)
         self.pcm = self.pmesh.entity_measure("cell")
         self.ucm = self.umesh.entity_measure("cell")
         self.vcm = self.vmesh.entity_measure("cell")

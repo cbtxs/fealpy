@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from fealpy.backend import backend_manager as bm
 from fealpy.mesh import QuadrangleMesh
@@ -69,6 +70,63 @@ def test_neumann_diffusion_uses_fvm_geometry_for_boundary_face_integral(monkeypa
     )
     np.testing.assert_allclose(np.asarray(actual), expected, rtol=1.0e-13, atol=1.0e-13)
 
+def test_neumann_diffusion_reuses_supplied_fvm_geometry(monkeypatch):
+    import fealpy.fvm.neumann_bc as neumann_module
+    from fealpy.fvm import FVMGeometry, NeumannBC
+
+    mesh = _mesh()
+    geometry = FVMGeometry(mesh)
+    gd = lambda points: bm.ones(points.shape[0], dtype=points.dtype)
+
+    def fail_geometry(*args, **kwargs):
+        raise AssertionError("NeumannBC should reuse the supplied FVMGeometry.")
+
+    monkeypatch.setattr(neumann_module, "FVMGeometry", fail_geometry)
+
+    actual = NeumannBC(mesh, gd, geometry=geometry).DiffusionApply(
+        bm.zeros(mesh.number_of_cells())
+    )
+
+    boundary_faces = _boundary_faces(geometry)
+    expected = np.zeros(mesh.number_of_cells())
+    np.add.at(
+        expected,
+        np.asarray(geometry.owner)[boundary_faces],
+        np.asarray(geometry.mag_S_f)[boundary_faces],
+    )
+    np.testing.assert_allclose(np.asarray(actual), expected, rtol=1.0e-13, atol=1.0e-13)
+
+
+def test_neumann_diffusion_applies_boundary_face_threshold(monkeypatch):
+    import fealpy.fvm.neumann_bc as neumann_module
+    from fealpy.fvm import NeumannBC
+
+    mesh = _mesh()
+    monkeypatch.setattr(
+        neumann_module,
+        "FVMGeometry",
+        ShiftedBoundaryGeometry,
+        raising=False,
+    )
+    geometry = ShiftedBoundaryGeometry(mesh)
+    threshold = lambda points: points[:, 0] < 0.2
+    gd = lambda points: bm.ones(points.shape[0], dtype=points.dtype)
+
+    actual = NeumannBC(mesh, gd, threshold=threshold).DiffusionApply(
+        bm.zeros(mesh.number_of_cells())
+    )
+
+    boundary_faces = _boundary_faces(geometry)
+    face_centers = geometry.face_center[boundary_faces]
+    selected_faces = boundary_faces[np.asarray(threshold(face_centers))]
+    expected = np.zeros(mesh.number_of_cells())
+    np.add.at(
+        expected,
+        np.asarray(geometry.owner)[selected_faces],
+        np.asarray(geometry.mag_S_f)[selected_faces],
+    )
+    np.testing.assert_allclose(np.asarray(actual), expected, rtol=1.0e-13, atol=1.0e-13)
+
 
 def test_dirichlet_diffusion_uses_fvm_geometry_for_face_points_and_owners(
     monkeypatch,
@@ -102,19 +160,42 @@ def test_dirichlet_diffusion_uses_fvm_geometry_for_face_points_and_owners(
     np.testing.assert_allclose(np.asarray(actual), expected, rtol=1.0e-13, atol=1.0e-13)
 
 
-def test_dirichlet_divergence_uses_fvm_geometry_for_boundary_flux(monkeypatch):
-    import fealpy.fvm.dirichlet_bc as dirichlet_module
-    from fealpy.fvm import DirichletBC
+def test_dirichlet_diffusion_rejects_boundary_face_wise_coef():
+    from fealpy.fvm import DirichletBC, FVMGeometry
 
     mesh = _mesh()
-    monkeypatch.setattr(dirichlet_module, "FVMGeometry", ShiftedBoundaryGeometry)
+    geometry = FVMGeometry(mesh)
+    boundary_faces = _boundary_faces(geometry)
+    A = spdiags(
+        bm.zeros(mesh.number_of_cells()),
+        0,
+        mesh.number_of_cells(),
+        mesh.number_of_cells(),
+    )
+
+    with pytest.raises(ValueError, match="scalar or face-wise"):
+        DirichletBC(mesh, lambda p: p[:, 0], geometry=geometry).DiffusionApply(
+            A,
+            bm.zeros(mesh.number_of_cells()),
+            coef=bm.ones(boundary_faces.shape[0]),
+        )
+
+
+def test_dirichlet_divergence_uses_fvm_geometry_for_boundary_flux(monkeypatch):
+    import fealpy.fvm.experimental.legacy_boundary_conditions as legacy_bc_module
+    from fealpy.fvm.experimental import ExperimentalDirichletBC
+
+    mesh = _mesh()
+    monkeypatch.setattr(legacy_bc_module, "FVMGeometry", ShiftedBoundaryGeometry)
     geometry = ShiftedBoundaryGeometry(mesh)
     boundary_faces = _boundary_faces(geometry)
 
     def gd(points):
         return bm.stack([points[:, 0] + 1.0, points[:, 1] - 2.0], axis=1)
 
-    actual = DirichletBC(mesh, gd).DivApply(bm.zeros(2 * mesh.number_of_cells()))
+    actual = ExperimentalDirichletBC(mesh, gd).DivApply(
+        bm.zeros(2 * mesh.number_of_cells())
+    )
 
     expected = np.zeros(2 * mesh.number_of_cells())
     owner = np.asarray(geometry.owner)[boundary_faces]
@@ -154,6 +235,20 @@ def test_dirichlet_convection_uses_fvm_geometry_for_boundary_flux(monkeypatch):
     np.add.at(expected, owner, -flux * value[:, 0])
     np.add.at(expected, owner + mesh.number_of_cells(), -flux * value[:, 1])
     np.testing.assert_allclose(np.asarray(actual), expected, rtol=1.0e-13, atol=1.0e-13)
+
+
+def test_dirichlet_convection_rejects_boundary_face_wise_coef():
+    from fealpy.fvm import DirichletBC, FVMGeometry
+
+    mesh = _mesh()
+    geometry = FVMGeometry(mesh)
+    boundary_faces = _boundary_faces(geometry)
+
+    with pytest.raises(ValueError, match="face-wise"):
+        DirichletBC(mesh, lambda p: p[:, 0], geometry=geometry).ConvectionApply(
+            bm.zeros(mesh.number_of_cells()),
+            bm.ones(boundary_faces.shape[0]),
+        )
 
 
 def test_engineering_boundary_conditions_use_fvm_geometry_for_patch_faces(
@@ -242,7 +337,7 @@ def test_rhie_chow_pressure_dirichlet_partial_uses_fvm_geometry(monkeypatch):
         pressure_dirichlet_threshold=lambda p: p[:, 0] > 4.0,
     )
 
-    actual = rhie_chow._apply_pressure_dirichlet_boundary_partial(
+    actual = rhie_chow.apply_pressure_dirichlet_boundary_partial(
         bm.zeros(mesh.number_of_cells()),
         bm.zeros(mesh.number_of_faces()),
     )

@@ -1,7 +1,65 @@
 """Owner-oriented finite-volume face geometry."""
 
+from inspect import signature
+
 from fealpy.backend import backend_manager as bm
 from fealpy.typing import Index, TensorLike, _S
+
+
+def boundary_face_flag(points, threshold):
+    """Evaluate a boundary-face threshold on face centers.
+
+    ``lambda x`` receives x coordinates, ``lambda y`` receives y coordinates,
+    ``lambda z`` receives z coordinates, and other one-argument callables such
+    as ``lambda p`` receive the full point array.
+    """
+    if not callable(threshold):
+        raise ValueError("threshold must be a callable boundary face selector.")
+
+    argument = points
+    try:
+        params = list(signature(threshold).parameters.values())
+    except (TypeError, ValueError):
+        params = ()
+    positional = [
+        p for p in params
+        if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
+    ]
+    if len(positional) == 1:
+        axis = {"x": 0, "y": 1, "z": 2}.get(positional[0].name)
+        if axis is not None:
+            if axis >= points.shape[1]:
+                raise ValueError(
+                    f"threshold requests coordinate axis {axis}, "
+                    f"but boundary face centers have dimension {points.shape[1]}."
+                )
+            argument = points[:, axis]
+
+    flag = bm.array(threshold(argument), dtype=bm.bool)
+    if flag.shape == (points.shape[0],):
+        return flag
+    raise ValueError(
+        "threshold must return a boolean array with one entry per boundary face."
+    )
+
+
+def selected_boundary_faces(geometry, threshold=None, *, default_all=False):
+    """Return boundary faces selected by a face-center threshold callable.
+
+    ``threshold=None`` returns ``None`` by default, matching solver boundary
+    conditions where the absence of a selector means no patch.  Low-level
+    reconstruction operators can pass ``default_all=True`` when boundary data
+    without a selector should apply to all boundary faces.
+    """
+    boundary_faces = bm.nonzero(geometry.is_boundary)[0]
+    if threshold is None:
+        return boundary_faces if default_all else None
+
+    face_centers = geometry.face_center[boundary_faces]
+    flag = boundary_face_flag(face_centers, threshold)
+    if not bool(bm.to_numpy(bm.any(flag))):
+        return boundary_faces[:0]
+    return boundary_faces[flag]
 
 
 class FVMGeometry:
@@ -177,7 +235,13 @@ class FVMGeometry:
         )
 
 
-def face_interpolation_owner_weight(mesh, *, method: str = "linear", index: Index = _S) -> TensorLike:
+def face_interpolation_owner_weight(
+    mesh,
+    *,
+    method: str = "linear",
+    index: Index = _S,
+    geometry: FVMGeometry | None = None,
+) -> TensorLike:
     """Return owner-side face interpolation weights.
 
     ``linear`` is the geometry-consistent face interpolation used by the
@@ -187,7 +251,7 @@ def face_interpolation_owner_weight(mesh, *, method: str = "linear", index: Inde
     if method not in {"average", "linear"}:
         raise ValueError("method must be 'average' or 'linear'.")
 
-    geometry = FVMGeometry(mesh, index=index)
+    geometry = geometry if geometry is not None else FVMGeometry(mesh, index=index)
     if method == "linear":
         return geometry.linear_owner_weight()
 

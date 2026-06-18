@@ -10,6 +10,7 @@ from fealpy.functionspace.space import FunctionSpace as _FS
 from fealpy.functionspace.utils import to_tensor_dof
 
 from fealpy.fem.integrator import LinearInt, OpInt, FaceInt, enable_cache
+from fealpy.sparse import CSRTensor
 
 from .fvm_geometry import FVMGeometry
 
@@ -29,19 +30,22 @@ class ScalarDiffusionIntegrator(LinearInt, OpInt, FaceInt):
 
     def __init__(self, coef: Optional[CoefLike]=None, q: Optional[int]=None, *,
                  index: Index=_S,
+                 geometry: Optional[FVMGeometry]=None,
                  batched: bool=False,
                  method: Optional[str]=None) -> None:
         super().__init__()
         self.coef = coef
         self.q = 2 if q is None else q
         self.index = index
+        self.geometry = geometry
         self.batched = batched
         self.assembly.set(method)
 
     @enable_cache
     def to_global_dof(self, space: _FS) -> TensorLike:
         mesh = getattr(space, "mesh", None)
-        face_to_cell = FVMGeometry(mesh, index=self.index).face_to_cell
+        geometry = self.geometry if self.geometry is not None else FVMGeometry(mesh, index=self.index)
+        face_to_cell = geometry.face_to_cell
 
         scalar_space = getattr(space, "scalar_space", None)
         if scalar_space is None:
@@ -58,22 +62,22 @@ class ScalarDiffusionIntegrator(LinearInt, OpInt, FaceInt):
     def fetch(self, space: _FS):
         index = self.index
         mesh = getattr(space, 'mesh', None)
-        geometry = FVMGeometry(mesh, index=index)
+        geometry = self.geometry if self.geometry is not None else FVMGeometry(mesh, index=index)
         q = self.q
         qf = mesh.quadrature_formula(q, 'face')
         bcs, ws = qf.get_quadrature_points_and_weights()
-        phi = space.basis(bcs, index=index)
-        return geometry, index, bcs, phi
+        basis = space.basis(bcs, index=index)
+        return geometry, index, bcs, basis
 
     @variantmethod
     def assembly(self, space: _FS) -> TensorLike:
-        geometry, _, _, phi = self.fetch(space)
-        return scalar_diffusion_local_matrix(space, geometry, phi, coef=self.coef)
+        geometry, _, _, basis = self.fetch(space)
+        return scalar_diffusion_local_matrix(space, geometry, basis, coef=self.coef)
 
 def scalar_diffusion_local_matrix(
     space: _FS,
     geometry: FVMGeometry,
-    phi: TensorLike,
+    basis: TensorLike,
     *,
     coef: Optional[CoefLike]=None,
 ) -> TensorLike:
@@ -97,7 +101,7 @@ def scalar_diffusion_local_matrix(
     - Consider caching ``mag_E_f / mag_d_f`` and the component base matrix only
       after profiler data shows repeated assembly cost is significant.
     """
-    D = phi.shape[-1]
+    D = basis.shape[-1]
     _, mag_E_f, _ = geometry.over_relaxed_decomposition()
     if coef is None:
         face_coef = bm.ones_like(mag_E_f, dtype=space.ftype)
@@ -119,3 +123,109 @@ def scalar_diffusion_local_matrix(
         2 * D, 2 * D
     )
     return bm.einsum("i,ab->iab", face_strength, base_matrix)
+
+
+class ScalarDiffusionMatrixAssembler:
+    r"""Assemble the scalar diffusion matrix with a fixed CSR graph.
+
+    This is the performance path corresponding to
+    ``BilinearForm + ScalarDiffusionIntegrator`` for the orthogonal face flux
+
+    .. math::
+
+        \gamma_f \frac{|E_f|}{|d_f|}(\phi_P - \phi_N).
+
+    Boundary conditions and pressure gauge constraints are not handled here.
+    The sparsity pattern depends only on mesh topology; each assembly call
+    updates only the values induced by the current face coefficient.
+    """
+
+    def __init__(
+        self,
+        space: _FS,
+        *,
+        geometry: Optional[FVMGeometry] = None,
+    ) -> None:
+        self.space = space
+        self.mesh = getattr(space, "mesh", None)
+        self.geometry = geometry if geometry is not None else FVMGeometry(self.mesh)
+        self.NC = self.mesh.number_of_cells()
+        self.sparse_shape = (self.NC, self.NC)
+
+        internal = bm.nonzero(self.geometry.is_internal)[0]
+        owner = self.geometry.owner[internal]
+        neighbour = self.geometry.neighbour[internal]
+        _, mag_E_f, _ = self.geometry.over_relaxed_decomposition()
+        self.internal = internal
+        self.face_factor = mag_E_f[internal] / self.geometry.mag_d_f[internal]
+
+        rows = bm.concatenate([owner, owner, neighbour, neighbour])
+        cols = bm.concatenate([owner, neighbour, owner, neighbour])
+        self.face_template = bm.concatenate(
+            [
+                bm.ones_like(self.face_factor),
+                -bm.ones_like(self.face_factor),
+                -bm.ones_like(self.face_factor),
+                bm.ones_like(self.face_factor),
+            ]
+        )
+        internal_index = bm.arange(
+            internal.shape[0],
+            dtype=internal.dtype,
+            device=bm.get_device(internal),
+        )
+        self.face_index = bm.concatenate(
+            [internal_index, internal_index, internal_index, internal_index]
+        )
+
+        nrow, ncol = self.sparse_shape
+        flat = bm.astype(rows, bm.int64) * ncol + bm.astype(cols, bm.int64)
+        order = bm.argsort(flat)
+        flat_sorted = flat[order]
+        group_start = bm.ones(
+            (flat.shape[0],),
+            dtype=bm.bool,
+            device=bm.get_device(flat),
+        )
+        group_start = bm.set_at(
+            group_start,
+            slice(1, None),
+            flat_sorted[1:] != flat_sorted[:-1],
+        )
+        unique_flat = flat_sorted[group_start]
+        group_id_sorted = bm.cumsum(group_start, axis=0) - 1
+        self.entry_to_value = group_id_sorted[bm.argsort(order)]
+
+        row = unique_flat // ncol
+        col = unique_flat % ncol
+        counts = bm.bincount(row, minlength=nrow)
+        counts = bm.astype(counts, owner.dtype)
+        self.crow = bm.concatenate(
+            [
+                bm.zeros((1,), dtype=owner.dtype, device=bm.get_device(owner)),
+                bm.cumsum(counts, axis=0),
+            ],
+            axis=0,
+        )
+        self.col = bm.astype(col, owner.dtype)
+
+    def assembly(self, coef: TensorLike) -> CSRTensor:
+        """Return the scalar diffusion matrix for the current face coefficient."""
+        if isinstance(coef, (int, float)):
+            coef_f = bm.full_like(self.face_factor, fill_value=coef)
+        else:
+            coef = bm.array(coef, dtype=self.face_factor.dtype)
+            if coef.shape == ():
+                coef_f = bm.full_like(self.face_factor, fill_value=coef)
+            else:
+                coef_f = coef[self.internal]
+
+        strength = coef_f * self.face_factor
+        local_values = self.face_template * strength[self.face_index]
+        values = bm.zeros(
+            (self.col.shape[0],),
+            dtype=local_values.dtype,
+            device=bm.get_device(local_values),
+        )
+        values = bm.index_add(values, self.entry_to_value, local_values, axis=0)
+        return CSRTensor(self.crow, self.col, values, spshape=self.sparse_shape)

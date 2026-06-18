@@ -8,7 +8,7 @@ from fealpy.model import ComputationalModel, PDEModelManager
 from .collocated_simple_solver import CollocatedSimpleSolver
 from .cell_average_error import cell_average_l2_error
 from .engineering_boundary_conditions import BoundaryConditionData
-from .solver_controls import SimpleSolverControls
+from .solver_controls import SimpleSolverControls, positive_scalar
 
 
 class StokesFVMSimpleModel(ComputationalModel, CollocatedSimpleSolver):
@@ -116,10 +116,10 @@ class StokesFVMSimpleModel(ComputationalModel, CollocatedSimpleSolver):
 
     def _init_diffusion_coef(self, options):
         if options.get("mu") is not None:
-            return self._as_positive_scalar(options["mu"], "mu")
+            return positive_scalar(options["mu"], "mu")
         for name in ("viscosity", "mu"):
             if hasattr(self.pde, name):
-                return self._as_positive_scalar(getattr(self.pde, name), "mu")
+                return positive_scalar(getattr(self.pde, name), "mu")
         return 1.0
 
     @staticmethod
@@ -127,13 +127,13 @@ class StokesFVMSimpleModel(ComputationalModel, CollocatedSimpleSolver):
         return SimpleSolverControls(
             space_degree=options.get("space_degree", 0),
             pressure_gradient_method=options.get(
-                "pressure_gradient_method", "extended_lsq"
+                "pressure_gradient_method", "layered_lsq"
             ),
             velocity_gradient_method=options.get(
-                "velocity_gradient_method", "extended_lsq"
+                "velocity_gradient_method", "layered_lsq"
             ),
             rhie_chow_pressure_gradient_method=options.get(
-                "rhie_chow_pressure_gradient_method", "extended_lsq"
+                "rhie_chow_pressure_gradient_method", "layered_lsq"
             ),
             face_interpolation_method=options.get("face_interpolation_method", "average"),
             momentum_face_interpolation=options.get("momentum_face_interpolation"),
