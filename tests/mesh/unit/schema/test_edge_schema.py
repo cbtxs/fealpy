@@ -1,3 +1,4 @@
+from importlib.util import find_spec
 from pathlib import Path
 import sys
 
@@ -10,7 +11,16 @@ if str(ROOT) not in sys.path:
 from fealpy.backend import backend_manager as bm
 from fealpy.mesh.schema import EdgeSchema
 from fealpy.mesh.storage import EntitySector, MeshBlock
+from fealpy.mesh.topology.ipoints import multi_index_sort
 from fealpy.mesh.view import Mesh
+
+
+BACKENDS = ["numpy"]
+BACKEND_IDS = ["backend-numpy"]
+
+if find_spec("torch") is not None:
+    BACKENDS.append("pytorch")
+    BACKEND_IDS.append("backend-pytorch")
 
 
 def _as_list(value):
@@ -21,8 +31,7 @@ def _assert_allclose(actual, expected, message):
     assert bm.allclose(actual, expected), (
         f"{message}\n"
         f"actual: {_as_list(actual)}\n"
-        f"expected: {_as_list(expected)}"
-    )
+        f"expected: {_as_list(expected)}")
 
 
 def _assert_equal(actual, expected, message):
@@ -121,7 +130,9 @@ def _build_two_edge_view():
 
 
 class TestEdgeSchema:
-    def test_schema_dispatch_and_metadata(self):
+    @pytest.mark.parametrize("backend", BACKENDS, ids=BACKEND_IDS)
+    def test_schema_dispatch_and_metadata(self, backend):
+        bm.set_backend(backend)
         mesh, edge_view = _build_edge_view()
 
         assert edge_view.schema is EdgeSchema
@@ -131,7 +142,9 @@ class TestEdgeSchema:
         assert EdgeSchema.local_entity("node") == [[0], [1]]
         assert EdgeSchema.ccw == {"node": [[0], [1]]}
 
-    def test_multi_index_via_schema_behind_user_view(self):
+    @pytest.mark.parametrize("backend", BACKENDS, ids=BACKEND_IDS)
+    def test_multi_index_via_schema_behind_user_view(self, backend):
+        bm.set_backend(backend)
         _, edge_view = _build_edge_view()
 
         _assert_equal(
@@ -146,7 +159,9 @@ class TestEdgeSchema:
         )
         assert edge_view.schema.num_multi_index((2,)) == 3
 
-    def test_multi_index_rejects_invalid_order_argument(self):
+    @pytest.mark.parametrize("backend", BACKENDS, ids=BACKEND_IDS)
+    def test_multi_index_rejects_invalid_order_argument(self, backend):
+        bm.set_backend(backend)
         _, edge_view = _build_edge_view()
 
         with pytest.raises(TypeError):
@@ -155,7 +170,9 @@ class TestEdgeSchema:
         with pytest.raises(ValueError):
             edge_view.schema.multi_index((-1,))
 
-    def test_multi_index_sort_returns_lexicographic_order(self):
+    @pytest.mark.parametrize("backend", BACKENDS, ids=BACKEND_IDS)
+    def test_multi_index_sort_returns_lexicographic_order(self, backend):
+        bm.set_backend(backend)
         _, edge_view = _build_edge_view()
 
         multi_index = bm.asarray(
@@ -167,12 +184,14 @@ class TestEdgeSchema:
             dtype=bm.int32,
         )
         _assert_equal(
-            edge_view.schema.multi_index_sort(multi_index),
-            bm.asarray([0, 2, 1], dtype=bm.int64),
-            "Edge multi-index rows should be sorted lexicographically",
+            multi_index_sort(multi_index),
+            bm.asarray([1, 0, 2], dtype=bm.int64),
+            "Edge multi-index rows should follow the topology helper's predefined orientation order",
         )
 
-    def test_barycenter_measure_grad_lambda_through_user_view(self):
+    @pytest.mark.parametrize("backend", BACKENDS, ids=BACKEND_IDS)
+    def test_barycenter_measure_grad_lambda_through_user_view(self, backend):
+        bm.set_backend(backend)
         _, edge_view = _build_edge_view()
 
         _assert_allclose(
@@ -199,7 +218,9 @@ class TestEdgeSchema:
             "Edge barycentric gradients should match the affine edge formula",
         )
 
-    def test_bc_to_point_via_schema_behind_user_view(self):
+    @pytest.mark.parametrize("backend", BACKENDS, ids=BACKEND_IDS)
+    def test_bc_to_point_via_schema_behind_user_view(self, backend):
+        bm.set_backend(backend)
         _, edge_view = _build_two_edge_view()
         ctx = edge_view.context()
         bcs = (
@@ -227,7 +248,9 @@ class TestEdgeSchema:
             "Edge barycentric coordinates should map to physical points",
         )
 
-    def test_quadrature_formula_via_schema_behind_user_view(self):
+    @pytest.mark.parametrize("backend", BACKENDS, ids=BACKEND_IDS)
+    def test_quadrature_formula_via_schema_behind_user_view(self, backend):
+        bm.set_backend(backend)
         _, edge_view = _build_edge_view()
 
         qf = edge_view.schema.quadrature_formula(2, qtype="legendre")
@@ -236,7 +259,95 @@ class TestEdgeSchema:
         _assert_shape(bcs, (2, 2), "Edge order-2 quadrature has two barycentric points")
         _assert_shape(weights, (2,), "Edge order-2 quadrature has two weights")
 
-    def test_normal_and_tangent_through_user_view(self):
+    @pytest.mark.parametrize("backend", BACKENDS, ids=BACKEND_IDS)
+    def test_grad_shape_function_and_jacobi_matrix_follow_b_u_x_convention(self, backend):
+        bm.set_backend(backend)
+        _, edge_view = _build_two_edge_view()
+        ctx = edge_view.context()
+        bcs = (
+            bm.asarray(
+                [
+                    [0.75, 0.25],
+                    [0.25, 0.75],
+                ],
+                dtype=bm.float64,
+            ),
+        )
+
+        grad_b = edge_view.schema.grad_shape_function_barycentric(bcs, (1,))
+        grad_u = edge_view.schema.grad_shape_function_reference(bcs, (1,))
+        jacobi = edge_view.schema.jacobi_matrix(ctx, bcs, None)
+        grad_x = edge_view.grad_shape_function(bcs, p=1, variables="x")
+
+        _assert_shape(grad_b, (2, 2, 2), "Barycentric edge shape gradients are [NQ, num_shape, num_bc]")
+        _assert_allclose(
+            grad_b,
+            bm.asarray(
+                [
+                    [[1.0, 0.0], [0.0, 1.0]],
+                    [[1.0, 0.0], [0.0, 1.0]],
+                ],
+                dtype=bm.float64,
+            ),
+            "For p=1, edge shape functions are lambda0 and lambda1, so their barycentric gradients are constant",
+        )
+
+        _assert_shape(grad_u, (2, 2, 1), "Reference edge shape gradients are [NQ, num_shape, ref_dim]")
+        _assert_allclose(
+            grad_u,
+            bm.asarray(
+                [
+                    [[-1.0], [1.0]],
+                    [[-1.0], [1.0]],
+                ],
+                dtype=bm.float64,
+            ),
+            "Reference coordinate u maps to lambda = (1-u, u), so dphi/du is [-1, 1]",
+        )
+
+        _assert_shape(jacobi, (2, 2, 2, 1), "Edge Jacobi matrices are [entity_count, NQ, GD, ref_dim]")
+        _assert_allclose(
+            jacobi,
+            bm.asarray(
+                [
+                    [[[1.0], [0.0]], [[1.0], [0.0]]],
+                    [[[0.0], [3.0]], [[0.0], [3.0]]],
+                ],
+                dtype=bm.float64,
+            ),
+            "Edge Jacobi matrix should equal the physical tangent vector for the affine reference-to-physical map",
+        )
+
+        _assert_shape(grad_x, (2, 2, 2, 2), "Cartesian edge shape gradients are [entity_count, NQ, num_shape, GD]")
+        _assert_allclose(
+            grad_x,
+            bm.asarray(
+                [
+                    [[[-1.0, 0.0], [1.0, 0.0]], [[-1.0, 0.0], [1.0, 0.0]]],
+                    [[[0.0, -1.0 / 3.0], [0.0, 1.0 / 3.0]], [[0.0, -1.0 / 3.0], [0.0, 1.0 / 3.0]]],
+                ],
+                dtype=bm.float64,
+            ),
+            "Cartesian gradients should scale the reference gradients by the inverse metric along each physical edge",
+        )
+
+    @pytest.mark.parametrize("backend", BACKENDS, ids=BACKEND_IDS)
+    def test_grad_shape_function_user_api_supports_b_u_x_variables(self, backend):
+        bm.set_backend(backend)
+        _, edge_view = _build_two_edge_view()
+        bcs = bm.asarray([[0.5, 0.5]], dtype=bm.float64)
+
+        grad_b = edge_view.grad_shape_function(bcs, p=1, variables="b")
+        grad_u = edge_view.grad_shape_function(bcs, p=1, variables="u")
+        grad_x = edge_view.grad_shape_function(bcs, p=1, variables="x")
+
+        _assert_shape(grad_b, (1, 2, 2), "User API should expose barycentric gradients for edges")
+        _assert_shape(grad_u, (1, 2, 1), "User API should expose reference gradients for edges")
+        _assert_shape(grad_x, (2, 1, 2, 2), "User API should expose cartesian gradients for each edge entity")
+
+    @pytest.mark.parametrize("backend", BACKENDS, ids=BACKEND_IDS)
+    def test_normal_and_tangent_through_user_view(self, backend):
+        bm.set_backend(backend)
         _, edge_view = _build_edge_view()
 
         tangent = edge_view.tangent()
@@ -255,7 +366,9 @@ class TestEdgeSchema:
             "Current 2D edge normal follows [dy, -dx]",
         )
 
-    def test_scalar_index_keeps_single_entity_axis(self):
+    @pytest.mark.parametrize("backend", BACKENDS, ids=BACKEND_IDS)
+    def test_scalar_index_keeps_single_entity_axis(self, backend):
+        bm.set_backend(backend)
         _, edge_view = _build_two_edge_view()
 
         _assert_allclose(
@@ -271,7 +384,9 @@ class TestEdgeSchema:
         _assert_shape(edge_view.grad_lambda(index=1), (1, 2, 2), "Scalar index should preserve grad_lambda entity axis")
         _assert_shape(edge_view.tangent(index=1), (1, 1, 2), "Scalar index should preserve tangent entity axis")
 
-    def test_3d_normal_returns_two_orthogonal_directions(self):
+    @pytest.mark.parametrize("backend", BACKENDS, ids=BACKEND_IDS)
+    def test_3d_normal_returns_two_orthogonal_directions(self, backend):
+        bm.set_backend(backend)
         _, edge_view = _build_3d_edge_view()
 
         tangent = edge_view.tangent()
@@ -299,7 +414,9 @@ class TestEdgeSchema:
         assert bm.all(bm.sum(normal[:, 0, :] * normal[:, 0, :], axis=1) > 0)
         assert bm.all(bm.sum(normal[:, 1, :] * normal[:, 1, :], axis=1) > 0)
 
-    def test_degenerate_edge_normal_raises_value_error(self):
+    @pytest.mark.parametrize("backend", BACKENDS, ids=BACKEND_IDS)
+    def test_degenerate_edge_normal_raises_value_error(self, backend):
+        bm.set_backend(backend)
         _, edge_view = _build_degenerate_edge_view()
 
         with pytest.raises(ValueError):

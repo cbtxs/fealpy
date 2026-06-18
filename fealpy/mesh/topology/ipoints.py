@@ -68,7 +68,7 @@ def multi_index_sort(multi_index: Tensor, /) -> Tensor:
     NV = multi_index.shape[-1]
     count = bm.sum(multi_index != 0, axis=1)
     nonzero_row, nonzero_col = bm.nonzero(multi_index)
-    rank = bm.zeros_like(count, dtype=bm.uint64)
+    rank = bm.zeros_like(count, dtype=bm.int64)
     rank = bm.index_add(rank, nonzero_row, NV**nonzero_col) # type: ignore[call-overload]
     arg = bm.lexsort(tuple(multi_index.T) + (rank, count)) # type: ignore[call-overload]
     return arg
