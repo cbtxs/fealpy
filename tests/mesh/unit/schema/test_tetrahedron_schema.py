@@ -45,6 +45,7 @@ def _assert_shape(actual, expected_shape, message):
 
 
 def _build_single_tet_view():
+    bm.set_backend("numpy")
     positions = bm.asarray(
         [
             [0.0, 0.0, 0.0],
@@ -62,6 +63,7 @@ def _build_single_tet_view():
 
 
 def _build_two_tet_view():
+    bm.set_backend("numpy")
     positions = bm.asarray(
         [
             [0.0, 0.0, 0.0],
@@ -110,9 +112,10 @@ class TestTetrahedronSchema:
         allowed_methods = {
             "barycenter",
             "bc_to_point",
-            "geo_dimension",
             "shape_function",
-            "grad_shape_function",
+            "grad_shape_function_barycentric",
+            "grad_shape_function_reference",
+            "jacobi_matrix",
             "grad_lambda",
             "multi_index",
             "measure",
@@ -223,6 +226,120 @@ class TestTetrahedronSchema:
             bm.zeros((1, 3), dtype=bm.float64),
             "Barycentric gradient sum must vanish",
         )
+
+    def test_grad_shape_function_and_jacobi_matrix_follow_b_u_x_convention(self):
+        _, tet_view = _build_two_tet_view()
+        ctx = tet_view.context()
+        bcs = (
+            bm.asarray(
+                [
+                    [0.25, 0.25, 0.25, 0.25],
+                    [0.10, 0.20, 0.30, 0.40],
+                ],
+                dtype=bm.float64,
+            ),
+        )
+
+        grad_b = tet_view.schema.grad_shape_function_barycentric(bcs, (1,))
+        grad_u = tet_view.schema.grad_shape_function_reference(bcs, (1,))
+        jacobi = tet_view.schema.jacobi_matrix(ctx, bcs, None)
+        grad_x = tet_view.grad_shape_function(bcs, p=1, variables="x")
+
+        expected_grad_b = bm.broadcast_to(
+            bm.eye(4, dtype=bm.float64)[None, :, :],
+            (2, 4, 4),
+        )
+        expected_grad_u = bm.broadcast_to(
+            bm.asarray(
+                [
+                    [-1.0, -1.0, -1.0],
+                    [1.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0],
+                    [0.0, 0.0, 1.0],
+                ],
+                dtype=bm.float64,
+            )[None, :, :],
+            (2, 4, 3),
+        )
+        expected_jacobi = bm.asarray(
+            [
+                [
+                    [[1.0, 0.0, 0.0],
+                     [0.0, 1.0, 0.0],
+                     [0.0, 0.0, 1.0]],
+                    [[1.0, 0.0, 0.0],
+                     [0.0, 1.0, 0.0],
+                     [0.0, 0.0, 1.0]],
+                ],
+                [
+                    [[2.0, 0.0, 0.0],
+                     [0.0, 3.0, 0.0],
+                     [0.0, 0.0, 4.0]],
+                    [[2.0, 0.0, 0.0],
+                     [0.0, 3.0, 0.0],
+                     [0.0, 0.0, 4.0]],
+                ],
+            ],
+            dtype=bm.float64,
+        )
+        expected_grad_x = bm.asarray(
+            [
+                [
+                    [[-1.0, -1.0, -1.0],
+                     [1.0, 0.0, 0.0],
+                     [0.0, 1.0, 0.0],
+                     [0.0, 0.0, 1.0]],
+                    [[-1.0, -1.0, -1.0],
+                     [1.0, 0.0, 0.0],
+                     [0.0, 1.0, 0.0],
+                     [0.0, 0.0, 1.0]],
+                ],
+                [
+                    [[-0.5, -1.0 / 3.0, -0.25],
+                     [0.5, 0.0, 0.0],
+                     [0.0, 1.0 / 3.0, 0.0],
+                     [0.0, 0.0, 0.25]],
+                    [[-0.5, -1.0 / 3.0, -0.25],
+                     [0.5, 0.0, 0.0],
+                     [0.0, 1.0 / 3.0, 0.0],
+                     [0.0, 0.0, 0.25]],
+                ],
+            ],
+            dtype=bm.float64,
+        )
+
+        _assert_shape(grad_b, (2, 4, 4), "Barycentric Tet gradients are [NQ, ldof, num_bc]")
+        _assert_allclose(grad_b, expected_grad_b, "Linear Tet barycentric gradients are the identity")
+        _assert_shape(grad_u, (2, 4, 3), "Reference Tet gradients are [NQ, ldof, ref_dim]")
+        _assert_allclose(grad_u, expected_grad_u, "Linear Tet reference gradients follow lambda(u, v, w)")
+        _assert_shape(jacobi, (2, 2, 3, 3), "Tet Jacobian matrices are [NC, NQ, GD, ref_dim]")
+        _assert_allclose(jacobi, expected_jacobi, "Affine Tet Jacobian should be constant at all samples")
+        _assert_shape(grad_x, (2, 2, 4, 3), "Cartesian Tet gradients are [NC, NQ, ldof, GD]")
+        _assert_allclose(grad_x, expected_grad_x, "Cartesian Tet gradients should be J^{-T} scaled")
+
+        grad_b_p2 = tet_view.schema.grad_shape_function_barycentric(bcs, (2,))
+        grad_u_p2 = tet_view.schema.grad_shape_function_reference(bcs, (2,))
+        _assert_shape(grad_b_p2, (2, 10, 4), "Quadratic Tet barycentric gradients have ten shape functions")
+        _assert_shape(grad_u_p2, (2, 10, 3), "Quadratic Tet reference gradients have ten shape functions")
+
+    def test_grad_shape_function_user_api_supports_b_u_x_variables(self, capsys):
+        _, tet_view = _build_two_tet_view()
+        bcs = bm.asarray(
+            [
+                [0.25, 0.25, 0.25, 0.25],
+                [0.10, 0.20, 0.30, 0.40],
+            ],
+            dtype=bm.float64,
+        )
+
+        grad_b = tet_view.grad_shape_function(bcs, p=1, variables="b")
+        grad_u = tet_view.grad_shape_function(bcs, p=1, variables="u")
+        grad_x = tet_view.grad_shape_function(bcs, p=1, variables="x")
+
+        _assert_shape(grad_b, (2, 4, 4), "User API should expose Tet barycentric gradients")
+        _assert_shape(grad_u, (2, 4, 3), "User API should expose Tet reference gradients")
+        _assert_shape(grad_x, (2, 2, 4, 3), "User API should expose Tet cartesian gradients")
+        assert capsys.readouterr().out == ""
 
     def test_normal_and_tangent_through_user_view(self):
         _, tet_view = _build_single_tet_view()

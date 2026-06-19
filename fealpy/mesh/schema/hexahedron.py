@@ -78,44 +78,77 @@ class HexahedronSchema(ShapedEntitySchema):
         return phi
 
     @classmethod
-    def grad_shape_function(
+    def grad_shape_function_barycentric(
+        cls,
+        bcs: tuple[Tensor, ...],
+        p: tuple[int, ...]
+    ) -> Tensor:
+        bcs = _require_bcs_tuple(bcs, "hexahedron grad_shape_function_barycentric", 3)
+        p = _require_order_tuple(p, "hexahedron grad_shape_function_barycentric", 3)
+        for bc in bcs:
+            if bc.shape[-1] != 2:
+                raise ValueError(
+                    "hexahedron grad_shape_function_barycentric expects "
+                    "three interval barycentric tensors"
+                )
+
+        mi0 = _MI.multi_index_matrix(p[0], 2)
+        mi1 = _MI.multi_index_matrix(p[1], 2)
+        mi2 = _MI.multi_index_matrix(p[2], 2)
+        phi0 = bm.simplex_shape_function(bcs[0], p[0], mi0)
+        phi1 = bm.simplex_shape_function(bcs[1], p[1], mi1)
+        phi2 = bm.simplex_shape_function(bcs[2], p[2], mi2)
+        R0 = bm.simplex_grad_shape_function(bcs[0], p[0], mi0)
+        R1 = bm.simplex_grad_shape_function(bcs[1], p[1], mi1)
+        R2 = bm.simplex_grad_shape_function(bcs[2], p[2], mi2)
+        num_shape = phi0.shape[-1] * phi1.shape[-1] * phi2.shape[-1]
+
+        gphi0 = bm.einsum("ka,jb,icr->kijabcr", phi2, phi1, R0)
+        gphi1 = bm.einsum("ka,jbr,ic->kijabcr", phi2, R1, phi0)
+        gphi2 = bm.einsum("kar,jb,ic->kijabcr", R2, phi1, phi0)
+        gphi = bm.concat(
+            [
+                bm.reshape(gphi0, (-1, num_shape, 2)),
+                bm.reshape(gphi1, (-1, num_shape, 2)),
+                bm.reshape(gphi2, (-1, num_shape, 2)),
+            ],
+            axis=-1,
+        )
+        return gphi
+
+    @classmethod
+    def grad_shape_function_reference(
+        cls,
+        bcs: tuple[Tensor, ...],
+        p: tuple[int, ...]
+    ) -> Tensor:
+        bcs = _require_bcs_tuple(bcs, "hexahedron grad_shape_function_reference", 3)
+        p = _require_order_tuple(p, "hexahedron grad_shape_function_reference", 3)
+
+        grad_bary = cls.grad_shape_function_barycentric(bcs, p)
+        return bm.stack(
+            [
+                -grad_bary[..., 0] + grad_bary[..., 1],
+                -grad_bary[..., 2] + grad_bary[..., 3],
+                -grad_bary[..., 4] + grad_bary[..., 5],
+            ],
+            axis=-1,
+        )
+
+    @classmethod
+    def jacobi_matrix(
         cls,
         ctx: EntityContext,
         bcs: tuple[Tensor, ...],
-        p: tuple[int, ...],
-        *,
-        index: Index | None = None,
-        variables: str = "u",
-        mi=None,
+        index: Index | None,
     ) -> Tensor:
-        bcs = _require_bcs_tuple(bcs, "hexahedron grad_shape_function", 3)
-        p = _require_order_tuple(p, "hexahedron grad_shape_function", 3)
-        for bc in bcs:
-            if bc.shape[-1] != 2:
-                raise ValueError("hexahedron grad_shape_function expects three interval barycentric tensors")
+        bcs = _require_bcs_tuple(bcs, "hexahedron jacobi_matrix", 3)
+        cell = ctx.sector.indices if index is None else ctx.sector.indices[index]
+        if len(cell.shape) == 1:
+            cell = bm.reshape(cell, (1, -1))
 
-        phi0, phi1, phi2 = (bm.simplex_shape_function(bc, p, mi) for bc, p in zip(bcs, p))
-        R0, R1, R2 = (bm.simplex_grad_shape_function(bc, p, mi) for bc, p in zip(bcs, p))
-        Dlambda = bm.asarray([[-1.0], [1.0]], dtype=phi0.dtype)
-        R0 = bm.einsum("...ij,jn->...in", R0, Dlambda)
-        R1 = bm.einsum("...ij,jn->...in", R1, Dlambda)
-        R2 = bm.einsum("...ij,jn->...in", R2, Dlambda)
-        ref = bm.concatenate(
-            [
-                R0[:, None, :, None, None, :] * phi1[None, :, None, :, None, None] * phi2[None, None, None, :, :, None],
-                phi0[:, None, :, None, None, None] * R1[None, :, None, :, None, :] * phi2[None, None, None, :, :, None],
-                phi0[:, None, :, None, None, None] * phi1[None, :, None, :, None, None] * R2[None, None, None, :, :, :],
-            ],
-            axis=-1,
-        ).reshape(-1, phi0.shape[1] * phi1.shape[1] * phi2.shape[1], 3)
-
-        if variables == "u":
-            return ref
-        if variables == "x":
-            if p != 1:
-                raise NotImplementedError("hexahedron grad_shape_function currently only supports p=1 in physical space")
-            return cls.grad_lambda(ctx, index, bcs=bcs, ref=False)
-        raise ValueError(f"Unsupported variables: {variables!r}")
+        gphi = cls.grad_shape_function_reference(bcs, p=(1, 1, 1))
+        return bm.einsum("cim,qin->cqmn", ctx.block.positions[cell], gphi)
 
     @classmethod
     def multi_index(cls, order: tuple[int, ...], *, internal: bool = False, tensorprod: bool = True) -> Tensor:

@@ -47,30 +47,6 @@ class TetrahedronSchema(ShapedEntitySchema):
         return bm.simplex_shape_function(bcs[0], p[0])
 
     @classmethod
-    def grad_shape_function(
-        cls,
-        ctx: EntityContext,
-        bcs: tuple[Tensor, ...],
-        p: tuple[int, ...],
-        *,
-        index: Index | None = None,
-        variables: str = "u",
-        mi=None,
-    ) -> Tensor:
-        bcs = _require_bcs_tuple(bcs, "tetrahedron grad_shape_function", 1)
-        p = _require_order_tuple(p, "tetrahedron grad_shape_function", 1)
-        if bcs[0].shape[-1] != 4:
-            raise ValueError(f"tetrahedron grad_shape_function expects last dimension 4, got {bcs[0].shape[-1]}")
-        ref = bm.simplex_grad_shape_function(bcs[0], p[0], mi)
-        if variables == "u":
-            return ref
-        if variables == "x":
-            Dlambda = cls.grad_lambda(ctx, index, ref=False)
-            grad = bm.einsum("...ij, kjm -> k...im", ref, Dlambda)
-            return grad
-        raise ValueError(f"Unsupported variables: {variables!r}")
-
-    @classmethod
     def bc_to_point(cls, ctx: EntityContext, bcs: tuple[Tensor, ...], index: Index | None) -> Tensor:
         bcs = _require_bcs_tuple(bcs, "tetrahedron bc_to_point", 1)
         if bcs[0].shape[-1] != 4:
@@ -81,6 +57,60 @@ class TetrahedronSchema(ShapedEntitySchema):
             tet = bm.reshape(tet, (1, -1))
         points = ctx.block.positions[tet]
         return bm.einsum("...j,cjd->c...d", bcs[0], points)
+
+    @classmethod
+    def grad_shape_function_barycentric(
+        cls,
+        bcs: tuple[Tensor, ...],
+        p: tuple[int, ...]
+    ) -> Tensor:
+        bcs = _require_bcs_tuple(bcs, "tetrahedron grad_shape_function_barycentric", 1)
+        p = _require_order_tuple(p, "tetrahedron grad_shape_function_barycentric", 1)
+        if bcs[0].shape[-1] != 4:
+            raise ValueError(
+                "tetrahedron grad_shape_function_barycentric expects "
+                f"last dimension 4, got {bcs[0].shape[-1]}"
+            )
+
+        mi = cls.multi_index(p)
+        return bm.simplex_grad_shape_function(bcs[0], p[0], mi)
+
+    @classmethod
+    def grad_shape_function_reference(
+        cls,
+        bcs: tuple[Tensor, ...],
+        p: tuple[int, ...]
+    ) -> Tensor:
+        bcs = _require_bcs_tuple(bcs, "tetrahedron grad_shape_function_reference", 1)
+        p = _require_order_tuple(p, "tetrahedron grad_shape_function_reference", 1)
+
+        Dlambda = bm.array(
+            [
+                [-1.0, -1.0, -1.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+            ],
+            dtype=bcs[0].dtype,
+            device=bm.get_device(bcs[0]),
+        )
+        grad_bary = cls.grad_shape_function_barycentric(bcs, p)
+        return bm.einsum("...ij,jk->...ik", grad_bary, Dlambda)
+
+    @classmethod
+    def jacobi_matrix(
+        cls,
+        ctx: EntityContext,
+        bcs: tuple[Tensor, ...],
+        index: Index | None,
+    ) -> Tensor:
+        bcs = _require_bcs_tuple(bcs, "tetrahedron jacobi_matrix", 1)
+        tet = ctx.sector.indices if index is None else ctx.sector.indices[index]
+        if len(tet.shape) == 1:
+            tet = bm.reshape(tet, (1, -1))
+
+        gphi = cls.grad_shape_function_reference(bcs, p=(1,))
+        return bm.einsum("cim,qin->cqmn", ctx.block.positions[tet], gphi)
 
     @classmethod
     def grad_lambda(
