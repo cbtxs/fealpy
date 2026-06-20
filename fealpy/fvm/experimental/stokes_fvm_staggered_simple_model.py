@@ -75,7 +75,7 @@ class StokesFVMStaggeredSimpleModel(ComputationalModel):
         f -= bm.einsum('i,i->i', grad_p[:, 0], self.ucm)
         dbc = DirichletBC(self.umesh, self.pde.dirichlet_velocity_u,
                           threshold=lambda x: (bm.abs(x) < 1e-10) | (bm.abs(x - 1) < 1e-10))
-        A, f = dbc.DiffusionApply(A, f)
+        A, f = dbc.apply_diffusion(A, f)
         A, f = dbc.ThresholdApply(A, f)
         uap = A.diags().values
         return spsolve(A, f,"mumps"), uap
@@ -89,7 +89,7 @@ class StokesFVMStaggeredSimpleModel(ComputationalModel):
         f -= bm.einsum('i,i->i', grad_p[:, 1], self.vcm)
         dbc = DirichletBC(self.vmesh, self.pde.dirichlet_velocity_v,
                           threshold=lambda y: (bm.abs(y) < 1e-10) | (bm.abs(y - 1) < 1e-10))
-        A, f = dbc.DiffusionApply(A, f)
+        A, f = dbc.apply_diffusion(A, f)
         A, f = dbc.ThresholdApply(A, f)
         vap = A.diags().values
         return spsolve(A, f,"mumps"), vap

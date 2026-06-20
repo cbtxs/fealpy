@@ -11,7 +11,7 @@ def main():
     parser.add_argument('--mesh_type', default="uniform_qrad", type=str,
                         help='PDE mesh generator variant. Defaults to the PDE model default.')
 
-    parser.add_argument('--mesh_refine', default=4, type=int,
+    parser.add_argument('--mesh_refine', default=3, type=int,
                         help='Uniform refinement levels applied after the PDE default mesh is generated.')
 
     parser.add_argument('--backend', default='pytorch', type=str,
@@ -21,9 +21,27 @@ def main():
                         choices=("cpu", "cuda"),
                         help="Device used by the selected backend.")
 
-    parser.add_argument('--linear_solver', default='scipy', type=str,
+    parser.add_argument('--linear_solver', default='auto', type=str,
                         choices=("auto", "mumps", "scipy", "cupy"),
-                        help='Sparse linear solver backend.')
+                        help='Fallback sparse linear solver backend.')
+
+    parser.add_argument('--momentum_solver', default='scipy_bicgstab', type=str,
+                        help='Equation-specific solver for momentum systems.')
+
+    parser.add_argument('--pressure_nullspace_solver', default='petsc_gmres_hypre', type=str,
+                        help='PETSc KSP/PC solver for pure-Neumann pressure systems.')
+
+    parser.add_argument('--pressure_constraint', default='nullspace', type=str,
+                        choices=("gauge", "nullspace"),
+                        help='Pressure uniqueness treatment for pure-Neumann pressure correction.')
+
+    parser.add_argument('--momentum_solve_strategy', default='component', type=str,
+                        choices=("vector", "component"),
+                        help='Solve momentum as one vector system or scalar component systems.')
+
+    parser.add_argument('--momentum_component_matrix_policy', default='shared', type=str,
+                        choices=("shared", "per_component"),
+                        help='Matrix reuse policy for component momentum solves.')
 
     parser.add_argument('--pbar_log', default=True, action=argparse.BooleanOptionalAction,
                         help='Whether to show progress bar.')
@@ -65,6 +83,10 @@ def main():
         "relax": options.pop("relax"),
     }
     plot = options.pop("plot")
+    options["momentum_linear_solver"] = options.pop("momentum_solver")
+    options["pressure_nullspace_linear_solver"] = options.pop(
+        "pressure_nullspace_solver"
+    )
     options["linear_solver_config"] = FVMLinearSolverConfig(
         backend=backend,
         device=device,

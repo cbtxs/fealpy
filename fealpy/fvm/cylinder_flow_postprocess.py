@@ -403,8 +403,9 @@ def write_cylinder_outputs(
                 {
                     "iterations": len(residual_rows),
                     "last_mass": residual_rows[-1].get("mass"),
-                    "last_pressure_update": residual_rows[-1].get("pressure_update"),
-                    "last_pressure_relax": residual_rows[-1].get("pressure_relax"),
+                    "last_pressure_correction": residual_rows[-1].get(
+                        "pressure_correction"
+                    ),
                 }
             )
     if run_summary:

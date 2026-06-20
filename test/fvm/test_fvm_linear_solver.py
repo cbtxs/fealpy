@@ -5,12 +5,29 @@ def test_init_fvm_linear_solver_returns_existing_solver_object():
     from fealpy.fvm.fvm_linear_solver import init_fvm_linear_solver
 
     class ExistingSolver:
-        def solve(self, matrix, rhs):
+        def solve(self, matrix, rhs, *, solver=None):
             return rhs
 
     existing = ExistingSolver()
 
     assert init_fvm_linear_solver(linear_solver=existing) is existing
+
+
+def test_collocated_operator_passes_explicit_solver_name():
+    from fealpy.fvm.collocated_ns_components import CollocatedNSFVMComponents
+
+    calls = []
+
+    class RecordingSolver:
+        def solve(self, matrix, rhs, *, solver=None):
+            calls.append(solver)
+            return rhs
+
+    operator = object.__new__(CollocatedNSFVMComponents)
+    operator.linear_solver = RecordingSolver()
+
+    assert operator.solve_linear_system("A", "b", solver="scipy_bicgstab") == "b"
+    assert calls == ["scipy_bicgstab"]
 
 
 def test_init_fvm_linear_solver_accepts_dict_config():
@@ -37,6 +54,20 @@ def test_fvm_linear_solver_selection_is_explicit():
     assert cpu_solver.select_solver(None) == "mumps"
     assert cpu_solver.select_solver("scipy") == "scipy"
     assert cuda_solver.select_solver(None) == "cupy"
+
+
+def test_fvm_linear_solver_config_has_no_equation_roles():
+    from fealpy.fvm.fvm_linear_solver import FVMLinearSolverConfig
+
+    config = FVMLinearSolverConfig()
+
+    for name in (
+        "momentum_solver",
+        "pressure_solver",
+        "pressure_gauge_solver",
+        "pressure_nullspace_solver",
+    ):
+        assert not hasattr(config, name)
 
 
 def test_fvm_linear_solver_fealpy_cpu_route_uses_spsolve(monkeypatch):
@@ -93,3 +124,70 @@ def test_fvm_linear_solver_solve_uses_named_routes(monkeypatch):
     assert solver.solve("A", rhs) is rhs
     assert solver.solve("A", rhs, solver="cupy", matrix_type="L") is rhs
     assert calls == [("cpu", "scipy"), ("cupy", "L")]
+
+
+def test_constant_nullspace_solver_reuses_cached_petsc_solver(monkeypatch):
+    import fealpy.fvm.fvm_linear_solver as linear_solver_module
+    from fealpy.fvm.fvm_linear_solver import FVMLinearSolver, FVMLinearSolverConfig
+
+    calls = []
+
+    class CachedSolver:
+        def __init__(self, matrix, cell_measure, *, solver_name, rtol, atol, max_it):
+            calls.append(("init", matrix, tuple(bm.to_numpy(cell_measure)), solver_name))
+
+        def matches(self, matrix, *, solver_name, rtol, atol, max_it):
+            calls.append(("matches", matrix, solver_name))
+            return True
+
+        def solve(self, matrix, rhs, cell_measure):
+            calls.append(("solve", matrix, tuple(bm.to_numpy(rhs))))
+            return rhs
+
+        def destroy(self):
+            calls.append(("destroy",))
+
+    monkeypatch.setattr(
+        linear_solver_module,
+        "CachedPetscConstantNullspaceSolver",
+        CachedSolver,
+    )
+
+    solver = FVMLinearSolver(
+        FVMLinearSolverConfig(constant_nullspace_solver="petsc_cg_jacobi")
+    )
+    rhs = bm.array([1.0, -1.0])
+    cell_measure = bm.array([0.5, 0.5])
+
+    assert solver.solve_constant_nullspace("A", rhs, cell_measure) is rhs
+    assert solver.solve_constant_nullspace("A", rhs, cell_measure) is rhs
+    assert calls == [
+        ("init", "A", (0.5, 0.5), "petsc_cg_jacobi"),
+        ("solve", "A", (1.0, -1.0)),
+        ("matches", "A", "petsc_cg_jacobi"),
+        ("solve", "A", (1.0, -1.0)),
+    ]
+
+
+def test_constant_nullspace_solver_can_disable_cache(monkeypatch):
+    from fealpy.fvm.fvm_linear_solver import FVMLinearSolver, FVMLinearSolverConfig
+
+    calls = []
+    solver = FVMLinearSolver(
+        FVMLinearSolverConfig(
+            constant_nullspace_solver="petsc_cg_jacobi",
+            constant_nullspace_cache=False,
+        )
+    )
+
+    def one_shot(matrix, rhs, cell_measure, *, solver_name, rtol, atol, max_it):
+        calls.append((matrix, tuple(bm.to_numpy(rhs)), solver_name))
+        return rhs
+
+    monkeypatch.setattr(solver, "solve_constant_nullspace_with_petsc", one_shot)
+
+    rhs = bm.array([1.0, -1.0])
+    cell_measure = bm.array([0.5, 0.5])
+
+    assert solver.solve_constant_nullspace("A", rhs, cell_measure) is rhs
+    assert calls == [("A", (1.0, -1.0), "petsc_cg_jacobi")]

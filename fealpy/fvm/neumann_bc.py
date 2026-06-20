@@ -8,7 +8,7 @@ from .fvm_geometry import FVMGeometry, boundary_face_flag
 class NeumannBC:
     """Apply prescribed normal flux data to FVM algebraic systems.
 
-    The reusable path is ``DiffusionApply(f)``, which adds the integrated
+    The reusable path is ``apply_diffusion(f)``, which adds the integrated
     boundary flux contribution to owner cells.
     """
 
@@ -19,7 +19,7 @@ class NeumannBC:
         self.threshold = threshold
         self.geometry = geometry
 
-    def DiffusionApply(self, f):
+    def apply_diffusion(self, f):
         """Add integrated Neumann fluxes to owner-cell RHS entries.
 
         ``gd(points)`` is interpreted as the outward normal derivative or flux
@@ -27,7 +27,7 @@ class NeumannBC:
         the face integral ``gd * |f|`` scattered to the boundary owner cells.
         """
         if self.gd is None:
-            raise ValueError("NeumannBC.DiffusionApply requires flux data gd.")
+            raise ValueError("NeumannBC.apply_diffusion requires flux data gd.")
         geometry = self.geometry if self.geometry is not None else FVMGeometry(self.mesh)
         boundary_faces = bm.nonzero(geometry.is_boundary)[0]
         points = geometry.face_center[boundary_faces]

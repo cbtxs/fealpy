@@ -1,7 +1,7 @@
 import argparse
 
 from fealpy.backend import backend_manager as bm
-from fealpy.fvm import NSFVMPISOModel
+from fealpy.fvm import FVMLinearSolverConfig, NSFVMPISOModel
 
 
 def main():
@@ -45,7 +45,25 @@ def main():
                         help="Backend: numpy, torch, tensorflow, or jax.")
 
     parser.add_argument("--linear_solver", default="auto", type=str,
-                        help="Sparse linear solver, e.g. auto, mumps, or scipy.")
+                        help="Fallback sparse linear solver, e.g. auto, mumps, or scipy.")
+
+    parser.add_argument("--momentum_solver", default="scipy_bicgstab", type=str,
+                        help="Equation-specific solver for momentum systems.")
+
+    parser.add_argument("--pressure_nullspace_solver", default="petsc_gmres_hypre", type=str,
+                        help="PETSc KSP/PC solver for pure-Neumann pressure systems.")
+
+    parser.add_argument("--pressure_constraint", default="nullspace", type=str,
+                        choices=("gauge", "nullspace"),
+                        help="Pressure uniqueness treatment for pure-Neumann pressure systems.")
+
+    parser.add_argument("--momentum_solve_strategy", default="component", type=str,
+                        choices=("vector", "component"),
+                        help="Solve momentum as one vector system or scalar component systems.")
+
+    parser.add_argument("--momentum_component_matrix_policy", default="shared", type=str,
+                        choices=("shared", "per_component"),
+                        help="Matrix reuse policy for component momentum solves.")
 
     parser.add_argument("--pbar_log", default=True, type=bool,
                         help="Whether to show progress bar, default is True")
@@ -58,6 +76,14 @@ def main():
     options = vars(parser.parse_args())
 
     bm.set_backend(options["backend"])
+    options["momentum_linear_solver"] = options.pop("momentum_solver")
+    options["pressure_nullspace_linear_solver"] = options.pop(
+        "pressure_nullspace_solver"
+    )
+    options["linear_solver_config"] = FVMLinearSolverConfig(
+        backend=options["backend"],
+        solver=options.pop("linear_solver"),
+    )
 
     model = NSFVMPISOModel(options)
     print(model)

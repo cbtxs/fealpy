@@ -5,10 +5,9 @@ from typing import Optional, Tuple
 
 from fealpy.typing import TensorLike
 from fealpy.backend import backend_manager as bm
-from fealpy.sparse import spdiags
-from .collocated_ns_fvm_utils import CollocatedNSFVMOperators
+from .collocated_ns_components import CollocatedNSFVMComponents
 from .dirichlet_bc import DirichletBC
-from .fvm_linear_solver import FVMLinearSolverConfig, init_fvm_linear_solver
+from .fvm_linear_solver import init_fvm_linear_solver
 from .rhie_chow import RhieChowInterpolation
 from .solver_controls import SimpleSolverControls, nonnegative_scalar, positive_scalar
 from .simple_residual import (
@@ -19,7 +18,7 @@ from .simple_residual import (
 )
 
 
-class CollocatedSimpleSolver(CollocatedNSFVMOperators):
+class CollocatedSimpleSolver(CollocatedNSFVMComponents):
     """Algorithm core for steady collocated SIMPLE solves."""
 
     def __init__(
@@ -39,6 +38,12 @@ class CollocatedSimpleSolver(CollocatedNSFVMOperators):
     ):
         """Initialize the reusable SIMPLE algorithm state."""
         self.controls = controls or SimpleSolverControls()
+        self.momentum_linear_solver = self.controls.momentum_linear_solver
+        self.pressure_linear_solver = self.controls.pressure_linear_solver
+        self.pressure_gauge_linear_solver = self.controls.pressure_gauge_linear_solver
+        self.pressure_nullspace_linear_solver = (
+            self.controls.pressure_nullspace_linear_solver
+        )
         if logger is None:
             logger = logging.getLogger(self.__class__.__name__)
             logger.propagate = False
@@ -124,12 +129,9 @@ class CollocatedSimpleSolver(CollocatedNSFVMOperators):
             pressure_dirichlet_threshold=self.pressure_dirichlet_threshold,
             geometry=self.fvm_geometry,
         )
-        solver_config = linear_solver_config
-        if solver_config is None and linear_solver is None:
-            solver_config = FVMLinearSolverConfig()
         self.linear_solver = init_fvm_linear_solver(
             linear_solver,
-            solver_config,
+            linear_solver_config,
             reference=self.cm,
         )
 
@@ -153,102 +155,7 @@ class CollocatedSimpleSolver(CollocatedNSFVMOperators):
 
     def temporary_velocity(self, p, uf, u0) -> Tuple[TensorLike, TensorLike]:
         """Solve momentum equation for the intermediate velocity."""
-        convection_face_velocity = self.convection_coef * uf
-        B = self.momentum_diffusion_matrix(self.diffusion_coef)
-        if self.convection_coef != 0.0:
-            B = B + self.momentum_convection_matrix(
-                convection_face_velocity,
-                self.controls.face_interpolation("momentum_face_interpolation"),
-            )
-            B = self.add_velocity_natural_convection_diagonal(
-                B,
-                self.convection_coef * uf,
-                self.velocity_natural_threshold,
-            )
-        f = self.steady_momentum_source_vector()
-        f = f + self.velocity_neumann_diffusion_source(self.diffusion_coef)
-        threshold = self.velocity_dirichlet_threshold
-        B, f = self.velocity_dirichlet_bc.DiffusionApply(
-            B, f, coef=self.diffusion_coef, threshold=threshold
-        )
-        if self.convection_coef != 0.0:
-            f = self.velocity_dirichlet_bc.ConvectionApply(
-                f, convection_face_velocity, threshold=threshold
-            )
-        f = f - self.pressure_gradient_source(p)
-        B, f, ap = self.relax_momentum_equation(
-            B,
-            f,
-            u0,
-            self.controls.momentum_equation_relaxation,
-        )
-        u = self.linear_solver.solve(B, f)
-
-        u = self.correct_momentum_nonorthogonal_diffusion(
-            B,
-            f,
-            u,
-            u0,
-            max_iter=self.controls.momentum_nonorthogonal_max_iter,
-            tol=self.controls.momentum_nonorthogonal_tol,
-            iteration_attr="last_nonorthogonal_iterations",
-        )
-
-        return ap, u
-
-    def relax_momentum_equation(self, matrix, rhs, previous_velocity, alpha):
-        """Apply matrix-level under-relaxation to a momentum equation.
-
-        For an assembled system ``A U = b``, the relaxed system is
-        ``(A + diag(delta)) U = b + diag(delta) U_old`` with
-        ``delta = (1 / alpha - 1) diag(A)``.  The returned diagonal is the
-        relaxed momentum diagonal used by SIMPLE pressure response.
-        """
-        if not 0.0 < alpha <= 1.0:
-            raise ValueError("momentum equation relaxation alpha must be in (0, 1].")
-
-        diagonal = matrix.diags().values
-        if alpha == 1.0:
-            return matrix, rhs, diagonal
-
-        delta = (1.0 / alpha - 1.0) * diagonal
-        relaxed_matrix = matrix + spdiags(delta, 0, matrix.shape[0], matrix.shape[1])
-        relaxed_rhs = rhs + delta * previous_velocity
-        return relaxed_matrix, relaxed_rhs, relaxed_matrix.diags().values
-
-    def correct_momentum_nonorthogonal_diffusion(
-        self,
-        matrix,
-        rhs,
-        velocity,
-        previous_velocity,
-        *,
-        max_iter: int,
-        tol: float,
-        iteration_attr: str,
-    ):
-        """Picard-correct the SIMPLE momentum equation for non-orthogonal diffusion."""
-        if max_iter == 0:
-            setattr(self, iteration_attr, 0)
-            return velocity
-
-        correction_velocity = (
-            self.dofs_to_cell_vector(previous_velocity)
-            if previous_velocity.ndim == 1
-            else previous_velocity
-        )
-        cross = self.momentum_nonorthogonal_rhs(correction_velocity)
-        corrected_velocity = velocity
-        setattr(self, iteration_attr, 0)
-        for iteration in range(1, max_iter + 1):
-            next_velocity = self.linear_solver.solve(matrix, rhs + cross)
-            setattr(self, iteration_attr, iteration)
-            if bm.max(bm.abs(next_velocity - corrected_velocity)) < tol:
-                return next_velocity
-            corrected_velocity = next_velocity
-            correction_velocity = self.dofs_to_cell_vector(corrected_velocity)
-            cross = self.momentum_nonorthogonal_rhs(correction_velocity)
-        return corrected_velocity
+        return self.solve_steady_momentum_predictor(p, uf, u0)
 
     def pressure_correction_flux(self, p_corr: TensorLike, response_coef: TensorLike) -> TensorLike:
         """Return the full pressure-correction flux used to correct mass flux."""
@@ -314,6 +221,7 @@ class CollocatedSimpleSolver(CollocatedNSFVMOperators):
         div_u = self.divergence.Reconstruct(uf)
         rhs = -div_u
         has_dirichlet = self.has_pressure_dirichlet
+        pressure_constraint = self.controls.pressure_constraint
         if has_dirichlet:
             matrix = self.pressure_diffusion_matrix(face_response_coef)
             pressure_bc = DirichletBC(
@@ -321,22 +229,43 @@ class CollocatedSimpleSolver(CollocatedNSFVMOperators):
                 self.zero_pressure_correction,
                 geometry=self.fvm_geometry,
             )
+        elif pressure_constraint == "nullspace":
+            matrix = self.pressure_diffusion_matrix(face_response_coef)
         else:
             matrix = self.pressure_gauge_matrix(face_response_coef)
             gauge_rhs = bm.zeros(1, dtype=rhs.dtype)
 
         def solve_with_cross_rhs(cross_rhs):
             if has_dirichlet:
-                matrix_bc, rhs_bc = pressure_bc.DiffusionApply(
+                matrix_bc, rhs_bc = pressure_bc.apply_diffusion(
                     matrix,
                     rhs + cross_rhs,
                     coef=face_response_coef,
                     threshold=self.pressure_dirichlet_threshold,
                 )
-                return self.linear_solver.solve(matrix_bc, rhs_bc)
+                return self.solve_linear_system(
+                    matrix_bc,
+                    rhs_bc,
+                    solver=self.pressure_linear_solver,
+                )
+
+            if pressure_constraint == "nullspace":
+                projected_rhs = self.project_pressure_rhs_to_range(rhs + cross_rhs)
+                return self.zero_mean_pressure(
+                    self.linear_solver.solve_constant_nullspace(
+                        matrix,
+                        projected_rhs,
+                        self.cm,
+                        solver=self.pressure_nullspace_linear_solver,
+                    )
+                )
 
             matrix_rhs = bm.concatenate([rhs + cross_rhs, gauge_rhs], axis=0)
-            return self.linear_solver.solve(matrix, matrix_rhs)[:-1]
+            return self.solve_linear_system(
+                matrix,
+                matrix_rhs,
+                solver=self.pressure_gauge_linear_solver,
+            )[:-1]
 
         cross_rhs = bm.zeros_like(rhs)
         if nonorthogonal_max_iter == 0:

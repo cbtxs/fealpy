@@ -26,7 +26,11 @@ def _cavity_solver(convection_coef=None, *, controls=None, linear_solver=None):
         convection_coef=case.rho if convection_coef is None else convection_coef,
         source=case.source,
         boundary_conditions=BoundaryConditionData(case.dirichlet_velocity).to_pde_boundary(mesh),
-        controls=controls or SimpleSolverControls(space_degree=0),
+        controls=controls or SimpleSolverControls(
+            space_degree=0,
+            pressure_constraint="gauge",
+            momentum_solve_strategy="vector",
+        ),
         log_level="ERROR",
         **solver_kwargs,
     )
@@ -34,9 +38,9 @@ def _cavity_solver(convection_coef=None, *, controls=None, linear_solver=None):
 
 def test_collocated_simple_solver_is_public_algorithm_core():
     from fealpy.fvm import CollocatedSimpleSolver, NSFVMSimpleModel
-    from fealpy.fvm.collocated_ns_fvm_utils import CollocatedNSFVMOperators
+    from fealpy.fvm.collocated_ns_components import CollocatedNSFVMComponents
 
-    assert issubclass(CollocatedSimpleSolver, CollocatedNSFVMOperators)
+    assert issubclass(CollocatedSimpleSolver, CollocatedNSFVMComponents)
     assert issubclass(NSFVMSimpleModel, CollocatedSimpleSolver)
 
 
@@ -58,6 +62,18 @@ def test_collocated_simple_solver_default_pressure_relaxation_is_conservative():
 
     solve_parameters = inspect.signature(CollocatedSimpleSolver.solve).parameters
     assert solve_parameters["relax"].default == 0.3
+
+
+def test_momentum_strategy_branch_is_hidden_from_algorithm_entrypoints():
+    from fealpy.fvm import CollocatedPisoSolver, CollocatedSimpleSolver
+
+    for method in (
+        CollocatedSimpleSolver.temporary_velocity,
+        CollocatedPisoSolver.temporary_velocity,
+    ):
+        source = inspect.getsource(method)
+        assert "momentum_solve_strategy" not in source
+        assert "component_temporary_velocity" not in source
 
 
 def test_cell_vector_dof_conversion_is_component_major_on_torch_backend():
@@ -90,7 +106,7 @@ def test_collocated_simple_solver_runs_without_model_adapter():
     assert vh.shape == (solver.NC,)
     assert ph.shape == (solver.NC,)
     assert len(solver.residuals) == 1
-    assert solver.residuals[0]["pressure_relax"] == 0.3
+    assert "pressure_relax" not in solver.residuals[0]
 
 
 def test_collocated_simple_solver_accepts_zero_convection_for_stokes_limit():
@@ -110,6 +126,25 @@ def test_collocated_simple_solver_accepts_string_linear_solver_choice():
     assert solver.linear_solver.config.solver == "scipy"
 
 
+def test_collocated_simple_solver_uses_recommended_default_linear_policy():
+    from fealpy.fvm import BoundaryConditionData, CollocatedSimpleSolver, LidDrivenCavityCase
+
+    case = LidDrivenCavityCase(re=10.0)
+    mesh = case.init_mesh["uniform_quad"](nx=2, ny=2)
+    solver = CollocatedSimpleSolver(
+        mesh=mesh,
+        diffusion_coef=case.mu,
+        convection_coef=case.rho,
+        source=case.source,
+        boundary_conditions=BoundaryConditionData(case.dirichlet_velocity).to_pde_boundary(mesh),
+        log_level="ERROR",
+    )
+
+    assert solver.momentum_linear_solver == "scipy_bicgstab"
+    assert solver.pressure_nullspace_linear_solver == "petsc_gmres_hypre"
+    assert not hasattr(solver.linear_solver.config, "momentum_solver")
+
+
 def test_simple_temporary_velocity_reuses_steady_source_rhs(monkeypatch):
     from fealpy.backend import backend_manager as bm
     from fealpy.fvm import SimpleSolverControls
@@ -117,13 +152,15 @@ def test_simple_temporary_velocity_reuses_steady_source_rhs(monkeypatch):
     bm.set_backend("numpy")
 
     class ZeroLinearSolver:
-        def solve(self, matrix, rhs):
+        def solve(self, matrix, rhs, *, solver=None):
             return bm.zeros(rhs.shape[0], dtype=rhs.dtype)
 
     solver = _cavity_solver(
         convection_coef=0.0,
         controls=SimpleSolverControls(
             space_degree=0,
+            pressure_constraint="gauge",
+            momentum_solve_strategy="vector",
             momentum_nonorthogonal_max_iter=0,
             pressure_nonorthogonal_max_iter=0,
         ),

@@ -7,7 +7,7 @@ from fealpy.typing import TensorLike
 from fealpy.backend import backend_manager as bm
 from fealpy.fem import LinearForm
 
-from .collocated_ns_fvm_utils import CollocatedNSFVMOperators
+from .collocated_ns_components import CollocatedNSFVMComponents
 from .deviatoric_stress_source import DeviatoricStressSourceIntegrator
 from .dirichlet_bc import DirichletBC
 from .engineering_boundary_conditions import (
@@ -22,10 +22,9 @@ from .solver_diagnostics import (
     pressure_correction_diagnostics,
     record_piso_corrector_diagnostics,
 )
-from fealpy.decorator import cartesian
 
 
-class CollocatedPisoSolver(CollocatedNSFVMOperators):
+class CollocatedPisoSolver(CollocatedNSFVMComponents):
     """Algorithm core for transient collocated PISO solves."""
 
     def __init__(
@@ -45,6 +44,12 @@ class CollocatedPisoSolver(CollocatedNSFVMOperators):
         pbar_log=False,
     ):
         self.controls = controls or PisoSolverControls()
+        self.momentum_linear_solver = self.controls.momentum_linear_solver
+        self.pressure_linear_solver = self.controls.pressure_linear_solver
+        self.pressure_gauge_linear_solver = self.controls.pressure_gauge_linear_solver
+        self.pressure_nullspace_linear_solver = (
+            self.controls.pressure_nullspace_linear_solver
+        )
         self.logger = logger or self._build_logger(
             self.__class__.__name__,
             pbar_log=pbar_log,
@@ -170,63 +175,7 @@ class CollocatedPisoSolver(CollocatedNSFVMOperators):
         return self.initial_solution_callback()
 
     def temporary_velocity(self, U0, Uf0, p0, t):
-        controls = self.controls
-        A = self.momentum_diffusion_matrix(self.mu)
-        A = A + self.momentum_convection_matrix(
-            self.rho * Uf0,
-            controls.face_interpolation_method,
-        )
-        A = self.add_velocity_natural_convection_diagonal(
-            A,
-            self.rho * Uf0,
-            self.velocity_natural_threshold,
-        )
-        M = self.momentum_time_matrix(self.rho, controls.tau)
-
-        @cartesian
-        def src(p):
-            return self.source(p, t)
-
-        f = self.momentum_source_vector(src)
-        A = A + M
-        b = f + self.momentum_time_source(U0, self.rho, controls.tau)
-        b = b + self.velocity_neumann_diffusion_source(self.mu)
-        b = b - self.pressure_gradient_source(p0)
-        A, b = self.velocity_dirichlet_bc.DiffusionApply(
-            A,
-            b,
-            coef=self.mu,
-            threshold=self.velocity_dirichlet_threshold,
-        )
-        b = self.velocity_dirichlet_bc.ConvectionApply(
-            b,
-            self.rho * Uf0,
-            threshold=self.velocity_dirichlet_threshold,
-        )
-        a_p = A.diags().values
-        if controls.momentum_nonorthogonal_max_iter == 0:
-            solution = self.linear_solver.solve(A, b)
-            self.last_momentum_nonorthogonal_iterations = 0
-            return self.dofs_to_cell_vector(solution), a_p, A
-
-        correction_velocity = U0
-        U = U0
-        for iteration in range(1, controls.momentum_nonorthogonal_max_iter + 1):
-            corrected_rhs = b + self.boundary_corrected_momentum_explicit_source(
-                correction_velocity
-            )
-            old_U = U
-            solution = self.linear_solver.solve(A, corrected_rhs)
-            U = self.dofs_to_cell_vector(solution)
-            self.last_momentum_nonorthogonal_iterations = iteration
-            if (
-                iteration > 1
-                and bm.max(bm.abs(U - old_U))
-                < controls.momentum_nonorthogonal_tol
-            ):
-                break
-            correction_velocity = U
-        return U, a_p, A
+        return self.solve_transient_momentum_predictor(U0, Uf0, p0, t)
 
     def boundary_corrected_momentum_explicit_source(self, velocity):
         """Return boundary-corrected explicit viscous RHS for momentum prediction.
@@ -281,12 +230,15 @@ class CollocatedPisoSolver(CollocatedNSFVMOperators):
                 self.pressure_dirichlet_value,
                 geometry=self.fvm_geometry,
             )
-            return pressure_bc.DiffusionApply(
+            return pressure_bc.apply_diffusion(
                 matrix,
                 rhs + cross_rhs,
                 coef=coef,
                 threshold=self.pressure_dirichlet_threshold,
             )
+
+        if self.controls.pressure_constraint == "nullspace":
+            return self.pressure_diffusion_matrix(coef), rhs + cross_rhs
 
         matrix = self.pressure_gauge_matrix(coef)
         rhs = bm.concatenate([rhs + cross_rhs, bm.zeros(1, dtype=rhs.dtype)], axis=0)
@@ -303,10 +255,38 @@ class CollocatedPisoSolver(CollocatedNSFVMOperators):
 
         explicit_cross_flux = bm.zeros(self.mesh.number_of_faces(), dtype=rhs.dtype)
         cross_rhs = bm.zeros_like(rhs)
+        has_pressure_dirichlet = (
+            self.pressure_dirichlet_value is not None
+            and self.pressure_dirichlet_threshold is not None
+        )
+        use_nullspace = (
+            self.controls.pressure_constraint == "nullspace"
+            and not has_pressure_dirichlet
+        )
         if max_iter == 0:
             matrix, matrix_rhs = self.assemble_pressure_state_system(rhs, coef, cross_rhs)
-            solution = self.linear_solver.solve(matrix, matrix_rhs)
-            pressure = solution[: self.NC]
+            if use_nullspace:
+                matrix_rhs = self.project_pressure_rhs_to_range(matrix_rhs)
+                pressure = self.zero_mean_pressure(
+                    self.linear_solver.solve_constant_nullspace(
+                        matrix,
+                        matrix_rhs,
+                        self.cm,
+                        solver=self.pressure_nullspace_linear_solver,
+                    )
+                )
+            else:
+                solver = (
+                    self.pressure_linear_solver
+                    if has_pressure_dirichlet
+                    else self.pressure_gauge_linear_solver
+                )
+                solution = self.solve_linear_system(
+                    matrix,
+                    matrix_rhs,
+                    solver=solver,
+                )
+                pressure = solution[: self.NC]
             self.last_pressure_nonorthogonal_iterations = 0
         else:
             correction_pressure = initial_pressure_state
@@ -321,8 +301,28 @@ class CollocatedPisoSolver(CollocatedNSFVMOperators):
                     cross_rhs = self.divergence_from_flux(explicit_cross_flux)
 
                 matrix, matrix_rhs = self.assemble_pressure_state_system(rhs, coef, cross_rhs)
-                solution = self.linear_solver.solve(matrix, matrix_rhs)
-                pressure = solution[: self.NC]
+                if use_nullspace:
+                    matrix_rhs = self.project_pressure_rhs_to_range(matrix_rhs)
+                    pressure = self.zero_mean_pressure(
+                        self.linear_solver.solve_constant_nullspace(
+                            matrix,
+                            matrix_rhs,
+                            self.cm,
+                            solver=self.pressure_nullspace_linear_solver,
+                        )
+                    )
+                else:
+                    solver = (
+                        self.pressure_linear_solver
+                        if has_pressure_dirichlet
+                        else self.pressure_gauge_linear_solver
+                    )
+                    solution = self.solve_linear_system(
+                        matrix,
+                        matrix_rhs,
+                        solver=solver,
+                    )
+                    pressure = solution[: self.NC]
                 self.last_pressure_nonorthogonal_iterations = iteration
                 if iteration == max_iter:
                     break
@@ -354,7 +354,7 @@ class CollocatedPisoSolver(CollocatedNSFVMOperators):
 
     # Local algebra for the PISO pressure-corrector step below.
     #
-    # The generic collocated FVM pieces live in ``collocated_ns_fvm_utils``.
+    # The generic collocated FVM pieces live in ``collocated_ns_components``.
     # The current default PISO step solves a pressure state from a pressure-free
     # velocity estimate and then applies the matching velocity and face-flux
     # correction:
@@ -447,7 +447,8 @@ class CollocatedPisoSolver(CollocatedNSFVMOperators):
         """
         delta_u = corrected_velocity - predicted_velocity
         delta_dofs = self.cell_vector_to_dofs(delta_u)
-        offdiag_delta = momentum_matrix @ delta_dofs - a_p * delta_dofs
+        offdiag_delta = self.momentum_matrix_action(momentum_matrix, delta_dofs)
+        offdiag_delta = offdiag_delta - a_p * delta_dofs
         offdiag_cell = self.dofs_to_cell_vector(offdiag_delta)
         a_p_cell = bm.stack(
             [

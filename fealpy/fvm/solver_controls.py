@@ -45,6 +45,13 @@ class SimpleSolverControls:
     momentum_face_interpolation: str | None = None
     pressure_response_interpolation: str | None = None
     rhie_chow_velocity_interpolation: str | None = None
+    pressure_constraint: str = "nullspace"
+    momentum_solve_strategy: str = "component"
+    momentum_component_matrix_policy: str = "shared"
+    momentum_linear_solver: str | None = "scipy_bicgstab"
+    pressure_linear_solver: str | None = None
+    pressure_gauge_linear_solver: str | None = None
+    pressure_nullspace_linear_solver: str | None = "petsc_gmres_hypre"
     momentum_equation_relaxation: float = 0.7
     momentum_nonorthogonal_max_iter: int = 10
     momentum_nonorthogonal_tol: float = 1.0e-4
@@ -72,6 +79,11 @@ class SimpleSolverControls:
             raise ValueError("momentum_nonorthogonal_tol must be positive.")
         if self.pressure_nonorthogonal_tol <= 0.0:
             raise ValueError("pressure_nonorthogonal_tol must be positive.")
+        self.validate_pressure_constraint(self.pressure_constraint)
+        self.validate_momentum_solve_strategy(self.momentum_solve_strategy)
+        self.validate_momentum_component_matrix_policy(
+            self.momentum_component_matrix_policy
+        )
 
     @staticmethod
     def _validate_face_interpolation(name: str, method: str) -> None:
@@ -82,6 +94,23 @@ class SimpleSolverControls:
         """Return a face interpolation choice with shared fallback."""
         value = getattr(self, key)
         return self.face_interpolation_method if value is None else value
+
+    @staticmethod
+    def validate_pressure_constraint(method: str) -> None:
+        if method not in {"gauge", "nullspace"}:
+            raise ValueError("pressure_constraint must be 'gauge' or 'nullspace'.")
+
+    @staticmethod
+    def validate_momentum_solve_strategy(method: str) -> None:
+        if method not in {"vector", "component"}:
+            raise ValueError("momentum_solve_strategy must be 'vector' or 'component'.")
+
+    @staticmethod
+    def validate_momentum_component_matrix_policy(method: str) -> None:
+        if method not in {"shared", "per_component"}:
+            raise ValueError(
+                "momentum_component_matrix_policy must be 'shared' or 'per_component'."
+            )
 
 
 @dataclass(frozen=True)
@@ -104,6 +133,13 @@ class PisoSolverControls:
     rhie_chow_pressure_gradient_method: str = "layered_lsq"
     face_interpolation_method: str = "average"
     rhie_chow_velocity_interpolation: str | None = None
+    pressure_constraint: str = "nullspace"
+    momentum_solve_strategy: str = "component"
+    momentum_component_matrix_policy: str = "shared"
+    momentum_linear_solver: str | None = "scipy_bicgstab"
+    pressure_linear_solver: str | None = None
+    pressure_gauge_linear_solver: str | None = None
+    pressure_nullspace_linear_solver: str | None = "petsc_gmres_hypre"
     use_transient_flux_correction: bool = True
     momentum_nonorthogonal_max_iter: int = 1
     momentum_nonorthogonal_tol: float = 1.0e-5
@@ -128,6 +164,11 @@ class PisoSolverControls:
             self.momentum_nonorthogonal_tol,
             self.pressure_nonorthogonal_max_iter,
             self.pressure_nonorthogonal_tol,
+        )
+        self.validate_pressure_constraint(self.pressure_constraint)
+        self.validate_momentum_solve_strategy(self.momentum_solve_strategy)
+        self.validate_momentum_component_matrix_policy(
+            self.momentum_component_matrix_policy
         )
 
     @property
@@ -175,3 +216,20 @@ class PisoSolverControls:
             raise ValueError("momentum_nonorthogonal_tol must be positive.")
         if pressure_tol <= 0.0:
             raise ValueError("pressure_nonorthogonal_tol must be positive.")
+
+    @staticmethod
+    def validate_pressure_constraint(method: str) -> None:
+        if method not in {"gauge", "nullspace"}:
+            raise ValueError("pressure_constraint must be 'gauge' or 'nullspace'.")
+
+    @staticmethod
+    def validate_momentum_solve_strategy(method: str) -> None:
+        if method not in {"vector", "component"}:
+            raise ValueError("momentum_solve_strategy must be 'vector' or 'component'.")
+
+    @staticmethod
+    def validate_momentum_component_matrix_policy(method: str) -> None:
+        if method not in {"shared", "per_component"}:
+            raise ValueError(
+                "momentum_component_matrix_policy must be 'shared' or 'per_component'."
+            )

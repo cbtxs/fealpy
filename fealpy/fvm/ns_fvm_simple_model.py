@@ -110,6 +110,22 @@ class NSFVMSimpleModel(ComputationalModel, CollocatedSimpleSolver):
             momentum_face_interpolation=options.get("momentum_face_interpolation"),
             pressure_response_interpolation=options.get("pressure_response_interpolation"),
             rhie_chow_velocity_interpolation=options.get("rhie_chow_velocity_interpolation"),
+            pressure_constraint=options.get("pressure_constraint", "nullspace"),
+            momentum_solve_strategy=options.get("momentum_solve_strategy", "component"),
+            momentum_component_matrix_policy=options.get(
+                "momentum_component_matrix_policy",
+                "shared",
+            ),
+            momentum_linear_solver=options.get(
+                "momentum_linear_solver",
+                "scipy_bicgstab",
+            ),
+            pressure_linear_solver=options.get("pressure_linear_solver"),
+            pressure_gauge_linear_solver=options.get("pressure_gauge_linear_solver"),
+            pressure_nullspace_linear_solver=options.get(
+                "pressure_nullspace_linear_solver",
+                "petsc_gmres_hypre",
+            ),
             momentum_equation_relaxation=options.get("momentum_equation_relaxation", 0.7),
             momentum_nonorthogonal_max_iter=options.get("momentum_nonorthogonal_max_iter", 10),
             momentum_nonorthogonal_tol=options.get("momentum_nonorthogonal_tol", 1.0e-4),
@@ -184,17 +200,17 @@ class NSFVMSimpleModel(ComputationalModel, CollocatedSimpleSolver):
         import matplotlib.pyplot as plt
 
         mass = [residual["mass"] for residual in self.residuals]
-        pressure_update = [
-            residual["pressure_update"] for residual in self.residuals
+        pressure_correction = [
+            residual["pressure_correction"] for residual in self.residuals
         ]
         plt.figure(figsize=(8, 5))
         plt.semilogy(mass, marker="o", linestyle="-", color="b", label="mass")
         plt.semilogy(
-            pressure_update,
+            pressure_correction,
             marker="s",
             linestyle="-",
             color="r",
-            label="pressure update",
+            label="pressure correction",
         )
         plt.legend()
         plt.title("SIMPLE Residuals vs Iteration")

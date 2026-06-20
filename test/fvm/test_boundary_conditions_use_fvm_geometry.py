@@ -59,7 +59,7 @@ def test_neumann_diffusion_uses_fvm_geometry_for_boundary_face_integral(monkeypa
     boundary_faces = _boundary_faces(geometry)
     gd = lambda points: points[:, 0] - 0.5 * points[:, 1]
 
-    actual = NeumannBC(mesh, gd).DiffusionApply(bm.zeros(mesh.number_of_cells()))
+    actual = NeumannBC(mesh, gd).apply_diffusion(bm.zeros(mesh.number_of_cells()))
 
     expected = np.zeros(mesh.number_of_cells())
     np.add.at(
@@ -83,7 +83,7 @@ def test_neumann_diffusion_reuses_supplied_fvm_geometry(monkeypatch):
 
     monkeypatch.setattr(neumann_module, "FVMGeometry", fail_geometry)
 
-    actual = NeumannBC(mesh, gd, geometry=geometry).DiffusionApply(
+    actual = NeumannBC(mesh, gd, geometry=geometry).apply_diffusion(
         bm.zeros(mesh.number_of_cells())
     )
 
@@ -112,7 +112,7 @@ def test_neumann_diffusion_applies_boundary_face_threshold(monkeypatch):
     threshold = lambda points: points[:, 0] < 0.2
     gd = lambda points: bm.ones(points.shape[0], dtype=points.dtype)
 
-    actual = NeumannBC(mesh, gd, threshold=threshold).DiffusionApply(
+    actual = NeumannBC(mesh, gd, threshold=threshold).apply_diffusion(
         bm.zeros(mesh.number_of_cells())
     )
 
@@ -146,7 +146,7 @@ def test_dirichlet_diffusion_uses_fvm_geometry_for_face_points_and_owners(
         mesh.number_of_cells(),
     )
 
-    _, actual = DirichletBC(mesh, gd).DiffusionApply(
+    _, actual = DirichletBC(mesh, gd).apply_diffusion(
         A,
         bm.zeros(mesh.number_of_cells()),
     )
@@ -174,7 +174,7 @@ def test_dirichlet_diffusion_rejects_boundary_face_wise_coef():
     )
 
     with pytest.raises(ValueError, match="scalar or face-wise"):
-        DirichletBC(mesh, lambda p: p[:, 0], geometry=geometry).DiffusionApply(
+        DirichletBC(mesh, lambda p: p[:, 0], geometry=geometry).apply_diffusion(
             A,
             bm.zeros(mesh.number_of_cells()),
             coef=bm.ones(boundary_faces.shape[0]),
@@ -219,7 +219,7 @@ def test_dirichlet_convection_uses_fvm_geometry_for_boundary_flux(monkeypatch):
     def gd(points):
         return bm.stack([points[:, 0] - 2.0, 0.5 * points[:, 1]], axis=1)
 
-    actual = DirichletBC(mesh, gd).ConvectionApply(
+    actual = DirichletBC(mesh, gd).apply_convection(
         bm.zeros(2 * mesh.number_of_cells()),
         coef,
     )
@@ -245,7 +245,7 @@ def test_dirichlet_convection_rejects_boundary_face_wise_coef():
     boundary_faces = _boundary_faces(geometry)
 
     with pytest.raises(ValueError, match="face-wise"):
-        DirichletBC(mesh, lambda p: p[:, 0], geometry=geometry).ConvectionApply(
+        DirichletBC(mesh, lambda p: p[:, 0], geometry=geometry).apply_convection(
             bm.zeros(mesh.number_of_cells()),
             bm.ones(boundary_faces.shape[0]),
         )

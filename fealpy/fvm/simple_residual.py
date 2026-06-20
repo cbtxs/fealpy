@@ -5,7 +5,7 @@ solver logic.  They define the residual quantities that several pressure-
 velocity coupling schemes report:
 
 * cell L2 norms for cell-centred correction fields;
-* relative update sizes for relaxed fixed-point iterations;
+* raw pressure-correction sizes for SIMPLE stopping criteria;
 * normalized finite-volume mass imbalance from signed face fluxes.
 
 Keeping these definitions in one place is useful because collocated SIMPLE-like
@@ -112,7 +112,6 @@ def simple_iteration_residual(
     pressure_correction,
     pressure,
     *,
-    pressure_relax,
     nonorthogonal_iterations,
     momentum_nonorthogonal_iterations,
     stopping_face_velocity=None,
@@ -121,16 +120,14 @@ def simple_iteration_residual(
     """Return one SIMPLE residual record.
 
     SIMPLE solves a pressure-correction equation and then updates
-    ``p <- p + alpha_p p'`` with a fixed scalar pressure relaxation
-    ``alpha_p``.  This record reports both the raw correction norm and the
-    relaxed pressure-update size.  The pressure stopping criterion is the
-    current raw correction L2 norm.  The mass residual is evaluated after the
+    ``p <- p + alpha_p p'`` with a fixed scalar pressure relaxation.  The
+    residual record intentionally reports the raw pressure-correction norm,
+    because the current stopping criterion should not be scaled by the chosen
+    pressure relaxation factor.  The mass residual is evaluated after the
     face-velocity pressure correction when ``stopping_face_velocity`` is
     supplied, which is the residual used for stopping the current collocated
     SIMPLE loop.
     """
-    pressure_update = pressure_relax * pressure_correction
-    pressure_update_relative = relative_l2_update(mesh, pressure_update, pressure)
     pressure_correction_relative = relative_l2_update(
         mesh, pressure_correction, pressure
     )
@@ -153,9 +150,7 @@ def simple_iteration_residual(
         "mass_before_pressure_correction": mass_before_pressure_correction,
         "pressure_correction": pressure_correction_l2,
         "pressure_correction_relative": pressure_correction_relative,
-        "pressure_update": pressure_update_relative,
         "pressure_criterion": pressure_correction_l2,
-        "pressure_relax": pressure_relax,
         "nonorthogonal_iterations": nonorthogonal_iterations,
         "momentum_nonorthogonal_iterations": momentum_nonorthogonal_iterations,
     }
@@ -181,7 +176,6 @@ def simple_pressure_update_step(
         face_velocity,
         pressure_correction,
         pressure,
-        pressure_relax=pressure_relax,
         nonorthogonal_iterations=nonorthogonal_iterations,
         momentum_nonorthogonal_iterations=momentum_nonorthogonal_iterations,
         stopping_face_velocity=stopping_face_velocity,

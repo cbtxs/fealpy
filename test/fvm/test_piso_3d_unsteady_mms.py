@@ -30,6 +30,7 @@ def test_piso_model_accepts_3d_unsteady_mms_and_nz():
             "n_correctors": 2,
             "momentum_nonorthogonal_max_iter": 1,
             "pressure_nonorthogonal_max_iter": 1,
+            "pressure_constraint": "gauge",
             "linear_solver_config": FVMLinearSolverConfig(solver="scipy"),
             "log_level": "ERROR",
             "pbar_log": False,

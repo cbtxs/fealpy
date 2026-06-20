@@ -102,7 +102,7 @@ class PoissonFVMModel(ComputationalModel):
         lform.add_integrator(ScalarSourceIntegrator(self.pde.source, q=2))
         f = lform.assembly()
         dbc = DirichletBC(self.mesh, self.pde.dirichlet)
-        A, f = dbc.DiffusionApply(A, f)
+        A, f = dbc.apply_diffusion(A, f)
         return A, f
 
     def compute_cross_diffusion(self, uh) -> TensorLike:

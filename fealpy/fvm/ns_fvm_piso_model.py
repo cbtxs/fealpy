@@ -142,6 +142,22 @@ class NSFVMPISOModel(ComputationalModel, CollocatedPisoSolver):
             rhie_chow_pressure_gradient_method=options.get("rhie_chow_pressure_gradient_method", "layered_lsq"),
             face_interpolation_method=options.get("face_interpolation_method", "average"),
             rhie_chow_velocity_interpolation=options.get("rhie_chow_velocity_interpolation"),
+            pressure_constraint=options.get("pressure_constraint", "nullspace"),
+            momentum_solve_strategy=options.get("momentum_solve_strategy", "component"),
+            momentum_component_matrix_policy=options.get(
+                "momentum_component_matrix_policy",
+                "shared",
+            ),
+            momentum_linear_solver=options.get(
+                "momentum_linear_solver",
+                "scipy_bicgstab",
+            ),
+            pressure_linear_solver=options.get("pressure_linear_solver"),
+            pressure_gauge_linear_solver=options.get("pressure_gauge_linear_solver"),
+            pressure_nullspace_linear_solver=options.get(
+                "pressure_nullspace_linear_solver",
+                "petsc_gmres_hypre",
+            ),
             use_transient_flux_correction=bool(options.get("use_transient_flux_correction", True)),
             momentum_nonorthogonal_max_iter=(
                 1 if momentum_nonorthogonal_max_iter is None else int(momentum_nonorthogonal_max_iter)

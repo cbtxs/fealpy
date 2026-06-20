@@ -205,17 +205,17 @@ class StokesFVMSimpleModel(ComputationalModel, CollocatedSimpleSolver):
         import matplotlib.pyplot as plt
 
         mass = [residual["mass"] for residual in self.residuals]
-        pressure_update = [
-            residual["pressure_update"] for residual in self.residuals
+        pressure_correction = [
+            residual["pressure_correction"] for residual in self.residuals
         ]
         plt.figure(figsize=(8, 5))
         plt.semilogy(mass, marker="o", linestyle="-", color="b", label="mass")
         plt.semilogy(
-            pressure_update,
+            pressure_correction,
             marker="s",
             linestyle="-",
             color="r",
-            label="pressure update",
+            label="pressure correction",
         )
         plt.legend()
         plt.title("SIMPLE Residuals vs Iteration")

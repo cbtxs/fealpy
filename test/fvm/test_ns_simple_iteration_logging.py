@@ -62,6 +62,8 @@ def test_simple_iteration_mass_uses_pressure_corrected_face_velocity(monkeypatch
 
     assert residual["mass"] == 1.0e-8
     assert residual["mass_before_pressure_correction"] == 2.0
+    assert "pressure_update" not in residual
+    assert "pressure_relax" not in residual
     assert "pressure_relax_action" not in residual
     assert "pressure_relax_reduced" not in residual
 
@@ -92,5 +94,4 @@ def test_simple_iteration_pressure_criterion_uses_pressure_correction_l2(monkeyp
     )
 
     assert residual["pressure_correction"] == 2.5
-    assert residual["pressure_update"] == 1.0e-8
     assert residual["pressure_criterion"] == 2.5

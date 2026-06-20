@@ -2,8 +2,8 @@ import numpy as np
 import pytest
 
 
-def _model_options(nx=4, ny=4, nt=1):
-    return {
+def _model_options(nx=4, ny=4, nt=1, *, recommended_defaults=False):
+    options = {
         "pde": 3,
         "nx": nx,
         "ny": ny,
@@ -13,16 +13,36 @@ def _model_options(nx=4, ny=4, nt=1):
         "pbar_log": False,
         "log_level": "WARNING",
     }
+    if not recommended_defaults:
+        options.update(
+            {
+                "pressure_constraint": "gauge",
+                "momentum_solve_strategy": "vector",
+            }
+        )
+    return options
 
 
 def test_piso_solver_and_model_share_collocated_operator_base():
     from fealpy.fvm import CollocatedPisoSolver, CollocatedSimpleSolver, NSFVMPISOModel, NSFVMSimpleModel
-    from fealpy.fvm.collocated_ns_fvm_utils import CollocatedNSFVMOperators
+    from fealpy.fvm.collocated_ns_components import CollocatedNSFVMComponents
 
-    assert issubclass(CollocatedPisoSolver, CollocatedNSFVMOperators)
+    assert issubclass(CollocatedPisoSolver, CollocatedNSFVMComponents)
     assert issubclass(NSFVMPISOModel, CollocatedPisoSolver)
-    assert issubclass(CollocatedSimpleSolver, CollocatedNSFVMOperators)
+    assert issubclass(CollocatedSimpleSolver, CollocatedNSFVMComponents)
     assert issubclass(NSFVMSimpleModel, CollocatedSimpleSolver)
+
+
+def test_piso_model_uses_recommended_default_linear_policy():
+    from fealpy.fvm import NSFVMPISOModel
+
+    model = NSFVMPISOModel(
+        _model_options(nx=2, ny=2, nt=1, recommended_defaults=True)
+    )
+
+    assert model.momentum_linear_solver == "scipy_bicgstab"
+    assert model.pressure_nullspace_linear_solver == "petsc_gmres_hypre"
+    assert not hasattr(model.linear_solver.config, "momentum_solver")
 
 
 def test_collocated_momentum_diffusion_matrix_is_cached():
@@ -237,10 +257,10 @@ def test_piso_snapshot_callback_respects_interval_and_start_step():
 
 def test_piso_face_interpolation_option_reaches_momentum_convection(monkeypatch):
     from fealpy.fvm import FVMLinearSolverConfig, NSFVMPISOModel
-    import fealpy.fvm.collocated_ns_fvm_utils as collocated_utils
+    import fealpy.fvm.collocated_ns_components as collocated_components
 
     seen = []
-    original = collocated_utils.ConvectionMatrixAssembler
+    original = collocated_components.ConvectionMatrixAssembler
 
     class RecordingConvectionMatrixAssembler(original):
         def __init__(self, *args, **kwargs):
@@ -248,7 +268,7 @@ def test_piso_face_interpolation_option_reaches_momentum_convection(monkeypatch)
             super().__init__(*args, **kwargs)
 
     monkeypatch.setattr(
-        collocated_utils,
+        collocated_components,
         "ConvectionMatrixAssembler",
         RecordingConvectionMatrixAssembler,
     )
@@ -358,7 +378,7 @@ def test_piso_momentum_nonorthogonal_correction_uses_picard_loop(monkeypatch):
         source_inputs.append(tuple(velocity.shape))
         return bm.zeros(2 * model.NC, dtype=U0.dtype)
 
-    def solve_momentum(matrix, rhs):
+    def solve_momentum(matrix, rhs, *, solver=None):
         solves.append(1)
         return bm.ones(2 * model.NC, dtype=U0.dtype) * len(solves)
 
@@ -392,7 +412,7 @@ def test_piso_zero_momentum_nonorthogonal_still_solves_base_equation(monkeypatch
     def forbidden_cross_source(velocity):
         raise AssertionError("zero nonorthogonal corrections should not build cross RHS")
 
-    def solve_momentum(matrix, rhs):
+    def solve_momentum(matrix, rhs, *, solver=None):
         solves.append(1)
         return bm.ones(2 * model.NC, dtype=U0.dtype)
 
@@ -419,7 +439,7 @@ def test_piso_pressure_nonorthogonal_iterations_count_total_solves(monkeypatch):
     solves = []
 
     class FakeSolver:
-        def solve(self, matrix, rhs):
+        def solve(self, matrix, rhs, *, solver=None):
             pressure_value = float(len(solves) + 1)
             solves.append(pressure_value)
             pressure = bm.ones(nc, dtype=model.cm.dtype) * pressure_value
@@ -483,7 +503,7 @@ def test_piso_pressure_nonorthogonal_first_rhs_uses_entering_pressure(monkeypatc
     solve_values = []
 
     class FakeSolver:
-        def solve(self, matrix, rhs):
+        def solve(self, matrix, rhs, *, solver=None):
             pressure_value = float(len(solve_values) + 2)
             solve_values.append(pressure_value)
             pressure = bm.ones(nc, dtype=model.cm.dtype) * pressure_value
@@ -549,7 +569,7 @@ def test_piso_zero_pressure_nonorthogonal_solves_base_system_once(monkeypatch):
     solves = []
 
     class FakeSolver:
-        def solve(self, matrix, rhs):
+        def solve(self, matrix, rhs, *, solver=None):
             solves.append(1)
             return bm.concatenate([
                 bm.ones(nc, dtype=model.cm.dtype) * 3.0,

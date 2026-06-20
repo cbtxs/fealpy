@@ -45,7 +45,7 @@ def test_divergence_from_flux_reuses_fvm_geometry_scatter(monkeypatch):
 
 
 def test_momentum_nonorthogonal_rhs_uses_fast_rhs_assembler(monkeypatch):
-    import fealpy.fvm.collocated_ns_fvm_utils as ns_utils
+    import fealpy.fvm.collocated_ns_components as ns_components
 
     bm.set_backend("numpy")
     model = NSFVMPISOModel(_model_options())
@@ -55,7 +55,7 @@ def test_momentum_nonorthogonal_rhs_uses_fast_rhs_assembler(monkeypatch):
         def __init__(self, *args, **kwargs):
             raise AssertionError("momentum_nonorthogonal_rhs should use fast RHS assembler")
 
-    monkeypatch.setattr(ns_utils, "LinearForm", ForbiddenLinearForm)
+    monkeypatch.setattr(ns_components, "LinearForm", ForbiddenLinearForm)
 
     rhs = model.momentum_nonorthogonal_rhs(velocity)
 
@@ -63,7 +63,7 @@ def test_momentum_nonorthogonal_rhs_uses_fast_rhs_assembler(monkeypatch):
 
 
 def test_pressure_nonorthogonal_cross_flux_uses_explicit_interpolation(monkeypatch):
-    import fealpy.fvm.collocated_ns_fvm_utils as ns_utils
+    import fealpy.fvm.collocated_ns_components as ns_components
 
     bm.set_backend("numpy")
     model = NSFVMPISOModel(_model_options())
@@ -75,7 +75,7 @@ def test_pressure_nonorthogonal_cross_flux_uses_explicit_interpolation(monkeypat
         seen.append(interpolation_method)
         return bm.zeros((mesh.number_of_faces(), mesh.geo_dimension()), dtype=model.cm.dtype)
 
-    monkeypatch.setattr(ns_utils, "reconstruct_face_gradient", record_face_gradient)
+    monkeypatch.setattr(ns_components, "reconstruct_face_gradient", record_face_gradient)
 
     model.pressure_nonorthogonal_cross_flux(
         pressure,

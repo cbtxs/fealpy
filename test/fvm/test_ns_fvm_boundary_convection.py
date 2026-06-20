@@ -53,7 +53,7 @@ def test_dirichlet_bc_convection_apply_handles_vector_dirichlet_data():
     model.NC = mesh.number_of_cells()
 
     b = bm.zeros(2 * model.NC)
-    actual = DirichletBC(mesh, pde.dirichlet_velocity).ConvectionApply(b, uf)
+    actual = DirichletBC(mesh, pde.dirichlet_velocity).apply_convection(b, uf)
     expected = _boundary_convection_rhs(model, uf)
 
     assert float(bm.max(bm.abs(expected[model.NC:]))) > 1.0e-12
@@ -86,6 +86,7 @@ def test_simple_momentum_rhs_includes_dirichlet_boundary_convection(monkeypatch)
                 "space_degree": 0,
                 "log_level": "ERROR",
                 "pbar_log": False,
+                "momentum_solve_strategy": "vector",
                 "linear_solver": CaptureSolver(),
             }
         )
@@ -207,15 +208,11 @@ def test_collocated_simple_records_common_residuals(monkeypatch):
         key: model.residuals[0][key]
         for key in (
             "mass",
-            "pressure_update",
             "pressure_correction",
-            "pressure_relax",
         )
     } == {
         "mass": 0.0,
-        "pressure_update": 0.0,
         "pressure_correction": 0.0,
-        "pressure_relax": 0.3,
     }
 
 
