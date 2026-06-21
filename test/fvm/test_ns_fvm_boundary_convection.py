@@ -171,7 +171,14 @@ def test_collocated_simple_records_common_residuals(monkeypatch):
         def __init__(self, mesh, **kwargs):
             self.mesh = mesh
 
-        def Interpolation(self, u, ap, p, face_response_coefficient=None):
+        def Interpolation(
+            self,
+            u,
+            ap,
+            p,
+            face_response_coefficient=None,
+            pressure_gradient=None,
+        ):
             return bm.zeros((self.mesh.number_of_faces(), 2))
 
     monkeypatch.setattr(simple_solver, "RhieChowInterpolation", FakeRhieChow)
@@ -181,7 +188,10 @@ def test_collocated_simple_records_common_residuals(monkeypatch):
     monkeypatch.setattr(
         simple_model.NSFVMSimpleModel,
         "temporary_velocity",
-        lambda self, p, uf, u0: (bm.ones(2 * self.NC), bm.zeros(2 * self.NC)),
+        lambda self, p, uf, u0, **kwargs: (
+            bm.ones(2 * self.NC),
+            bm.zeros(2 * self.NC),
+        ),
     )
     monkeypatch.setattr(
         simple_model.NSFVMSimpleModel,
@@ -226,16 +236,29 @@ def test_collocated_simple_updates_cell_velocity_after_pressure_correction(monke
         def __init__(self, mesh, **kwargs):
             self.mesh = mesh
 
-        def Interpolation(self, u, ap, p, face_response_coefficient=None):
+        def Interpolation(
+            self,
+            u,
+            ap,
+            p,
+            face_response_coefficient=None,
+            pressure_gradient=None,
+        ):
             return bm.zeros((self.mesh.number_of_faces(), 2))
 
     calls = []
 
-    def fake_temporary_velocity(self, p, uf, u0):
+    def fake_temporary_velocity(self, p, uf, u0, **kwargs):
         calls.append(u0.copy())
         return bm.ones(2 * self.NC), bm.zeros(2 * self.NC)
 
-    def fake_velocity_pressure_correction(self, cell_velocity, pressure_field, a_p):
+    def fake_velocity_pressure_correction(
+        self,
+        cell_velocity,
+        pressure_field,
+        a_p,
+        **kwargs,
+    ):
         assert bm.max(bm.abs(pressure_field - 0.5)) < 1.0e-14
         return cell_velocity + 3.0
 
@@ -252,7 +275,7 @@ def test_collocated_simple_updates_cell_velocity_after_pressure_correction(monke
     monkeypatch.setattr(
         simple_model.NSFVMSimpleModel,
         "correct_face_velocity_with_pressure_correction",
-        lambda self, uf, p_corr, response_coef, boundary_faces, boundary_velocity: uf,
+        lambda self, uf, p_corr, response_coef, boundary_faces, boundary_velocity, **kwargs: uf,
     )
     monkeypatch.setattr(
         simple_model.NSFVMSimpleModel,
@@ -293,12 +316,19 @@ def test_collocated_simple_relaxes_face_flux_pressure_correction(monkeypatch):
         def __init__(self, mesh, **kwargs):
             self.mesh = mesh
 
-        def Interpolation(self, u, ap, p, face_response_coefficient=None):
+        def Interpolation(
+            self,
+            u,
+            ap,
+            p,
+            face_response_coefficient=None,
+            pressure_gradient=None,
+        ):
             return bm.zeros((self.mesh.number_of_faces(), 2))
 
     received = []
 
-    def fake_temporary_velocity(self, p, uf, u0):
+    def fake_temporary_velocity(self, p, uf, u0, **kwargs):
         return bm.ones(2 * self.NC), bm.zeros(2 * self.NC)
 
     def fake_correct_face_velocity(
@@ -308,6 +338,7 @@ def test_collocated_simple_relaxes_face_flux_pressure_correction(monkeypatch):
         response_coef,
         boundary_faces,
         boundary_velocity,
+        **kwargs,
     ):
         received.append(p_corr.copy())
         return uf

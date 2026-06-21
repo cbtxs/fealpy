@@ -15,7 +15,7 @@ from .engineering_boundary_conditions import (
     apply_face_velocity_constraint,
 )
 from .solver_controls import PisoSolverControls, positive_scalar
-from .rhie_chow import RhieChowInterpolation
+from .collocated_face_velocity_reconstruct import RhieChowInterpolation
 from .scalar_cross_diffusion_integrator import ScalarCrossDiffusionIntegrator
 from .fvm_linear_solver import init_fvm_linear_solver
 from .solver_diagnostics import (

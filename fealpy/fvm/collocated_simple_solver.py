@@ -8,7 +8,7 @@ from fealpy.backend import backend_manager as bm
 from .collocated_ns_components import CollocatedNSFVMComponents
 from .dirichlet_bc import DirichletBC
 from .fvm_linear_solver import init_fvm_linear_solver
-from .rhie_chow import RhieChowInterpolation
+from .collocated_face_velocity_reconstruct import RhieChowInterpolation
 from .solver_controls import SimpleSolverControls, nonnegative_scalar, positive_scalar
 from .simple_residual import (
     log_simple_residual,
@@ -153,11 +153,29 @@ class CollocatedSimpleSolver(CollocatedNSFVMComponents):
             self._steady_momentum_source_vector = source_vector
         return bm.copy(source_vector)
 
-    def temporary_velocity(self, p, uf, u0) -> Tuple[TensorLike, TensorLike]:
+    def temporary_velocity(
+        self,
+        p,
+        uf,
+        u0,
+        *,
+        pressure_gradient=None,
+    ) -> Tuple[TensorLike, TensorLike]:
         """Solve momentum equation for the intermediate velocity."""
-        return self.solve_steady_momentum_predictor(p, uf, u0)
+        return self.solve_steady_momentum_predictor(
+            p,
+            uf,
+            u0,
+            pressure_gradient=pressure_gradient,
+        )
 
-    def pressure_correction_flux(self, p_corr: TensorLike, response_coef: TensorLike) -> TensorLike:
+    def pressure_correction_flux(
+        self,
+        p_corr: TensorLike,
+        response_coef: TensorLike,
+        *,
+        pressure_gradient=None,
+    ) -> TensorLike:
         """Return the full pressure-correction flux used to correct mass flux."""
         orthogonal_flux = self.pressure_orthogonal_flux(p_corr, response_coef)
         cross_flux = self.pressure_nonorthogonal_cross_flux(
@@ -166,6 +184,7 @@ class CollocatedSimpleSolver(CollocatedNSFVMComponents):
             interpolation_method=self.controls.face_interpolation(
                 "pressure_response_interpolation"
             ),
+            pressure_gradient=pressure_gradient,
         )
         flux = orthogonal_flux - cross_flux
         return self.add_pressure_dirichlet_flux(
@@ -183,10 +202,15 @@ class CollocatedSimpleSolver(CollocatedNSFVMComponents):
         response_coef: TensorLike,
         boundary_faces: TensorLike,
         boundary_velocity: TensorLike,
+        pressure_gradient=None,
     ) -> TensorLike:
         """Correct only the normal face velocity component from ``p_corr``."""
         Sf = self.fvm_geometry.S_f
-        delta_phi = self.pressure_correction_flux(p_corr, response_coef)
+        delta_phi = self.pressure_correction_flux(
+            p_corr,
+            response_coef,
+            pressure_gradient=pressure_gradient,
+        )
         Sf_dot_Sf = bm.einsum("ij,ij->i", Sf, Sf)
         uf = uf + (delta_phi / Sf_dot_Sf)[:, None] * Sf
         return bm.set_at(uf, boundary_faces, boundary_velocity)
@@ -292,11 +316,22 @@ class CollocatedSimpleSolver(CollocatedNSFVMComponents):
         return p_corr
 
     def rhie_chow_face_velocity(
-        self, u, ap, p, response_coef, boundary_faces, boundary_velocity
+        self,
+        u,
+        ap,
+        p,
+        response_coef,
+        boundary_faces,
+        boundary_velocity,
+        pressure_gradient=None,
     ):
         """Construct Rhie-Chow face velocity and enforce velocity Dirichlet data."""
         uf = self.rhie_chow.Interpolation(
-            u, ap, p, face_response_coefficient=response_coef
+            u,
+            ap,
+            p,
+            face_response_coefficient=response_coef,
+            pressure_gradient=pressure_gradient,
         )
         return bm.set_at(uf, boundary_faces, boundary_velocity)
 
@@ -320,7 +355,13 @@ class CollocatedSimpleSolver(CollocatedNSFVMComponents):
         p = bm.zeros(self.NC, dtype=field_dtype)
         uf = bm.zeros((self.mesh.number_of_faces(), self.GD), dtype=field_dtype)
         u = bm.zeros(self.GD * self.NC, dtype=field_dtype)
-        ap, u = self.temporary_velocity(p, uf, u)
+        pressure_gradient = self.pressure_gradient.cell_gradient(p)
+        ap, u = self.temporary_velocity(
+            p,
+            uf,
+            u,
+            pressure_gradient=pressure_gradient,
+        )
         self.residuals = []
         boundary_faces, boundary_velocity = self.boundary_conditions.boundary_face_velocity(
             "velocity",
@@ -333,12 +374,26 @@ class CollocatedSimpleSolver(CollocatedNSFVMComponents):
                 self.controls.face_interpolation("pressure_response_interpolation"),
             )
             uf = self.rhie_chow_face_velocity(
-                u, ap, p, response_coef, boundary_faces, boundary_velocity
+                u,
+                ap,
+                p,
+                response_coef,
+                boundary_faces,
+                boundary_velocity,
+                pressure_gradient=pressure_gradient,
             )
             p_corr = self.pressure_correct(ap, uf, response_coef=response_coef)
             relaxed_p_corr = relax * p_corr
+            relaxed_p_corr_gradient = self.pressure_gradient.cell_gradient(
+                relaxed_p_corr
+            )
             uf_corrected = self.correct_face_velocity_with_pressure_correction(
-                uf, relaxed_p_corr, response_coef, boundary_faces, boundary_velocity
+                uf,
+                relaxed_p_corr,
+                response_coef,
+                boundary_faces,
+                boundary_velocity,
+                pressure_gradient=relaxed_p_corr_gradient,
             )
             p_update, residual = simple_pressure_update_step(
                 self.residuals,
@@ -363,6 +418,7 @@ class CollocatedSimpleSolver(CollocatedNSFVMComponents):
                     self.dofs_to_cell_vector(u),
                     p_update,
                     ap,
+                    pressure_gradient=relaxed_p_corr_gradient,
                 )
             )
             if pressure_correction_converged(
@@ -373,7 +429,13 @@ class CollocatedSimpleSolver(CollocatedNSFVMComponents):
                 self.logger.info("Converged.")
                 break
 
-            ap, u = self.temporary_velocity(p, uf, u)
+            pressure_gradient = self.pressure_gradient.cell_gradient(p)
+            ap, u = self.temporary_velocity(
+                p,
+                uf,
+                u,
+                pressure_gradient=pressure_gradient,
+            )
 
         self.velocity = self.dofs_to_cell_vector(u)
         self.velocity_components = [

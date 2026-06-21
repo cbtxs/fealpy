@@ -76,6 +76,15 @@ def test_pressure_nonorthogonal_cross_flux_uses_explicit_interpolation(monkeypat
         return bm.zeros((mesh.number_of_faces(), mesh.geo_dimension()), dtype=model.cm.dtype)
 
     monkeypatch.setattr(ns_components, "reconstruct_face_gradient", record_face_gradient)
+    monkeypatch.setattr(
+        model.fvm_geometry,
+        "bounded_over_relaxed_decomposition",
+        lambda: (
+            None,
+            None,
+            bm.ones((model.mesh.number_of_faces(), model.GD), dtype=model.cm.dtype),
+        ),
+    )
 
     model.pressure_nonorthogonal_cross_flux(
         pressure,
@@ -84,6 +93,60 @@ def test_pressure_nonorthogonal_cross_flux_uses_explicit_interpolation(monkeypat
     )
 
     assert seen == ["linear"]
+
+
+def test_pressure_gradient_source_accepts_precomputed_gradient(monkeypatch):
+    bm.set_backend("numpy")
+    model = NSFVMPISOModel(_model_options())
+    pressure = bm.zeros(model.NC, dtype=model.cm.dtype)
+    gradient = bm.ones((model.NC, model.GD), dtype=model.cm.dtype)
+
+    class ForbiddenGradient:
+        def cell_gradient(self, _):
+            raise AssertionError("pressure_gradient_source should reuse supplied gradient")
+
+    model.pressure_gradient = ForbiddenGradient()
+
+    source = model.pressure_gradient_source(pressure, pressure_gradient=gradient)
+
+    expected = bm.concatenate([model.cm for _ in range(model.GD)], axis=0)
+    np.testing.assert_allclose(np.asarray(source), np.asarray(expected))
+
+
+def test_component_momentum_dirichlet_rhs_applies_vector_boundary_once():
+    bm.set_backend("numpy")
+    from fealpy.fvm import DirichletBC
+
+    model = NSFVMPISOModel(_model_options())
+    calls = []
+
+    def velocity_dirichlet(points):
+        calls.append(points.shape[0])
+        return bm.zeros((points.shape[0], model.GD), dtype=model.cm.dtype)
+
+    model.velocity_dirichlet = velocity_dirichlet
+    model.velocity_dirichlet_bc = DirichletBC(
+        model.mesh,
+        velocity_dirichlet,
+        threshold=model.velocity_dirichlet_threshold,
+        geometry=model.fvm_geometry,
+    )
+
+    matrix = model.scalar_momentum_diffusion_matrix(1.0)
+    rhs = bm.zeros(model.GD * model.NC, dtype=model.cm.dtype)
+    previous_velocity = bm.zeros((model.NC, model.GD), dtype=model.cm.dtype)
+    face_velocity = bm.zeros((model.mesh.number_of_faces(), model.GD), dtype=model.cm.dtype)
+
+    model.component_momentum_linear_systems(
+        matrix,
+        rhs,
+        previous_velocity,
+        diffusion_coef=1.0,
+        convection_face_velocity=face_velocity,
+        matrix_policy="shared",
+    )
+
+    assert len(calls) == 2
 
 
 def test_collocated_discretization_reuses_one_fvm_geometry_for_gradients():

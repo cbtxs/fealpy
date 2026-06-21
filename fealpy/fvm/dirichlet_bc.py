@@ -139,7 +139,13 @@ class DirichletBC:
         )
         if components > 1:
             boundary_diagonal = bm.tile(boundary_diagonal, (components,))
-        return A + spdiags(boundary_diagonal, 0, A.shape[0], A.shape[1])
+        return A + spdiags(
+            boundary_diagonal,
+            0,
+            A.shape[0],
+            A.shape[1],
+            index_dtype=A.itype,
+        )
 
     def apply_diffusion_rhs(self, b, coef=1.0, threshold=None):
         """Add the explicit Dirichlet diffusion RHS contribution to ``b``."""

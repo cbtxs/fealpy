@@ -298,6 +298,36 @@ def test_rhie_chow_gradient_difference_vanishes_for_linear_internal_pressure():
     assert np.max(np.abs(grad_diff[is_internal])) < 1.0e-12
 
 
+def test_rhie_chow_interpolation_accepts_precomputed_pressure_gradient(monkeypatch):
+    model = NSFVMSimpleModel({
+        "pde": 6,
+        "nx": 4,
+        "ny": 4,
+        "space_degree": 0,
+        "pbar_log": False,
+    })
+    pressure = np.zeros(model.NC)
+    velocity = np.zeros(model.GD * model.NC)
+    a_p = np.ones(model.GD * model.NC)
+    pressure_gradient = np.zeros((model.NC, model.GD))
+    rhie_chow = RhieChowInterpolation(model.mesh)
+
+    class ForbiddenGradient:
+        def cell_gradient(self, _):
+            raise AssertionError("Rhie-Chow should reuse supplied pressure gradient")
+
+    rhie_chow.gradient_reconstruct = ForbiddenGradient()
+
+    face_velocity = rhie_chow.Interpolation(
+        velocity,
+        a_p,
+        pressure,
+        pressure_gradient=pressure_gradient,
+    )
+
+    assert face_velocity.shape == (model.mesh.number_of_faces(), model.GD)
+
+
 def test_cross_diffusion_gradient_path_is_exact_for_linear_velocity():
     model = NSFVMSimpleModel({
         "pde": 6,

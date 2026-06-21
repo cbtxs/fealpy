@@ -1,4 +1,4 @@
-"""Rhie-Chow interpolation utilities for collocated finite-volume solvers."""
+"""Pressure-stabilized face velocity reconstruction for collocated FVM solvers."""
 
 from fealpy.backend import backend_manager as bm
 
@@ -91,7 +91,7 @@ class RhieChowInterpolation:
             face_response = face_response_coefficient[:, None]
         return face_velocity, face_response
 
-    def GradientDifference(self, p):
+    def GradientDifference(self, p, pressure_gradient=None):
         """Return the Rhie-Chow pressure-gradient difference.
 
         This is the difference between the cell-jump pressure gradient along
@@ -101,7 +101,11 @@ class RhieChowInterpolation:
         partial_p = (p[self.face_to_cell[:, 1]] - p[self.face_to_cell[:, 0]]) / mag_d_f
         partial_p = self.apply_pressure_dirichlet_boundary_partial(p, partial_p)
         e_cf = d_f / mag_d_f[:, None]
-        grad_p = self.gradient_reconstruct.cell_gradient(p)
+        grad_p = (
+            self.gradient_reconstruct.cell_gradient(p)
+            if pressure_gradient is None
+            else pressure_gradient
+        )
         overline_grad_p_f = reconstruct_face_gradient(
             self.mesh,
             grad_p,
@@ -131,10 +135,17 @@ class RhieChowInterpolation:
         boundary_partial = (boundary_value - p[owner]) / self.mag_d_f[boundary_faces]
         return bm.set_at(partial_p, boundary_faces, boundary_partial)
 
-    def Interpolation(self, u, ap, p, face_response_coefficient=None):
+    def Interpolation(
+        self,
+        u,
+        ap,
+        p,
+        face_response_coefficient=None,
+        pressure_gradient=None,
+    ):
         """Return pressure-stabilized vector face velocity."""
         face_velocity, face_response = self.cell_velocity_to_face(
             u, ap, face_response_coefficient
         )
-        grad_diff = self.GradientDifference(p)
+        grad_diff = self.GradientDifference(p, pressure_gradient=pressure_gradient)
         return face_velocity - face_response * grad_diff

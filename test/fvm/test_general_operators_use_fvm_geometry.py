@@ -239,7 +239,7 @@ def test_collocated_mass_residual_scatter_uses_single_geometry(monkeypatch):
 
 
 def test_rhie_chow_interpolation_reuses_instance_geometry_for_owner_weights(monkeypatch):
-    import fealpy.fvm.rhie_chow as rhie_chow_module
+    import fealpy.fvm.collocated_face_velocity_reconstruct as face_velocity_module
     from fealpy.fvm import FVMGeometry, RhieChowInterpolation
 
     mesh = _quad_mesh()
@@ -255,9 +255,9 @@ def test_rhie_chow_interpolation_reuses_instance_geometry_for_owner_weights(monk
     def fail_if_called(*args, **kwargs):
         raise AssertionError("RhieChowInterpolation should reuse its FVMGeometry")
 
-    monkeypatch.setattr(rhie_chow_module, "FVMGeometry", WeightedGeometry)
+    monkeypatch.setattr(face_velocity_module, "FVMGeometry", WeightedGeometry)
     monkeypatch.setattr(
-        rhie_chow_module,
+        face_velocity_module,
         "face_interpolation_owner_weight",
         fail_if_called,
         raising=False,

@@ -58,6 +58,7 @@ def test_simple_iteration_mass_uses_pressure_corrected_face_velocity(monkeypatch
         nonorthogonal_iterations=1,
         momentum_nonorthogonal_iterations=1,
         stopping_face_velocity=corrected_uf,
+        record_mass_before_pressure_correction=True,
     )
 
     assert residual["mass"] == 1.0e-8
@@ -66,6 +67,40 @@ def test_simple_iteration_mass_uses_pressure_corrected_face_velocity(monkeypatch
     assert "pressure_relax" not in residual
     assert "pressure_relax_action" not in residual
     assert "pressure_relax_reduced" not in residual
+
+
+def test_simple_iteration_mass_skips_raw_face_velocity_by_default(monkeypatch):
+    from fealpy.backend import backend_manager as bm
+    import fealpy.fvm.simple_residual as simple_residual
+
+    bm.set_backend("numpy")
+    calls = []
+    raw_uf = object()
+    corrected_uf = object()
+
+    def fake_mass_residual(mesh, uf, geometry=None):
+        calls.append(uf)
+        return 1.0e-8
+
+    monkeypatch.setattr(simple_residual, "collocated_mass_residual", fake_mass_residual)
+    monkeypatch.setattr(simple_residual, "cell_l2_norm", lambda mesh, value: 0.0)
+    monkeypatch.setattr(simple_residual, "relative_l2_update", lambda mesh, update, p: 0.0)
+
+    _, residual = simple_pressure_update_step(
+        [],
+        None,
+        raw_uf,
+        bm.ones(1),
+        bm.zeros(1),
+        pressure_relax=0.3,
+        nonorthogonal_iterations=1,
+        momentum_nonorthogonal_iterations=1,
+        stopping_face_velocity=corrected_uf,
+    )
+
+    assert calls == [corrected_uf]
+    assert residual["mass"] == 1.0e-8
+    assert "mass_before_pressure_correction" not in residual
 
 
 def test_simple_iteration_pressure_criterion_uses_pressure_correction_l2(monkeypatch):
@@ -95,3 +130,33 @@ def test_simple_iteration_pressure_criterion_uses_pressure_correction_l2(monkeyp
 
     assert residual["pressure_correction"] == 2.5
     assert residual["pressure_criterion"] == 2.5
+    assert "pressure_correction_relative" not in residual
+
+
+def test_simple_iteration_can_record_relative_pressure_correction(monkeypatch):
+    from fealpy.backend import backend_manager as bm
+    import fealpy.fvm.simple_residual as simple_residual
+
+    bm.set_backend("numpy")
+    monkeypatch.setattr(
+        simple_residual,
+        "collocated_mass_residual",
+        lambda mesh, uf, geometry=None: 0.0,
+    )
+    monkeypatch.setattr(simple_residual, "cell_l2_norm", lambda mesh, value: 2.5)
+    monkeypatch.setattr(simple_residual, "relative_l2_update", lambda mesh, update, p: 1.0e-8)
+
+    _, residual = simple_pressure_update_step(
+        [],
+        None,
+        object(),
+        bm.ones(1),
+        bm.zeros(1),
+        pressure_relax=0.3,
+        nonorthogonal_iterations=1,
+        momentum_nonorthogonal_iterations=1,
+        stopping_face_velocity=object(),
+        record_pressure_correction_relative=True,
+    )
+
+    assert residual["pressure_correction_relative"] == 1.0e-8

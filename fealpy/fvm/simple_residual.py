@@ -115,6 +115,8 @@ def simple_iteration_residual(
     nonorthogonal_iterations,
     momentum_nonorthogonal_iterations,
     stopping_face_velocity=None,
+    record_mass_before_pressure_correction=False,
+    record_pressure_correction_relative=False,
     geometry=None,
 ):
     """Return one SIMPLE residual record.
@@ -128,32 +130,36 @@ def simple_iteration_residual(
     supplied, which is the residual used for stopping the current collocated
     SIMPLE loop.
     """
-    pressure_correction_relative = relative_l2_update(
-        mesh, pressure_correction, pressure
-    )
     pressure_correction_l2 = cell_l2_norm(mesh, pressure_correction)
-    mass_before_pressure_correction = collocated_mass_residual(
-        mesh,
-        face_velocity,
-        geometry=geometry,
-    )
+    residual = {}
+    if record_pressure_correction_relative:
+        residual["pressure_correction_relative"] = relative_l2_update(
+            mesh,
+            pressure_correction,
+            pressure,
+        )
     if stopping_face_velocity is None:
-        mass = mass_before_pressure_correction
+        mass = collocated_mass_residual(mesh, face_velocity, geometry=geometry)
     else:
         mass = collocated_mass_residual(
             mesh,
             stopping_face_velocity,
             geometry=geometry,
         )
-    return {
+        if record_mass_before_pressure_correction:
+            residual["mass_before_pressure_correction"] = collocated_mass_residual(
+                mesh,
+                face_velocity,
+                geometry=geometry,
+            )
+    residual.update({
         "mass": mass,
-        "mass_before_pressure_correction": mass_before_pressure_correction,
         "pressure_correction": pressure_correction_l2,
-        "pressure_correction_relative": pressure_correction_relative,
         "pressure_criterion": pressure_correction_l2,
         "nonorthogonal_iterations": nonorthogonal_iterations,
         "momentum_nonorthogonal_iterations": momentum_nonorthogonal_iterations,
-    }
+    })
+    return residual
 
 
 def simple_pressure_update_step(
@@ -167,6 +173,8 @@ def simple_pressure_update_step(
     nonorthogonal_iterations,
     momentum_nonorthogonal_iterations,
     stopping_face_velocity=None,
+    record_mass_before_pressure_correction=False,
+    record_pressure_correction_relative=False,
     geometry=None,
 ):
     """Return fixed-relaxation pressure update and append its residual row."""
@@ -179,6 +187,8 @@ def simple_pressure_update_step(
         nonorthogonal_iterations=nonorthogonal_iterations,
         momentum_nonorthogonal_iterations=momentum_nonorthogonal_iterations,
         stopping_face_velocity=stopping_face_velocity,
+        record_mass_before_pressure_correction=record_mass_before_pressure_correction,
+        record_pressure_correction_relative=record_pressure_correction_relative,
         geometry=geometry,
     )
     residuals.append(residual)

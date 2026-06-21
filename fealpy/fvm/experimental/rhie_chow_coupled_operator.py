@@ -16,7 +16,7 @@ class RhieChowCoupledOperator:
 
     It is not the stable SIMPLE/PISO face-velocity interpolation API.  The
     production collocated SIMPLE path uses ``RhieChowInterpolation`` in
-    ``fealpy.fvm.rhie_chow``.
+    ``fealpy.fvm.collocated_face_velocity_reconstruct``.
     """
 
     def __init__(self, mesh, rho=1.0):

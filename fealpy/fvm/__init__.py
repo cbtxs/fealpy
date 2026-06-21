@@ -21,7 +21,7 @@ from .gradient_reconstruct import GradientReconstruct
 from .div_reconstruct import DivergenceReconstruct
 from .dirichlet_bc import DirichletBC
 from .neumann_bc import NeumannBC
-from .rhie_chow import RhieChowInterpolation
+from .collocated_face_velocity_reconstruct import RhieChowInterpolation
 from .simple_residual import (
     cell_l2_norm,
     collocated_mass_residual,

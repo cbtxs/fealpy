@@ -323,11 +323,11 @@ def test_boundary_condition_data_use_fvm_geometry_for_boundary_velocity():
 
 
 def test_rhie_chow_pressure_dirichlet_partial_uses_fvm_geometry(monkeypatch):
-    import fealpy.fvm.rhie_chow as rhie_chow_module
+    import fealpy.fvm.collocated_face_velocity_reconstruct as face_velocity_module
     from fealpy.fvm import RhieChowInterpolation
 
     mesh = _mesh()
-    monkeypatch.setattr(rhie_chow_module, "FVMGeometry", ShiftedBoundaryGeometry)
+    monkeypatch.setattr(face_velocity_module, "FVMGeometry", ShiftedBoundaryGeometry)
     geometry = ShiftedBoundaryGeometry(mesh)
     boundary_faces = _boundary_faces(geometry)
     pressure_dirichlet = lambda p: p[:, 0] - 0.25 * p[:, 1]

@@ -335,6 +335,17 @@ class CollocatedMomentumEquation:
             if previous_velocity.ndim == 1
             else self.cell_vector_to_dofs(previous_velocity)
         )
+        boundary_rhs = self.velocity_dirichlet_bc.apply_diffusion_rhs(
+            rhs,
+            coef=diffusion_coef,
+            threshold=self.velocity_dirichlet_threshold,
+        )
+        if convection_face_velocity is not None:
+            boundary_rhs = self.velocity_dirichlet_bc.apply_convection(
+                boundary_rhs,
+                convection_face_velocity,
+                threshold=self.velocity_dirichlet_threshold,
+            )
 
         shared_matrix = None
         shared_relaxed_diagonal = None
@@ -362,6 +373,7 @@ class CollocatedMomentumEquation:
                     0,
                     shared_matrix.shape[0],
                     shared_matrix.shape[1],
+                    index_dtype=shared_matrix.itype,
                 )
             shared_relaxed_diagonal = shared_matrix.diags().values
 
@@ -371,34 +383,15 @@ class CollocatedMomentumEquation:
         for component in range(self.GD):
             start = component * self.NC
             stop = start + self.NC
-            component_bc = DirichletBC(
-                self.mesh,
-                self.velocity_dirichlet,
-                threshold=self.velocity_dirichlet_threshold,
-                geometry=self.fvm_geometry,
-                component=component,
-            )
+            component_rhs = boundary_rhs[start:stop]
             if matrix_policy == "per_component":
-                component_matrix, component_rhs = component_bc.apply_diffusion(
+                component_matrix = self.velocity_dirichlet_bc.apply_diffusion_matrix(
                     matrix,
-                    rhs[start:stop],
                     coef=diffusion_coef,
                     threshold=self.velocity_dirichlet_threshold,
                 )
             else:
                 component_matrix = shared_matrix
-                component_rhs = component_bc.apply_diffusion_rhs(
-                    rhs[start:stop],
-                    coef=diffusion_coef,
-                    threshold=self.velocity_dirichlet_threshold,
-                )
-
-            if convection_face_velocity is not None:
-                component_rhs = component_bc.apply_convection(
-                    component_rhs,
-                    convection_face_velocity,
-                    threshold=self.velocity_dirichlet_threshold,
-                )
 
             if matrix_policy == "shared":
                 diagonal = shared_relaxed_diagonal
@@ -416,6 +409,7 @@ class CollocatedMomentumEquation:
                         0,
                         component_matrix.shape[0],
                         component_matrix.shape[1],
+                        index_dtype=component_matrix.itype,
                     )
                     component_rhs = component_rhs + delta * previous_dofs[start:stop]
                     diagonal = component_matrix.diags().values
@@ -458,13 +452,21 @@ class CollocatedMomentumEquation:
             return bm.concatenate(parts, axis=0)
         return matrix @ dofs
 
-    def solve_steady_momentum_predictor(self, pressure, face_velocity, previous_velocity):
+    def solve_steady_momentum_predictor(
+        self,
+        pressure,
+        face_velocity,
+        previous_velocity,
+        *,
+        pressure_gradient=None,
+    ):
         """Solve the steady SIMPLE momentum predictor equation."""
         if self.controls.momentum_solve_strategy == "component":
             return self.solve_component_steady_momentum_predictor(
                 pressure,
                 face_velocity,
                 previous_velocity,
+                pressure_gradient=pressure_gradient,
             )
 
         convection_face_velocity = self.convection_coef * face_velocity
@@ -493,7 +495,10 @@ class CollocatedMomentumEquation:
                 convection_face_velocity,
                 threshold=self.velocity_dirichlet_threshold,
             )
-        rhs = rhs - self.pressure_gradient_source(pressure)
+        rhs = rhs - self.pressure_gradient_source(
+            pressure,
+            pressure_gradient=pressure_gradient,
+        )
         matrix, rhs, diagonal = self.relax_momentum_equation(
             matrix,
             rhs,
@@ -517,6 +522,8 @@ class CollocatedMomentumEquation:
         pressure,
         face_velocity,
         previous_velocity,
+        *,
+        pressure_gradient=None,
     ):
         """Solve the steady SIMPLE momentum predictor as scalar component systems."""
         convection_face_velocity = self.convection_coef * face_velocity
@@ -536,7 +543,10 @@ class CollocatedMomentumEquation:
 
         rhs = self.steady_momentum_source_vector()
         rhs = rhs + self.velocity_neumann_diffusion_source(self.diffusion_coef)
-        rhs = rhs - self.pressure_gradient_source(pressure)
+        rhs = rhs - self.pressure_gradient_source(
+            pressure,
+            pressure_gradient=pressure_gradient,
+        )
         matrices, rhs, diagonal = self.component_momentum_linear_systems(
             matrix,
             rhs,
@@ -710,7 +720,13 @@ class CollocatedMomentumEquation:
             return matrix, rhs, diagonal
 
         delta = (1.0 / alpha - 1.0) * diagonal
-        relaxed_matrix = matrix + spdiags(delta, 0, matrix.shape[0], matrix.shape[1])
+        relaxed_matrix = matrix + spdiags(
+            delta,
+            0,
+            matrix.shape[0],
+            matrix.shape[1],
+            index_dtype=matrix.itype,
+        )
         relaxed_rhs = rhs + delta * previous_velocity
         return relaxed_matrix, relaxed_rhs, relaxed_matrix.diags().values
 
@@ -825,7 +841,13 @@ class CollocatedMomentumEquation:
         diagonal = bm.index_add(diagonal, owner, flux, axis=0)
         components = matrix.shape[0] // self.NC
         diagonal = bm.concatenate([diagonal for _ in range(components)], axis=0)
-        return matrix + spdiags(diagonal, 0, matrix.shape[0], matrix.shape[1])
+        return matrix + spdiags(
+            diagonal,
+            0,
+            matrix.shape[0],
+            matrix.shape[1],
+            index_dtype=matrix.itype,
+        )
 
     def momentum_source_vector(self, source):
         """Assemble the shared cell-integrated momentum source vector."""
@@ -1109,9 +1131,13 @@ class CollocatedPressureEquation:
     pressure gauge or zero-mean representative selection.
     """
 
-    def pressure_gradient_source(self, pressure):
+    def pressure_gradient_source(self, pressure, pressure_gradient=None):
         """Return the cell-integrated pressure-gradient source vector."""
-        grad_p = self.pressure_gradient.cell_gradient(pressure)
+        grad_p = (
+            self.pressure_gradient.cell_gradient(pressure)
+            if pressure_gradient is None
+            else pressure_gradient
+        )
         return bm.concatenate(
             [
                 bm.einsum("i,i->i", grad_p[:, component], self.cm)
@@ -1167,6 +1193,7 @@ class CollocatedPressureEquation:
         response_coef: TensorLike,
         *,
         interpolation_method: str,
+        pressure_gradient=None,
     ) -> TensorLike:
         """Return the explicit non-orthogonal flux induced by a pressure field.
 
@@ -1175,14 +1202,20 @@ class CollocatedPressureEquation:
         boundary cross flux remains zero on non-coupled boundary faces,
         matching the pressure Laplacian correction route.
         """
-        grad_p = self.pressure_gradient.cell_gradient(pressure)
+        T_f = self.fvm_geometry.bounded_over_relaxed_decomposition()[2]
+        if float(bm.to_numpy(bm.max(bm.abs(T_f)))) == 0.0:
+            return bm.zeros_like(response_coef)
+        grad_p = (
+            self.pressure_gradient.cell_gradient(pressure)
+            if pressure_gradient is None
+            else pressure_gradient
+        )
         grad_f = reconstruct_face_gradient(
             self.mesh,
             grad_p,
             geometry=self.fvm_geometry,
             interpolation_method=interpolation_method,
         )
-        T_f = self.fvm_geometry.bounded_over_relaxed_decomposition()[2]
         cross_flux = response_coef * bm.einsum("ij,ij->i", T_f, grad_f)
         return bm.where(self.fvm_geometry.is_boundary, 0.0, cross_flux)
 
@@ -1230,19 +1263,33 @@ class CollocatedVelocityPressureCoupling:
     the same cell response ``V/a_P`` and reconstructed pressure gradient.
     """
 
-    def velocity_pressure_correction(self, cell_velocity, pressure_field, a_p):
+    def velocity_pressure_correction(
+        self,
+        cell_velocity,
+        pressure_field,
+        a_p,
+        pressure_gradient=None,
+    ):
         """Apply ``U <- U - rAU grad(p)`` for the supplied pressure argument.
 
         In SIMPLE callers this argument is a pressure correction ``p'``.  In
         the current PISO route it is the corrected pressure state, not an
         increment.
         """
-        grad_p = self.pressure_gradient.cell_gradient(pressure_field)
+        grad_p = (
+            self.pressure_gradient.cell_gradient(pressure_field)
+            if pressure_gradient is None
+            else pressure_gradient
+        )
         return cell_velocity - self.component_response(a_p) * grad_p
 
-    def pressure_free_velocity(self, cell_velocity, pressure, a_p):
+    def pressure_free_velocity(self, cell_velocity, pressure, a_p, pressure_gradient=None):
         """Remove the current pressure-gradient contribution from velocity."""
-        grad_p = self.pressure_gradient.cell_gradient(pressure)
+        grad_p = (
+            self.pressure_gradient.cell_gradient(pressure)
+            if pressure_gradient is None
+            else pressure_gradient
+        )
         return cell_velocity + self.component_response(a_p) * grad_p
 
 

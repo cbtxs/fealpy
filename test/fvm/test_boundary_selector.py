@@ -35,7 +35,7 @@ def test_boundary_face_flag_rejects_wrong_shape():
 
 
 def test_rhie_chow_pressure_dirichlet_uses_public_boundary_selector():
-    from fealpy.fvm.rhie_chow import RhieChowInterpolation
+    from fealpy.fvm.collocated_face_velocity_reconstruct import RhieChowInterpolation
     from fealpy.mesh import TriangleMesh
 
     bm.set_backend("numpy")
