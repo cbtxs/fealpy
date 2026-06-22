@@ -263,12 +263,14 @@ class FEALPyMesh(Mesh):
     def cell_to_ipoint(self, p: int, index: Index | None = None) -> Tensor:
         from ..topology.ipoints import to_ipoint
         view = self.entity_view(-1)
-        return to_ipoint(self, view.schema.name, p)
+        result = to_ipoint(self, view.schema.name, p)
+        return result if index is None else result[index]
 
     def face_to_ipoint(self, p: int, index: Index | None = None) -> Tensor:
         from ..topology.ipoints import to_ipoint
         view = self.entity_view(-2)
-        return to_ipoint(self, view.schema.name, p)
+        result = to_ipoint(self, view.schema.name, p)
+        return result if index is None else result[index]
 
     def interpolation_points(
         self,
@@ -369,11 +371,12 @@ class FEALPyMesh(Mesh):
         power: float = 2.0,
         q: int = 3,
         *,
+        cell_axis: bool = False,
         index: Index | None = None
     ) -> Tensor:
         """Returns the error between two functions defined on the mesh."""
         cell_sec = self.entity_view(-1)
-        return cell_sec.error(f1, f2, power=power, q=q, index=index)
+        return cell_sec.error(f1, f2, power=power, q=q, cell_axis=cell_axis, index=index)
 
     def face_normal(self, *, index: Index | None = None) -> Tensor:
         """Returns the normal vector of faces."""

@@ -74,6 +74,7 @@ class EntityView:
         power: float = 2.0,
         q: int = 3,
         *,
+        cell_axis: bool = False,
         index: Index | None = None
     ) -> Tensor:
         from ...decorator import barycentric
@@ -87,7 +88,9 @@ class EntityView:
             v2 = f2(bcs)
             return bm.abs(v1 - v2) ** power
 
-        return self.integral(integrand, q=q, index=index) ** (1.0 / power)
+        if cell_axis:
+            return self.integral(integrand, q=q, index=index) ** (1.0 / power)
+        return bm.sum(self.integral(integrand, q=q, index=index)) ** (1.0 / power)
 
     def geo_dimension(self) -> int:
         return self.schema.geo_dimension(self.context())

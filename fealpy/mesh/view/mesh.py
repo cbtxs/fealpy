@@ -120,3 +120,13 @@ class Mesh:
             return -1
         return max(self.block.sectors[name].schema.top_dim
                    for name in self.block.root_entity_names)
+
+    # Setters (in-place modification)
+
+    def uniform_refine(self, times: int = 1) -> None:
+        """Uniformly refine the mesh a given number of times.
+
+        Parameters:
+            times: Number of times to refine the mesh. Default is 1.
+        """
+        raise NotImplementedError("Uniform refinement is not implemented yet.")

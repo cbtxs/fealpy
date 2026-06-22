@@ -296,8 +296,9 @@ class ShapedEntitySchema(EntitySchema):
         if not getattr(func, "coordtype", None) == "barycentric":
             func = cls.barycentric(ctx, func, index)
         values = func(bcs)
+        measure = cls.measure(ctx, index)
 
-        return bm.einsum("cq..., q -> c...", values, ws)
+        return bm.einsum("c, q, cq... -> c...", measure, ws, values)
 
 
 @overload
