@@ -147,6 +147,76 @@ class PrismSchema(ShapedEntitySchema):
         raise ValueError(f"Unsupported variables: {variables!r}")
 
     @classmethod
+    def grad_shape_function_barycentric(
+        cls,
+        bcs: tuple[Tensor, ...],
+        p: tuple[int, ...]
+    ) -> Tensor:
+        bcs = _require_bcs_tuple(bcs, "prism grad_shape_function_barycentric", 2)
+        p = _require_order_tuple(p, "prism grad_shape_function_barycentric", 2)
+
+        if bcs[0].shape[-1] != 3:
+            raise ValueError(
+                "prism grad_shape_function_barycentric expects "
+                f"triangle barycentric tensor with last dimension 3, got {bcs[0].shape[-1]}"
+            )
+        if bcs[1].shape[-1] != 2:
+            raise ValueError(
+                "prism grad_shape_function_barycentric expects "
+                f"interval barycentric tensor with last dimension 2, got {bcs[1].shape[-1]}"
+            )
+
+        mi0 = _MI.multi_index_matrix(p[0], 3)
+        mi1 = _MI.multi_index_matrix(p[1], 2)
+
+        phi0 = bm.simplex_shape_function(bcs[0], p[0], mi0)
+        phi1 = bm.simplex_shape_function(bcs[1], p[1], mi1)
+
+        R0 = bm.simplex_grad_shape_function(bcs[0], p[0], mi0)
+        R1 = bm.simplex_grad_shape_function(bcs[1], p[1], mi1)
+
+        num_shape = phi0.shape[-1] * phi1.shape[-1]
+
+        g0 = R0[:, None, :, None, :] * phi1[None, :, None, :, None]
+        g1 = phi0[:, None, :, None, None] * R1[None, :, None, :, :]
+
+        gphi = bm.concat([g0, g1], axis=-1)
+        return bm.reshape(gphi, (-1, num_shape, 5))
+
+    @classmethod
+    def grad_shape_function_reference(
+        cls,
+        bcs: tuple[Tensor, ...],
+        p: tuple[int, ...]
+    ) -> Tensor:
+        bcs = _require_bcs_tuple(bcs, "prism grad_shape_function_reference", 2)
+        p = _require_order_tuple(p, "prism grad_shape_function_reference", 2)
+
+        grad_bary = cls.grad_shape_function_barycentric(bcs, p)
+        return bm.stack(
+            [
+                -grad_bary[..., 0] + grad_bary[..., 1],
+                -grad_bary[..., 0] + grad_bary[..., 2],
+                -grad_bary[..., 3] + grad_bary[..., 4],
+            ],
+            axis=-1,
+        )
+    
+    @classmethod
+    def jacobi_matrix(
+        cls,
+        ctx: EntityContext,
+        bcs: tuple[Tensor, ...],
+        index: Index | None
+    ) -> Tensor:
+        bcs = _require_bcs_tuple(bcs, "prism jacobi_matrix", 2)
+
+        points = cls._tp_points(ctx, index)
+        gphi = cls.grad_shape_function_reference(bcs, p=(1, 1))
+
+        return bm.einsum("cim,qin->cqmn", points, gphi)
+
+    @classmethod
     def grad_lambda(
         cls,
         ctx: EntityContext,
@@ -219,45 +289,6 @@ class PrismSchema(ShapedEntitySchema):
         points = cls._tp_points(ctx, index)
         return bm.einsum("cim,qi->cqm", points, phi)
 
-    # jacobi
-    @classmethod
-    def jacobi_matrix(
-        cls,
-        ctx: EntityContext,
-        bcs: tuple[Tensor, ...],
-        index: Index | None
-    ) -> Tensor:
-        """Compute the Jacobian matrix of the reference-to-physical prism map.
-
-        For p = 1, x(eta, zeta, xi) = sum_i phi_i x_i, where
-        phi = [(1-eta-zeta)(1-xi), (1-eta-zeta)xi, eta(1-xi), eta xi, zeta(1-xi), zeta xi].
-
-        Parameters
-            bcs : tuple[Tensor, Tensor]
-                Tuple[(NQ0, 3), (NQ1, 2)], the integration points.
-            index : Index | None, optional
-                Cell index.
-            etype : str, default='cell'
-                Reserved for compatibility.
-            ftype : optional
-                Reserved for compatibility.
-            return_grad : bool, default=False
-                Whether to return reference gradients.
-
-        Returns
-            Tensor
-                J: (NC, NQ, 3, GD).
-                gphi: (NQ, 6, 3), if return_grad is True.
-        """
-        prism = ctx.sector.indices if index is None else ctx.sector.indices[index]
-        node = ctx.block.positions
-
-        gphi = cls.grad_shape_function(ctx, bcs, p=(1, 1), variables="u")
-        points = node[prism[:, [0, 3, 1, 4, 2, 5]]]
-        J = bm.einsum("cim,qin->cqmn", points, gphi)
-
-        return J
-
     @classmethod
     def first_fundamental_form(
         cls,
@@ -293,15 +324,3 @@ class PrismSchema(ShapedEntitySchema):
         if not return_jacobi and return_grad:
             return G, gphi
         return G, J, gphi
-
-    @classmethod
-    def transform_grad(
-        cls,
-        ctx: EntityContext,
-        bcs: tuple[Tensor, ...],
-        ref_grad: Tensor,
-        index: Index | None,
-    ) -> Tensor:
-        G, J = cls.first_fundamental_form(ctx, bcs, index=index, return_jacobi=True)
-        Ginv = bm.linalg.inv(G)
-        return bm.einsum("cqdk,cqkl,qil->cqid", J, Ginv, ref_grad)
