@@ -62,6 +62,21 @@ def get_total_face(cell: Tensor, local_face: list[list[int]]) -> Tensor:
     return bm.reshape(total_face, (-1, NFC))
 
 
+def _lower_entities(
+    schema: type["EntitySchema"],
+    excluded: set[str] | None = None,
+) -> dict[str, list[list[int]]]:
+    """Return the OFace entries that point to lower-dimensional schemas."""
+    from ..schema.registry import SCHEMA_REGISTRY
+
+    excluded = set() if excluded is None else excluded
+    return {
+        name: local_indices
+        for name, local_indices in schema.OFace.items()
+        if name not in excluded and SCHEMA_REGISTRY[name].top_dim < schema.top_dim
+    }
+
+
 class ConstructResult(NamedTuple):
     face_type: str
     face: Tensor
@@ -112,42 +127,98 @@ class TopologyBuilder:
             yield ConstructResult(face_kind, face, cell2faces)
 
     @classmethod
-    def construct(cls, storage: MeshBlock, src_name: str | None = None) -> None:
-        """Construct lower-dimensional blocks and relations.
+    def _construct_from_blocks(
+        cls,
+        storage: MeshBlock,
+        blocks: list[EntitySector],
+        excluded: set[str],
+    ) -> list[EntitySector]:
+        """Construct one OFace layer from ``blocks`` and return touched sectors."""
+        constructed: list[EntitySector] = []
+
+        for const_result in cls.construct_lower_dims(
+            [block.indices for block in blocks],
+            [_lower_entities(block.schema, excluded) for block in blocks],
+        ):
+            face_type_name, face_array, cell2face_from_each_cell = const_result
+
+            if face_type_name not in storage.sectors:
+                storage.add_sector(EntitySector(face_type_name, face_array), root=False)
+                face_array_to_sector = None
+            else:
+                old_face_array = storage.sectors[face_type_name].indices
+                merged, (old_to_merged, face_array_to_sector) = _unique_unordered_rows_across(
+                    old_face_array, face_array
+                )
+                if len(merged) != len(old_face_array) or bool(
+                    bm.any(old_to_merged != bm.arange(
+                        len(old_face_array),
+                        dtype=old_to_merged.dtype,
+                        device=old_to_merged.device,
+                    ))
+                ):
+                    raise ValueError(
+                        f"constructing {face_type_name!r} would renumber an existing sector; "
+                        "construct all lower-dimensional OFace entries from roots first"
+                    )
+                storage.sectors[face_type_name].indices = merged
+
+            face_block = storage.get_sector(face_type_name)
+            constructed.append(face_block)
+
+            for cell2face, block in zip(cell2face_from_each_cell, blocks):
+                if face_array_to_sector is not None:
+                    cell2face = face_array_to_sector[cell2face]
+                storage.relations[(block.schema_name, face_type_name)] = Relation(
+                    src_name=block.schema_name,
+                    tgt_name=face_type_name,
+                    tgt_indices=cell2face,
+                )
+
+        return constructed
+
+    @classmethod
+    def construct(
+        cls,
+        storage: MeshBlock,
+        src_name: str | None = None,
+        exclude: list[str] | None = None,
+    ) -> None:
+        """Construct one layer of lower-dimensional blocks and relations.
 
         If ``src_name`` is given, the construction starts from that block only;
-        otherwise all root blocks are used as sources.
+        otherwise all root blocks are used as sources. ``exclude`` skips selected
+        lower-dimensional shape names, such as ``["node"]``.
         """
+        excluded = set() if exclude is None else set(exclude)
         if src_name is None:
             current_blocks = [storage.get_sector(name) for name in storage.root_entity_names]
         else:
             current_blocks = [storage.get_sector(src_name)]
 
+        cls._construct_from_blocks(storage, current_blocks, excluded)
+
+    @classmethod
+    def construct_nested_relations(
+        cls,
+        storage: MeshBlock,
+        src_name: str | None = None,
+        exclude: list[str] | None = None,
+    ) -> None:
+        """Optionally construct relations among already-created lower entities."""
+        excluded = set() if exclude is None else set(exclude)
+        if src_name is None:
+            current_blocks = [
+                storage.get_sector(name)
+                for root_name in storage.root_entity_names
+                for name in _lower_entities(storage.get_sector(root_name).schema, excluded)
+                if name in storage.sectors
+            ]
+        else:
+            current_blocks = [storage.get_sector(src_name)]
+
         while current_blocks:
-            faces: list[EntitySector] = []
-
-            for const_result in cls.construct_lower_dims(
-                [block.indices for block in current_blocks],
-                [block.schema.local_faces for block in current_blocks],
-            ):
-                face_type_name, face_array, cell2face_from_each_cell = const_result
-
-                if face_type_name not in storage.sectors:
-                    storage.add_sector(EntitySector(face_type_name, face_array), root=False)
-                else:
-                    storage.sectors[face_type_name].indices = face_array
-
-                face_block = storage.get_sector(face_type_name)
-                faces.append(face_block)
-
-                for cell2face, block in zip(cell2face_from_each_cell, current_blocks):
-                    storage.relations[(block.schema_name, face_type_name)] = Relation(
-                        src_name=block.schema_name,
-                        tgt_name=face_type_name,
-                        tgt_indices=cell2face,
-                    )
-
-            current_blocks = faces
+            current_blocks = cls._construct_from_blocks(storage, current_blocks, excluded)
 
 
 class TopologyInferer:
@@ -297,7 +368,7 @@ class TopologyInferer:
 class LocalIndicesInferer:
     """推断实体的跨多个维度的 local indices 关系。
 
-    原理：通过递归利用现有的 schema 中定义的 local_faces，推断一个实体
+    原理：通过递归利用现有的 schema 中定义的 SFace，推断一个实体
     对更低维实体的局部编号关系。采用"先到先得"原则：子实体第一次出现时
     即被分配 local index。
 
@@ -306,7 +377,7 @@ class LocalIndicesInferer:
     - LocalIndicesInferer 处理的是单个 schema 内部的局部关系
 
     数据结构选择：使用 Python dict/list 而非张量，理由：
-    1. local_faces 数据量极小（一个 pyramid 最多几十条边）
+    1. SFace 数据量极小（一个 pyramid 最多几十条边）
     2. Python dict 天然保持插入顺序，直接对应"先到先得"原则
     3. 代码逻辑清晰易维护
     4. 张量的初始化和操作开销对小数据集不值得
@@ -360,16 +431,16 @@ class LocalIndicesInferer:
                 f"for {schema.name!r} -> {tgt_name!r}"
             )
 
-        # 基本情况：tgt_name 在 local_faces 中直接存在
-        if tgt_name in schema.local_faces:
-            result = schema.local_faces[tgt_name]
+        # 基本情况：tgt_name 在 SFace 中直接存在
+        if tgt_name in schema.SFace:
+            result = schema.SFace[tgt_name]
             cls._cache[cache_key] = result
             return result
 
-        # 递推情况：从 local_faces 中的中间层推断
+        # 递推情况：从 SFace 中的中间层推断
         seen_entities = {}  # canonical form -> original representation
 
-        for mid_name, mid_local_indices in schema.local_faces.items():
+        for mid_name, mid_local_indices in schema.SFace.items():
             mid_schema = SCHEMA_REGISTRY[mid_name]
 
             # 递归获取中间层到目标的 local indices
@@ -394,7 +465,7 @@ class LocalIndicesInferer:
         if not seen_entities:
             raise ValueError(
                 f"cannot infer relation from {schema.name!r} to {tgt_name!r}: "
-                f"no intermediate dimensions found in local_faces"
+                f"no intermediate dimensions found in SFace"
             )
 
         # 转换为 list[list[int]] 格式，保持插入顺序

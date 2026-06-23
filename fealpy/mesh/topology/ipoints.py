@@ -74,6 +74,42 @@ def multi_index_sort(multi_index: Tensor, /) -> Tensor:
     return arg
 
 
+def multi_index_sort_by_locals(multi_index: Tensor, local_faces: dict[str, list[list[int]]], /) -> Tensor:
+    num_multi_index = multi_index.shape[0]
+    NV = multi_index.shape[-1]
+    TOTAL = bm.sum(multi_index, axis=-1)
+    topdim = bm.zeros((num_multi_index,), dtype=bm.int8)
+    face_type_index = bm.zeros((num_multi_index,), dtype=bm.int8)
+    face_instance_index = bm.zeros((num_multi_index,), dtype=bm.int8)
+    weights = bm.zeros_like(multi_index, dtype=bm.int64)
+
+    from ..schema.registry import SCHEMA_REGISTRY
+
+    for fti, (key, value) in enumerate(local_faces.items()):
+        schema_cls = SCHEMA_REGISTRY[key]
+        TD = schema_cls.top_dim
+
+        for fii, local_face in enumerate(value):
+            mask = bm.logical_and(
+                bm.sum(multi_index[:, local_face], axis=-1) == TOTAL,
+                bm.all(multi_index[:, local_face] != 0, axis=-1)
+            )
+            mask_idx = bm.nonzero(mask)[0]
+            topdim[mask_idx] = TD
+            face_type_index[mask_idx] = fti
+            face_instance_index[mask_idx] = fii
+            new_weights = bm.zeros((mask_idx.shape[0], NV), dtype=bm.int64)
+            new_weights[:, local_face] = NV**bm.arange(len(local_face))[None, :]
+            weights[mask_idx] = new_weights
+
+    mask = bm.all(multi_index != 0, axis=-1)
+    topdim[mask] = 127
+
+    rank = bm.sum(multi_index * weights, axis=-1)
+    arg = bm.lexsort((rank, face_instance_index, face_type_index, topdim))
+    return arg
+
+
 def multi_index_tensorprod(
     broadcast_multi_index: Tensor,
     split_indices: tuple[int, ...] | None = None
@@ -168,8 +204,8 @@ def to_ipoint(mesh: "Mesh", name: str, order: int) -> Tensor: # [num_entities, n
             break
 
     result = bm.concat(collected, axis=1)
-
     permutation = to_ipoint_permutation(tgt_entity.schema, (order,))
+
     if permutation is not None:
         permutation = bm.device_put(permutation, result.device)
         result = result[:, permutation]
@@ -185,8 +221,8 @@ def to_ipoint_permutation(schema: type["EntitySchema"], order: tuple[int, ...]) 
     column permutation that aligns the mapping with ``multi_index`` and
     shape-function order.
     """
-    mi = schema.multi_index(order, tensorprod=False)
-    natural_to_topological = multi_index_sort(mi)
+    mi = schema.multi_index(order, tensorprod=True)
+    natural_to_topological = multi_index_sort_by_locals(mi, schema.OFace)
     return bm.argsort(natural_to_topological)
 
 

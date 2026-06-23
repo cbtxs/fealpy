@@ -28,7 +28,8 @@ class EntityContext:
 class EntitySchema:
     name: ClassVar[str]
     top_dim: ClassVar[int]
-    local_faces: ClassVar[dict[str, list[list[int]]]] = {}
+    OFace: ClassVar[dict[str, list[list[int]]]] = {}
+    SFace: ClassVar[dict[str, list[list[int]]]] = {}
     orientation: ClassVar[list[tuple[int, ...]]] = []
 
     ### [Entity Topology] ###
@@ -39,8 +40,16 @@ class EntitySchema:
         raise NotImplementedError()
 
     @classmethod
-    def local_entity(cls, tgt_name: str, /) -> list[list[int]]:
-        """Local entity indices of the target entity."""
+    def local_entity(cls, tgt_name: str, /, indexing: Literal["o", "s"] = "o") -> list[list[int]]:
+        """Local entity indices of the target entity.
+
+        Parameters:
+            tgt_name (str): The name of the target entity.
+            indexing (Literal["o", "s"], optional): The indexing method. Defaults to "o".
+
+        Returns:
+            list[list[int]]: The local entity indices.
+        """
         raise NotImplementedError()
 
     @classmethod
@@ -226,21 +235,43 @@ class ShapedEntitySchema(EntitySchema):
         return ctx.block._cache_boundary_info[ctx.sector.schema_name]
 
     @classmethod
-    def local_entity(cls, tgt_name: str, /) -> list[list[int]]:
-        """Local entity indices of the target entity."""
-        from ..topology.builder import LocalIndicesInferer
-        local_indices = LocalIndicesInferer.infer(cls, tgt_name)
-        return local_indices
+    def local_entity(cls, tgt_name: str, /, indexing: Literal["o", "s"] = "o") -> list[list[int]]:
+        if indexing == "o":
+            if tgt_name in cls.OFace:
+                return cls.OFace[tgt_name]
+        elif indexing == "s":
+            if tgt_name in cls.SFace:
+                return cls.SFace[tgt_name]
+        else:
+            raise ValueError(f"indexing must be 'o' or 's', got {indexing!r}")
+        raise ValueError(f"local entity {tgt_name!r} is not defined for {cls.name!r}")
 
     @classmethod
     def relation(cls, ctx: EntityContext, tgt_name: EntityShape) -> Relation:
-        """Compute the relation between two entities."""
         src_name = ctx.sector.schema_name
         relation = ctx.block.relations.get((src_name, tgt_name))
 
         if relation is None:
             from ..topology.builder import TopologyInferer
-            TopologyInferer.infer(ctx.block, src_name, tgt_name)
+            try:
+                TopologyInferer.infer(ctx.block, src_name, tgt_name)
+                relation = ctx.block.relations.get((src_name, tgt_name))
+            except ValueError:
+                pass
+
+        if relation is None:
+            from ..topology.builder import TopologyBuilder
+            from .registry import SCHEMA_REGISTRY
+            tgt_schema = SCHEMA_REGISTRY[tgt_name]
+
+            if cls.top_dim > tgt_schema.top_dim:
+                TopologyBuilder.construct(ctx.block, src_name)
+            elif cls.top_dim < tgt_schema.top_dim:
+                TopologyBuilder.construct(ctx.block, tgt_name)
+            else:
+                raise ValueError(f"Cannot construct relation from {src_name!r} "
+                                 f"to {tgt_name!r} with the same topological dimension")
+
             relation = ctx.block.relations.get((src_name, tgt_name))
 
         if relation is None:
@@ -255,10 +286,9 @@ class ShapedEntitySchema(EntitySchema):
 
     @classmethod
     def global_permutations(cls, ctx: EntityContext, tgt_name: EntityShape) -> Tensor:
-        """Permutation indices from local to global."""
         from .utils import argpermute
         cell_indices = ctx.sector.indices
-        local_face = cls.local_entity(tgt_name)
+        local_face = cls.local_entity(tgt_name, indexing="s")
         face_indices = ctx.block.get_sector(tgt_name).indices
         cell_to_face = cls.relation(ctx, tgt_name).tgt_indices
         return argpermute(

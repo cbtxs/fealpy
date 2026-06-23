@@ -1,5 +1,3 @@
-from typing import TYPE_CHECKING
-
 from ...backend import bm
 from ...backend import Index, Tensor
 from .entity_schema import (
@@ -9,13 +7,12 @@ from .entity_schema import (
     _require_order_tuple,
 )
 
-if TYPE_CHECKING:
-    from ...quadrature import Quadrature
+from ...quadrature import Quadrature
 
 __all__ = ["NodeSchema", "PointQuadrature"]
 
 
-class PointQuadrature:
+class PointQuadrature(Quadrature):
     def __init__(self, *, dtype=None):
         dtype = bm.float64 if dtype is None else dtype
         self.quadpts = (bm.asarray([[1.0]], dtype=dtype),)
@@ -40,8 +37,8 @@ class PointQuadrature:
 class NodeSchema(ShapedEntitySchema):
     name = "node"
     top_dim = 0
-    local_faces = {}
-    ccw = {}
+    OFace = {}
+    SFace = {}
     orientation = [(0,)]
 
     @classmethod
@@ -146,9 +143,9 @@ class NodeSchema(ShapedEntitySchema):
 
     @classmethod
     def multi_index(cls, order: tuple[int, ...], *, internal: bool = False, tensorprod: bool = True) -> Tensor:
-        order = _require_order_tuple(order, "node multi_index", 1)[0]
+        p = _require_order_tuple(order, "node multi_index", 1)[0]
 
-        mi = bm.asarray([[order]], dtype=bm.int32)
+        mi = bm.asarray([[p]], dtype=bm.int32)
         if tensorprod:
             from ..topology.ipoints import multi_index_tensorprod
             return multi_index_tensorprod(mi)

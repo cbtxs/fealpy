@@ -21,10 +21,10 @@ class EdgeSchema(ShapedEntitySchema):
 
     name = "edge"
     top_dim = 1
-    local_faces = {
+    OFace = {
         "node": [[0], [1]]
     }
-    ccw = {
+    SFace = {
         "node": [[0], [1]]
     }
     orientation = [(0, 1), (1, 0)]

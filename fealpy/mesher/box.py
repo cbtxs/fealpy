@@ -130,7 +130,7 @@ class Box2d:
         node, cell = self.initialize()
         local_cell = bm.asarray([
             [0, 1, 3],
-            [1, 2, 3],
+            [0, 3, 2],
         ], dtype=bm.int32)
         cell = bm.reshape(cell[:, local_cell], (-1, 3)) # type: ignore
 
@@ -195,12 +195,12 @@ class Box3d:
         nyz = (ny + 1) * (nz + 1)
         cell0 = idx[:-1, :-1, :-1] # type: ignore
         cell1 = cell0 + nyz
-        cell2 = cell1 + nz + 1
-        cell3 = cell0 + nz + 1
+        cell2 = cell0 + nz + 1
+        cell3 = cell1 + nz + 1
         cell4 = cell0 + 1
         cell5 = cell4 + nyz
-        cell6 = cell5 + nz + 1
-        cell7 = cell4 + nz + 1
+        cell6 = cell4 + nz + 1
+        cell7 = cell5 + nz + 1
         cell = bm.concat(
             (
                 bm.reshape(cell0, (-1, 1)),
@@ -237,9 +237,9 @@ class Box3d:
             [0, 1, 2, 6],
             [0, 5, 1, 6],
             [0, 4, 5, 6],
-            [0, 7, 4, 6],
-            [0, 3, 7, 6],
-            [0, 2, 3, 6]
+            [2, 1, 3, 6],
+            [1, 5, 7, 6],
+            [1, 7, 3, 6]
         ], dtype=bm.int32)
         cell = bm.reshape(cell[:, local_cell], (-1, 4)) # type: ignore
 
@@ -255,7 +255,7 @@ class Box3d:
         node, cell = self.initialize()
         local_cell = bm.asarray([
             [0, 1, 2, 4, 5, 6],
-            [0, 2, 3, 4, 6, 7]
+            [2, 1, 3, 6, 5, 7]
         ], dtype=bm.int32)
         cell = bm.reshape(cell[:, local_cell], (-1, 6)) # type: ignore
 

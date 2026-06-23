@@ -19,11 +19,13 @@ __all__ = ["TriangleSchema"]
 class TriangleSchema(ShapedEntitySchema):
     name = "tri"
     top_dim = 2
-    local_faces = {
-        'edge': [[0, 1], [0, 2], [1, 2]]
+    OFace = {
+        "edge": [[1, 2], [2, 0], [0, 1]],
+        "node": [[0], [1], [2]],
     }
-    ccw = {
-        "edge": [[1, 2], [2, 0], [0, 1]]
+    SFace = {
+        "edge": [[1, 2], [0, 2], [0, 1]],
+        "node": [[0], [1], [2]],
     }
     orientation = [
         (0, 1, 2), (1, 2, 0), (2, 0, 1),

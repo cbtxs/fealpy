@@ -19,19 +19,31 @@ __all__ = ["HexahedronSchema"]
 class HexahedronSchema(ShapedEntitySchema):
     name = "hex"
     top_dim = 3
-    local_faces = {
-        "quad": [
-            [0, 1, 2, 3], [4, 5, 6, 7],
-            [0, 1, 4, 5], [2, 3, 6, 7],
-            [0, 2, 4, 6], [1, 3, 5, 7],
-        ]
-    }
-    ccw = {
+    OFace = {
         "quad": [
             [0, 2, 3, 1], [4, 5, 7, 6],
-            [0, 1, 5, 4], [2, 6, 7, 3],
             [0, 4, 6, 2], [1, 3, 7, 5],
-        ]
+            [0, 1, 5, 4], [3, 2, 6, 7],
+        ],
+        "edge": [
+            [0, 1], [1, 2], [2, 3], [0, 3],
+            [0, 4], [1, 5], [2, 6], [3, 7],
+            [4, 5], [5, 6], [6, 7], [4, 7],
+        ],
+        "node": [[0], [1], [2], [3], [4], [5], [6], [7]],
+    }
+    SFace = {
+        "quad": [
+            [0, 1, 2, 3], [4, 5, 6, 7],
+            [0, 2, 4, 6], [1, 3, 5, 7],
+            [0, 1, 4, 5], [2, 3, 6, 7],
+        ],
+        "edge": [
+            [0, 1], [1, 2], [2, 3], [0, 3],
+            [0, 4], [1, 5], [2, 6], [3, 7],
+            [4, 5], [5, 6], [6, 7], [4, 7],
+        ],
+        "node": [[0], [1], [2], [3], [4], [5], [6], [7]],
     }
 
     @classmethod
@@ -170,7 +182,8 @@ class HexahedronSchema(ShapedEntitySchema):
         mi = bm.concat([multi_index0, multi_index1, multi_index2], axis=-1)
         if tensorprod:
             from ..topology.ipoints import multi_index_tensorprod
-            return multi_index_tensorprod(mi, (2, 4))
+            mi = multi_index_tensorprod(mi, (2, 4))
+            return mi[:, [0, 1, 3, 2, 4, 5, 7, 6]]
         return mi
 
     @classmethod

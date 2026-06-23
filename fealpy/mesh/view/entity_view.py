@@ -105,7 +105,7 @@ class EntityView:
         *,
         ref: bool = False,
     ) -> Tensor:
-        return self.schema.grad_lambda(self.context(), index, bcs=bcs, ref=ref)
+        return self.schema.grad_lambda(self.context(), index, bcs=bcs, ref=ref) # type: ignore
 
     def grad_shape_function(
         self,
