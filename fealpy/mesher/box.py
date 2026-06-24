@@ -237,9 +237,9 @@ class Box3d:
             [0, 1, 2, 6],
             [0, 5, 1, 6],
             [0, 4, 5, 6],
-            [2, 1, 3, 6],
+            [2, 1, 3, 7],
             [1, 5, 7, 6],
-            [1, 7, 3, 6]
+            [2, 7, 6, 1]
         ], dtype=bm.int32)
         cell = bm.reshape(cell[:, local_cell], (-1, 4)) # type: ignore
 
@@ -261,23 +261,6 @@ class Box3d:
 
         block = MeshBlock(positions=node)
         block.add_sector(EntitySector("prism", cell), root=True)
-        TopologyBuilder.construct(block)
-        mesh = Mesh(block)
-
-        return mesh
-
-    def pyramidalize(self) -> Mesh:
-        """Create a pyramidal mesh of the box."""
-        node, cell = self.initialize()
-        local_cell = bm.asarray([
-            [0, 1, 2, 3, 7],
-            [0, 1, 4, 5, 7],
-            [0, 2, 4, 6, 7]
-        ], dtype=bm.int32)
-        cell = bm.reshape(cell[:, local_cell], (-1, 5)) # type: ignore
-
-        block = MeshBlock(positions=node)
-        block.add_sector(EntitySector("pyramid", cell), root=True)
         TopologyBuilder.construct(block)
         mesh = Mesh(block)
 

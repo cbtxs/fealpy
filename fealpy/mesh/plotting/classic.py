@@ -1,9 +1,6 @@
 
-from collections.abc import Callable, Iterable, Sequence
-from typing import (
-    Any, Optional, Type,
-    overload
-)
+from collections.abc import Iterable, Sequence
+from typing import Any, Optional, overload
 from types import ModuleType
 
 import numpy as np
@@ -16,11 +13,17 @@ from . import artist as A
 
 __all__ = [
     'MeshPloter',
-    'EntityFinder',
-    'AddPlot1d',
-    'AddPlot2dHomo',
-    'AddPlot3dHomo',
+    'EntityFinder'
 ]
+
+_ENTITY_NAMES = {'node', 'edge', 'tri', 'quad', 'tet', 'hex', 'prism', 'pyramid'}
+_ENTITY_ALIASES = {
+    'cell': 'cell', 'CELL': 'cell', 'Cell': 'cell',
+    'face': 'face', 'FACE': 'face', 'Face': 'face',
+    'edge': 'edge', 'EDGE': 'edge', 'Edge': 'edge',
+    'node': 'node', 'NODE': 'node', 'Node': 'node',
+    'vertex': 'node', 'VERTEX': 'node', 'Vertex': 'node',
+}
 
 
 def array_color_map(arr: NDArray, cmap,
@@ -32,17 +35,6 @@ def array_color_map(arr: NDArray, cmap,
     norm = colors.Normalize(vmin=cmin, vmax=cmax)
     return cm.ScalarMappable(norm=norm, cmap=cmap)
 
-_ploter_map_: dict[str, Type] = {}
-
-def get_ploter(key: str) -> Type['MeshPloter']:
-    if key in _ploter_map_:
-        return _ploter_map_[key]
-    else:
-        raise KeyError(f"Can not find a ploter class that key '{key}' mapping to. "
-                       "To use Plotable, register the target ploter first and then "
-                       "specify the ploter for mesh by setting a same key. "
-                       "See MeshPloter.register() and Plotable.set_ploter().")
-
 
 class MeshPloter:
     mesh: Mesh
@@ -50,112 +42,69 @@ class MeshPloter:
     def __init__(self, mesh: Mesh) -> None:
         self.mesh = mesh
 
-        # This is the default parameter for ALL Ploters
         self._args = dict(
-            color = 'r',                  # color of markers
-            nodecolor = 'k',              # color of nodes
-            edgecolor = 'k',              # color of edges
-            facecolor = 'k',              # color of faces
-            cellcolor = 'k',              # color of cells
-            alpha = 1.0,                  # alpha channel of cells in 3-d mesh
-            marker = 'o',                 # style of markers
-            markersize = 20,              # size of markers
-            linewidths = 0.75,            # width of lines(edges)
-            aspect = 'equal',             # aspect
-            box = None,                   # box of axes
-
-            showaxis = False,             # show the axis if True
-            colorbar = False,             # show color bar if True
-            colorbarshrink = 1.0,         # colorbarshrink
-            cmap = 'jet',                 # color map
-            cmax = None,
-            cmin = None,
-            shownode = True,              # show nodes in 1-d, 3-d mesh if True
-            showedge = False,             # show edges in 3-d mesh if True
-
-            etype = 'cell',               # specify the entity for Finders
-            showindex = False,            # show the index of entity for Finders
-            multiindex = None,
-            index = slice(None),          # specify the index of entity to plot
-            threshold = None,
-
-            fontcolor = 'k',              # color of text
-            fontsize = 24                 # size of text
+            nodecolor = 'r',
+            edgecolor = 'k',
+            cellcolor = 'g',
+            alpha = 1.0,
+            marker = 'o',
+            markersize = 20,
+            linewidths = 0.75,
+            aspect = 'equal',
+            box = None,
+            showaxis = False,
+            entity = None,
+            entities = None,
+            index = slice(None),
         )
 
-    def _call_impl(self, axes: Axes | ModuleType, *args, **kwargs):
+    @overload
+    def __call__(self, axes: Axes | ModuleType, *,
+                nodecolor: str = ...,
+                edgecolor: str = ...,
+                cellcolor: str = ...,
+                alpha: float = ...,
+                marker: str = ...,
+                markersize: float = ...,
+                linewidths: float = ...,
+                aspect = 'equal',
+                box: Sequence[float] = ...,
+                showaxis = False,
+                entity: Any = ...,
+                entities: Any = ...,
+                index: slice = ...) -> list[Collection]: ...
+    @overload
+    def __call__(self, axes: Axes | ModuleType, *args, **kwargs) -> list[Collection]: ...
+    def __call__(self, axes: Axes | ModuleType, *args, **kwargs):
         if isinstance(axes, ModuleType):
             fig = axes.figure()
-            axes = fig.add_subplot(1, 1, 1)
+            ax = fig.add_subplot(1, 1, 1)
+        else:
+            ax = axes
 
         self._args.update(**kwargs)
-
-        return self.draw(axes, *args, **self._args)
-
-    @overload # type hints
-    def __call__(self, axes: Axes | ModuleType, *,
-                color: str = ...,                  # color of markers
-                nodecolor: str = ...,              # color of nodes
-                edgecolor: str = ...,              # color of edges
-                facecolor: str = ...,              # color of faces
-                cellcolor: str = ...,              # color of cells
-                alpha: float = ...,                # alpha channel of cells in 3-d mesh
-                marker: str = ...,                 # style of markers
-                markersize: float = ...,           # size of markers
-                linewidths: float = ...,           # width of lines(edges)
-                aspect = 'equal',             # aspect
-                box: Sequence[float] = ...,
-
-                showaxis = False,             # show the axis if True
-                colorbar = False,             # show color bar if True
-                colorbarshrink = 1.0,         # colorbarshrink
-                cmap = 'jet',                 # color map
-
-                shownode = True,              # show nodes in 1-d, 3-d mesh if True
-                showedge = False,             # show edges in 3-d mesh if True
-
-                etype: Any = ...,             # specify the entity for Finders
-                showindex = False,            # show the index of entity for Finders
-                multiindex: Iterable[Any] = ...,
-                index: slice = ...,           # specify the index of entity to plot
-                threshold: Callable = ...,
-
-                fontcolor = 'k',              # color of text
-                fontsize = 24) -> Collection: ...
-    __call__ = _call_impl
-
-    draw: Callable[..., Any]
-
-    @classmethod
-    def register(cls, key: str, /) -> None:
-        """Register this ploter with a unique string key."""
-        if key in _ploter_map_:
-            ploter = _ploter_map_[key]
-            raise KeyError(f"Key '{key}' has been used by ploter {ploter.__name__}.")
-        elif not issubclass(cls, MeshPloter):
-            raise TypeError(f"Expect subclass of MeshPloter but got itself.")
-        elif not isinstance(key, str):
-            raise TypeError("Only accepts a single string as the key, "
-                            f"but got {key.__class__.__name__}.")
-        _ploter_map_[key] = cls
+        return self.draw(ax, *args, **self._args)
 
     @staticmethod
-    def set_show_axis(axes: Axes, switch: bool=True):
+    def set_show_axis(axes: Axes, switch: bool = True) -> None:
         if switch:
             axes.set_axis_on()
         else:
             axes.set_axis_off()
 
-    def set_lim(self, axes: Axes, box: Optional[NDArray]=None, tol=0.1):
+    def _node_array(self) -> NDArray:
+        node = np.asarray(self.mesh.block.positions)
+        if node.ndim == 1:
+            node = node.reshape(-1, 1)
+        return node
+
+    def set_lim(self, axes: Axes, box: Optional[NDArray]=None, tol=0.1) -> None:
         from mpl_toolkits.mplot3d import Axes3D
 
         GD = self.mesh.geo_dimension()
 
         if box is None:
-            node: NDArray = np.asarray(self.mesh.storage.positions)
-            if node.ndim == 1:
-                node = node.reshape(-1, 1)
-
+            node = self._node_array()
             box = np.array([-0.5, 0.5]*3, dtype=np.float64)
             box[0:2*GD:2] = np.min(node, axis=0) - tol
             box[1:1+2*GD:2] = np.max(node, axis=0) + tol
@@ -166,25 +115,174 @@ class MeshPloter:
         if isinstance(axes, Axes3D):
             axes.set_zlim(box[4:6])
 
+    @staticmethod
+    def _as_entity_specs(entity, entities) -> list[str | int] | None:
+        value = entities if entities is not None else entity
+        if value is None:
+            return None
+        if isinstance(value, (str, int)):
+            return [value]
+        return list(value)
+
+    def _entity_dim(self, spec: str | int) -> int:
+        if isinstance(spec, int):
+            return spec if spec >= 0 else self.mesh.top_dimension() + 1 + spec
+        alias = _ENTITY_ALIASES.get(spec)
+        if alias == 'cell':
+            return self.mesh.top_dimension()
+        if alias == 'face':
+            return self.mesh.top_dimension() - 1
+        if alias == 'edge':
+            return 1
+        if alias == 'node':
+            return 0
+        return self.mesh.block.get_sector(spec).schema.top_dim
+
+    def _selected_specs(self, kwargs) -> list[str | int]:
+        specs = self._as_entity_specs(kwargs.get('entity'), kwargs.get('entities'))
+        if specs is None:
+            return [self.mesh.top_dimension()]
+        return specs
+
+    def _sectors_by_dim(self, dim: int):
+        for name, sector in self.mesh.block.sectors.items():
+            if sector.schema.top_dim == dim:
+                yield name, sector
+
+    def _sectors_by_spec(self, spec: str | int):
+        if isinstance(spec, int):
+            yield from self._sectors_by_dim(self._entity_dim(spec))
+            return
+
+        alias = _ENTITY_ALIASES.get(spec)
+        if alias in {'cell', 'face', 'edge', 'node'}:
+            yield from self._sectors_by_dim(self._entity_dim(alias))
+            return
+
+        yield spec, self.mesh.block.get_sector(spec)
+
+    def _draw_nodes(self, axes: Axes, node: NDArray, kwargs) -> list[Collection]:
+        return [A.scatter(axes=axes, points=node, color=kwargs['nodecolor'],
+                          marker=kwargs['marker'], markersize=kwargs['markersize'])]
+
+    def _draw_edges(self, axes: Axes, node: NDArray, indices: NDArray, kwargs) -> list[Collection]:
+        if indices.size == 0:
+            return []
+        return [A.line(axes=axes, points=node, struct=indices,
+                       color=kwargs['edgecolor'], linewidths=kwargs['linewidths'])]
+
+    def _draw_polygons(self, axes: Axes, node: NDArray, indices: NDArray, kwargs) -> list[Collection]:
+        if indices.size == 0:
+            return []
+        return [A.poly(axes=axes, points=node, struct=indices,
+                       edgecolor=kwargs['edgecolor'], cellcolor=kwargs['cellcolor'],
+                       linewidths=kwargs['linewidths'], alpha=kwargs['alpha'])]
+
+    def _draw_surface(self, axes: Axes, node: NDArray, sector, kwargs) -> list[Collection]:
+        collections: list[Collection] = []
+        view = self.mesh.sector(sector.schema_name)
+        surface_dim = sector.schema.top_dim - 1
+
+        for _, face_sector in self._sectors_by_dim(surface_dim):
+            face_view = self.mesh.sector(face_sector.schema_name)
+            relation = view.to(face_view)
+            face_index = np.unique(np.asarray(relation.tgt_indices).reshape(-1))
+            face_index = face_index[np.asarray(face_view.boundary().mask)[face_index]]
+            indices = np.asarray(face_sector.indices)[face_index]
+            if indices.ndim == 1:
+                indices = indices.reshape(1, -1)
+            collections.extend(self._draw_polygons(axes, node, indices, kwargs))
+        return collections
+
+    def _draw_sector(self, axes: Axes, node: NDArray, sector, kwargs) -> list[Collection]:
+        indices = np.asarray(sector.indices)
+        if indices.ndim == 1:
+            indices = indices.reshape(1, -1)
+
+        if sector.schema.top_dim == 0:
+            return self._draw_nodes(axes, node, kwargs)
+        if sector.schema.top_dim == 1:
+            return self._draw_edges(axes, node, indices, kwargs)
+        if sector.schema.top_dim == 2:
+            ccw = sector.schema.ccw
+            if self.mesh.top_dimension() == 2 and ccw is not None:
+                indices = indices[:, ccw]
+            return self._draw_polygons(axes, node, indices, kwargs)
+        if sector.schema.top_dim == 3:
+            return self._draw_surface(axes, node, sector, kwargs)
+        return []
+
+    def draw(self, axes: Axes, *args, **kwargs):
+        """Draw mesh entities selected by topological dimension or entity name.
+
+        With no selection, draw only the highest topological dimension. If that
+        dimension is 3, draw only the boundary surface. Users may pass an entity
+        name such as ``'tri'``/``'tet'``, an alias such as ``'cell'``/``'face'``,
+        a dimension such as ``2``, or a list through ``entities``.
+        """
+        self.set_lim(axes, kwargs['box'])
+        axes.set_aspect(kwargs['aspect'])
+        self.set_show_axis(axes, kwargs['showaxis'])
+
+        node = self._node_array()
+        collections: list[Collection] = []
+
+        specs = self._selected_specs(kwargs)
+        # surface_drawn = False
+        drawn: set[str] = set()
+        for spec in specs:
+            for name, sector in self._sectors_by_spec(spec):
+                if name in drawn:
+                    continue
+                # if sector.schema.top_dim == 3:
+                #     collections.extend(self._draw_surface(axes, node, sector, kwargs))
+                #     surface_drawn = True
+                #     drawn.add(name)
+                #     continue
+                collections.extend(self._draw_sector(axes, node, sector, kwargs))
+                drawn.add(name)
+
+        return collections
+
 
 class EntityFinder(MeshPloter):
-    def draw(self, axes: Axes, *args, **kwargs):
-        """Show the barycenter of each entity."""
-        from ..plotting import artist as A
+    def __init__(self, mesh: Mesh) -> None:
+        super().__init__(mesh)
+        self._args.update(
+            color = 'r',
+            etype = 'cell',
+            showindex = False,
+            multiindex = None,
+            fontcolor = 'k',
+            fontsize = 24,
+        )
 
+    def draw(self, axes: Axes, *args, **kwargs):
+        """Show the barycenter of selected entities."""
         etype_or_node = kwargs['etype']
         color = kwargs['color']
 
-        if isinstance(etype_or_node, (str)):
-            bc = np.asarray(
-                self.mesh.entity(etype_or_node).barycenter(index=kwargs['index'])
-            )
+        if isinstance(etype_or_node, str):
+            if etype_or_node in _ENTITY_NAMES:
+                bc = np.asarray(self.mesh.sector(etype_or_node).barycenter(index=kwargs['index']))
+            else:
+                bcs = [np.asarray(view.barycenter(index=kwargs['index']))
+                       for view in self.mesh.entity_views(etype_or_node)]
+                if not bcs:
+                    raise ValueError(f"No entity found for {etype_or_node!r}.")
+                bc = np.concatenate(bcs, axis=0) if len(bcs) > 1 else bcs[0]
+        elif isinstance(etype_or_node, int):
+            bcs = [np.asarray(view.barycenter(index=kwargs['index']))
+                   for view in self.mesh.entity_views(etype_or_node)]
+            if not bcs:
+                raise ValueError(f"No entity found for dimension {etype_or_node!r}.")
+            bc = np.concatenate(bcs, axis=0) if len(bcs) > 1 else bcs[0]
         elif isinstance(etype_or_node, np.ndarray):
             bc = etype_or_node
         else:
             raise TypeError(f"Invalid entity type or node info.")
 
-        bc: NDArray = np.asarray(bc)
+        bc = np.asarray(bc)
 
         if bc.ndim == 1:
             bc = bc[:, None]
@@ -199,113 +297,9 @@ class EntityFinder(MeshPloter):
         if kwargs['showindex']:
             if kwargs['multiindex'] is None:
                 A.show_index(axes=axes, location=bc, number=kwargs['index'],
-                            fontcolor=kwargs['fontcolor'], fontsize=kwargs['fontsize'])
+                             fontcolor=kwargs['fontcolor'], fontsize=kwargs['fontsize'])
             else:
                 A.show_multi_index(axes=axes, location=bc, text_list=kwargs['multiindex'],
                                    fontcolor=kwargs['fontcolor'], fontsize=kwargs['fontsize'])
 
         return coll
-
-EntityFinder.register('finder')
-
-
-##################################################
-### MeshPloter subclasses
-##################################################
-
-
-class AddPlot1d(MeshPloter):
-    def draw(self, axes: Axes, *args, **kwargs):
-        self.set_lim(axes, kwargs['box'])
-        axes.set_aspect(kwargs['aspect'])
-        self.set_show_axis(axes, kwargs['showaxis'])
-
-        node = np.asarray(self.mesh.storage.positions)
-
-        if node.ndim == 1:
-            node = node[:, None]
-
-        if kwargs['shownode']:
-            A.scatter(axes=axes, points=node, color=kwargs['nodecolor'],
-                      markersize=kwargs['markersize'])
-
-        for cell in self.mesh.entities(-1):
-            cell = np.asarray(cell.indices)
-            A.line(axes=axes, points=node, struct=cell, color=kwargs['cellcolor'],
-                   linewidths=kwargs['linewidths'])
-
-AddPlot1d.register('1d')
-
-
-class AddPlot2dHomo(MeshPloter):
-    def __init__(self, mesh) -> None:
-        super().__init__(mesh)
-        self._args.update(cellcolor='#E3F1FF')
-
-    def draw(self, axes: Axes, *args, **kwargs):
-        self.set_lim(axes, kwargs['box'])
-        axes.set_aspect(kwargs['aspect'])
-        self.set_show_axis(axes, kwargs['showaxis'])
-
-        cellcolor = kwargs['cellcolor']
-        if isinstance(cellcolor, np.ndarray) and np.isreal(cellcolor[0]):
-            mapper = array_color_map(cellcolor, cmap=kwargs['cmap'],
-                                     cmax=kwargs['cmax'], cmin=kwargs['cmin'])
-            cellcolor = mapper.to_rgba(cellcolor)
-            if kwargs['colorbar']:
-                f = axes.get_figure()
-                f.colorbar(mapper, shrink=kwargs['colorbarshrink'], ax=axes)
-
-        node = np.asarray(self.mesh.storage.positions)
-
-        for cell in self.mesh.entities(-1):
-            indices = np.asarray(cell.indices)
-
-            if hasattr(cell.schema, 'ccw'):
-                ccw = np.asarray(cell.schema.ccw)
-                indices = indices[:, ccw]
-            else:
-                print("The mesh has no attribute `ccw`, the local vertices "
-                      "order of the 2-d entity (cell) is not determined.")
-
-            A.poly(axes=axes, points=node, struct=indices,
-                   edgecolor=kwargs['edgecolor'], cellcolor=cellcolor,
-                   linewidths=kwargs['linewidths'], alpha=kwargs['alpha'])
-
-AddPlot2dHomo.register('2d')
-
-
-class AddPlot3dHomo(MeshPloter):
-    def __init__(self, mesh) -> None:
-        super().__init__(mesh)
-        self._args.update(cellcolor='w', alpha=0.5)
-
-    def draw(self, axes: Axes, *args, **kwargs):
-        self.set_lim(axes, kwargs['box'])
-        axes.set_aspect(kwargs['aspect'])
-        self.set_show_axis(axes, kwargs['showaxis'])
-
-        nodecolor = kwargs['nodecolor']
-        if isinstance(nodecolor, np.ndarray) and np.isreal(nodecolor[0]):
-            mapper = array_color_map(nodecolor, cmap='rainbow')
-            nodecolor = mapper.to_rgba(nodecolor)
-
-        node = np.asarray(self.mesh.storage.positions)
-
-        for face in self.mesh.entities(-2):
-            indices = np.asarray(face.indices)
-            isBdFace = np.asarray(face.boundary().mask)
-            indices = indices[isBdFace]
-
-            if hasattr(face.schema, 'ccw'):
-                ccw = np.asarray(face.schema.ccw)
-                indices = indices[:, ccw]
-            else:
-                print("The mesh has no attribute `ccw`, the local vertices "
-                      "order of the 2-d entity (face) is not determined.")
-
-            A.poly(axes=axes, points=node, struct=indices, edgecolor=kwargs['edgecolor'],
-                   cellcolor=kwargs['cellcolor'], linewidths=kwargs['linewidths'],
-                   alpha=kwargs['alpha'])
-
-AddPlot3dHomo.register('3d')

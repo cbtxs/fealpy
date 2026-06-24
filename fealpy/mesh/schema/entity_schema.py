@@ -1,4 +1,6 @@
 
+from __future__ import annotations
+
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, ClassVar, Literal, overload, ParamSpec, TYPE_CHECKING
@@ -30,6 +32,7 @@ class EntitySchema:
     OFace: ClassVar[dict[str, list[list[int]]]] = {}
     SFace: ClassVar[dict[str, list[list[int]]]] = {}
     orientation: ClassVar[list[tuple[int, ...]]] = []
+    ccw: ClassVar[list[int]] | None = None
 
     ### [Entity Topology] ###
 

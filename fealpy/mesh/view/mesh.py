@@ -130,3 +130,11 @@ class Mesh:
             times: Number of times to refine the mesh. Default is 1.
         """
         raise NotImplementedError("Uniform refinement is not implemented yet.")
+
+    # Plot
+
+    @property
+    def add_plot(self):
+        """Provides a plotting interface for the mesh."""
+        from ..plotting.classic import MeshPloter
+        return MeshPloter(self)
