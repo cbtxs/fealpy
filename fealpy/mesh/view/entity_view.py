@@ -216,6 +216,3 @@ class EntityView:
 
     def top_dimension(self) -> int:
         return self.schema.top_dim
-
-    def transform(self, func: Callable[P, Tensor], kind: str = "value") -> Callable[P, Tensor]:
-        return self.schema.transform(self.context(), func, kind)

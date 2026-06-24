@@ -137,6 +137,7 @@ class BoundaryInferencer:
 	def infer_all(cls, storage: MeshBlock) -> dict[str, BoundaryInfo]:
 		"""Infer boundary info for all entity blocks."""
 		top_dim = cls._top_dimension(storage)
+		codim1 = top_dim - 1
 		if top_dim < 0:
 			return {}
 
@@ -156,7 +157,6 @@ class BoundaryInferencer:
 
 		for dim in range(top_dim - 2, -1, -1):
 			dim_names = cls._entity_names_by_dim(storage, dim)
-			parent_dim = dim + 1
 
 			for name in dim_names:
 				num_entity = len(storage.get_sector(name).indices)
@@ -165,7 +165,7 @@ class BoundaryInferencer:
 				for (src_name, tgt_name), relation in storage.relations.items():
 					if tgt_name != name:
 						continue
-					if storage.get_sector(src_name).schema.top_dim != parent_dim:
+					if storage.get_sector(src_name).schema.top_dim != codim1:
 						continue
 					if src_name not in boundary_masks:
 						continue

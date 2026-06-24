@@ -24,30 +24,33 @@ __all__ = [
 
 
 class MeshFactory(type):
-    schema: str = ""
+    schema: str
     def __instancecheck__(cls, instance) -> bool:
         if not isinstance(instance, Mesh):
             return False
         return instance.is_elemental(cls.schema)
 
 
-class IntervalMesh(metaclass=MeshFactory):
-    schema = "edge"
-
-
-class EdgeMesh(metaclass=MeshFactory):
-    schema = "edge"
-
-
-class TriangleMesh(metaclass=MeshFactory):
-    schema = "tri"
-    def __new__(self, node: Tensor, cell: Tensor) -> FEALPyMesh:
+class _MeshFactoryNewMixin(metaclass=MeshFactory):
+    def __new__(cls, node: Tensor, cell: Tensor) -> FEALPyMesh:
         block = MeshBlock(positions=node)
-        block.add_sector(EntitySector("tri", cell), root=True)
+        block.add_sector(EntitySector(cls.schema, cell), root=True)
         TopologyBuilder.construct(block)
         mesh = Mesh(block)
 
         return mesh.fealpy_api()
+
+
+class IntervalMesh(_MeshFactoryNewMixin):
+    schema = "edge"
+
+
+class EdgeMesh(_MeshFactoryNewMixin):
+    schema = "edge"
+
+
+class TriangleMesh(_MeshFactoryNewMixin):
+    schema = "tri"
 
     @classmethod
     def from_box(
@@ -65,15 +68,8 @@ class TriangleMesh(metaclass=MeshFactory):
         return box.triangulate().fealpy_api()
 
 
-class QuadrangleMesh(metaclass=MeshFactory):
+class QuadrangleMesh(_MeshFactoryNewMixin):
     schema = "quad"
-    def __new__(self, node: Tensor, cell: Tensor) -> FEALPyMesh:
-        block = MeshBlock(positions=node)
-        block.add_sector(EntitySector("quad", cell), root=True)
-        TopologyBuilder.construct(block)
-        mesh = Mesh(block)
-
-        return mesh.fealpy_api()
 
     @classmethod
     def from_box(
@@ -91,7 +87,7 @@ class QuadrangleMesh(metaclass=MeshFactory):
         return box.quadrangulate().fealpy_api()
 
 
-class TetrahedronMesh(metaclass=MeshFactory):
+class TetrahedronMesh(_MeshFactoryNewMixin):
     schema = "tet"
 
     @classmethod
@@ -111,7 +107,15 @@ class TetrahedronMesh(metaclass=MeshFactory):
         return box.tetrahedralize().fealpy_api()
 
 
-class HexahedronMesh(metaclass=MeshFactory):
+class PrismMesh(_MeshFactoryNewMixin):
+    schema = "prism"
+
+
+class PyramidMesh(_MeshFactoryNewMixin):
+    schema = "pyramid"
+
+
+class HexahedronMesh(_MeshFactoryNewMixin):
     schema = "hex"
 
     @classmethod

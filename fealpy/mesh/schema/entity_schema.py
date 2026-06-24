@@ -16,7 +16,6 @@ __all__ = [
 ]
 
 P = ParamSpec("P")
-EntityShape = Literal["node", "edge", "tri", "quad", "prism", "pyramid", "tet", "hex"]
 
 
 @dataclass(slots=True, frozen=True)
@@ -36,7 +35,18 @@ class EntitySchema:
 
     @classmethod
     def boundary(cls, ctx: EntityContext) -> BoundaryInfo:
-        """Boundary information of the entity."""
+        """Boundary information of the entity.
+
+        Returns:
+            NamedTuple:
+            - index: Tensor of shape (num_boundary,) containing the indices
+                of boundary entities.
+            - mask: Tensor of shape (num_entity,) containing a boolean mask
+                indicating whether each entity is a boundary entity.
+            - count: Tensor of shape (num_entity,) containing the count of
+                adjacent top-dimensional entities for each entity, or None if
+                not applicable.
+        """
         raise NotImplementedError()
 
     @classmethod
@@ -53,7 +63,7 @@ class EntitySchema:
         raise NotImplementedError()
 
     @classmethod
-    def relation(cls, ctx: EntityContext, tgt_name: EntityShape) -> Relation:
+    def relation(cls, ctx: EntityContext, tgt_name: str) -> Relation:
         """Compute the relation between two entities."""
         raise NotImplementedError()
 
@@ -190,8 +200,9 @@ class EntitySchema:
         Returns:
             Tensor: The Jacobi matrix with shape (NC, NQ, GD, ref_dim), where
                 NC is the number of cells, NQ is the number of points,
-                GD is the geometric dimension, and ref_dim is the dimension of the
-                reference element.
+                GD is the geometric dimension, and ref_dim is the number of
+                reference coordinates (typically equal to the topological
+                dimension of the entity).
         """
         raise NotImplementedError()
 
@@ -247,7 +258,7 @@ class ShapedEntitySchema(EntitySchema):
         raise ValueError(f"local entity {tgt_name!r} is not defined for {cls.name!r}")
 
     @classmethod
-    def relation(cls, ctx: EntityContext, tgt_name: EntityShape) -> Relation:
+    def relation(cls, ctx: EntityContext, tgt_name: str) -> Relation:
         src_name = ctx.sector.schema_name
         relation = ctx.block.relations.get((src_name, tgt_name))
 
@@ -285,7 +296,7 @@ class ShapedEntitySchema(EntitySchema):
         return ctx.sector.indices.shape[0]
 
     @classmethod
-    def global_permutations(cls, ctx: EntityContext, tgt_name: EntityShape) -> Tensor:
+    def global_permutations(cls, ctx: EntityContext, tgt_name: str) -> Tensor:
         from .utils import argpermute
         cell_indices = ctx.sector.indices
         local_face = cls.local_entity(tgt_name, indexing="s")
