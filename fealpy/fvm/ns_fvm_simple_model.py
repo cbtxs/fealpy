@@ -106,6 +106,7 @@ class NSFVMSimpleModel(ComputationalModel, CollocatedSimpleSolver):
             pressure_gradient_method=options.get("pressure_gradient_method", "layered_lsq"),
             velocity_gradient_method=options.get("velocity_gradient_method", "layered_lsq"),
             rhie_chow_pressure_gradient_method=options.get("rhie_chow_pressure_gradient_method", "layered_lsq"),
+            pressure_response_scheme=options.get("pressure_response_scheme", "simple"),
             face_interpolation_method=options.get("face_interpolation_method", "average"),
             momentum_face_interpolation=options.get("momentum_face_interpolation"),
             pressure_response_interpolation=options.get("pressure_response_interpolation"),

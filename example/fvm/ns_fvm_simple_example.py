@@ -8,13 +8,13 @@ def main():
     parser.add_argument('--pde', default=1, type=int,
                          help='Navier–Stokes PDE example ID')
 
-    parser.add_argument('--mesh_type', default="uniform_qrad", type=str,
+    parser.add_argument('--mesh_type', default="uniform_tri", type=str,
                         help='PDE mesh generator variant. Defaults to the PDE model default.')
 
     parser.add_argument('--mesh_refine', default=3, type=int,
                         help='Uniform refinement levels applied after the PDE default mesh is generated.')
 
-    parser.add_argument('--backend', default='pytorch', type=str,
+    parser.add_argument('--backend', default='numpy', type=str,
                         help="Backend: numpy, pytorch, tensorflow, or jax.")
 
     parser.add_argument('--device', default='cpu', type=str,
@@ -56,7 +56,7 @@ def main():
 
     parser.add_argument('--relax', default=0.3, type=float)
 
-    parser.add_argument('--momentum_equation_relaxation', default=0.9, type=float)
+    parser.add_argument('--momentum_equation_relaxation', default=0.7, type=float)
 
     parser.add_argument('--momentum_nonorthogonal_max_iter', default=10, type=int,
                         help='Max explicit non-orthogonal corrections for momentum diffusion.')

@@ -109,6 +109,46 @@ def test_collocated_simple_solver_runs_without_model_adapter():
     assert "pressure_relax" not in solver.residuals[0]
 
 
+def test_collocated_simple_solver_runs_with_simplec_pressure_response():
+    from fealpy.fvm import SimpleSolverControls
+
+    solver = _cavity_solver(
+        controls=SimpleSolverControls(
+            space_degree=0,
+            pressure_constraint="gauge",
+            pressure_response_scheme="simplec",
+            momentum_solve_strategy="vector",
+        ),
+    )
+
+    uh, vh, ph = solver.solve(max_iter=1, tol=1.0e-3)
+
+    assert solver.controls.pressure_response_scheme == "simplec"
+    assert uh.shape == (solver.NC,)
+    assert vh.shape == (solver.NC,)
+    assert ph.shape == (solver.NC,)
+
+
+def test_ns_fvm_simple_model_forwards_simplec_pressure_response_option():
+    from fealpy.fvm import FVMLinearSolverConfig, NSFVMSimpleModel
+
+    model = NSFVMSimpleModel(
+        {
+            "pde": 1,
+            "mesh_type": "uniform_quad",
+            "nx": 2,
+            "ny": 2,
+            "pressure_constraint": "gauge",
+            "pressure_response_scheme": "simplec",
+            "momentum_solve_strategy": "vector",
+            "linear_solver_config": FVMLinearSolverConfig(solver="scipy"),
+            "log_level": "ERROR",
+        }
+    )
+
+    assert model.controls.pressure_response_scheme == "simplec"
+
+
 def test_collocated_simple_solver_accepts_zero_convection_for_stokes_limit():
     solver = _cavity_solver(convection_coef=0.0)
 

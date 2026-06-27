@@ -167,3 +167,37 @@ def test_solver_setup_and_coefficient_validation_live_outside_operator_mixin():
     assert solver.config.solver == "scipy"
     assert positive_scalar(bm.array(2.0), "mu") == 2.0
     assert nonnegative_scalar(bm.array(0.0), "rho") == 0.0
+
+
+def test_simplec_momentum_response_denominator_uses_matrix_row_sum():
+    from fealpy.sparse import CSRTensor
+
+    bm.set_backend("numpy")
+    model = NSFVMPISOModel(_model_options())
+    total = model.GD * model.NC
+    rows = bm.arange(total, dtype=bm.int64)
+    crow = bm.arange(0, 2 * total + 1, 2, dtype=bm.int64)
+    col = bm.stack([rows, (rows + 1) % total], axis=1).reshape(-1)
+    values = bm.stack(
+        [
+            4.0 * bm.ones(total, dtype=model.cm.dtype),
+            -1.0 * bm.ones(total, dtype=model.cm.dtype),
+        ],
+        axis=1,
+    ).reshape(-1)
+    matrix = CSRTensor(crow, col, values, spshape=(total, total))
+    diagonal = 4.0 * bm.ones(total, dtype=model.cm.dtype)
+
+    simple = model.momentum_pressure_response_denominator(
+        matrix,
+        diagonal,
+        scheme="simple",
+    )
+    simplec = model.momentum_pressure_response_denominator(
+        matrix,
+        diagonal,
+        scheme="simplec",
+    )
+
+    np.testing.assert_allclose(np.asarray(simple), 4.0)
+    np.testing.assert_allclose(np.asarray(simplec), 3.0)

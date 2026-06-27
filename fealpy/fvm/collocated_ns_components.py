@@ -452,6 +452,24 @@ class CollocatedMomentumEquation:
             return bm.concatenate(parts, axis=0)
         return matrix @ dofs
 
+    def momentum_pressure_response_denominator(self, matrix, diagonal, *, scheme: str):
+        """Return the cell denominator used by pressure-velocity correction.
+
+        SIMPLE uses the relaxed momentum diagonal ``a_P``.  SIMPLEC uses the
+        row sum of the same relaxed momentum matrix, which corresponds to
+        ``a_P - sum_N a_N`` under the finite-volume sign convention
+        ``A_PP u_P - sum_N a_N u_N = rhs``.
+        """
+        if scheme == "simple":
+            return diagonal
+        if scheme != "simplec":
+            raise ValueError("pressure response scheme must be 'simple' or 'simplec'.")
+
+        denominator = self.momentum_matrix_action(matrix, bm.ones_like(diagonal))
+        if bool(bm.to_numpy(bm.any(denominator <= 0.0))):
+            raise ValueError("SIMPLEC pressure response denominator must be positive.")
+        return denominator
+
     def solve_steady_momentum_predictor(
         self,
         pressure,
@@ -505,6 +523,11 @@ class CollocatedMomentumEquation:
             previous_velocity,
             self.controls.momentum_equation_relaxation,
         )
+        response_denominator = self.momentum_pressure_response_denominator(
+            matrix,
+            diagonal,
+            scheme=self.controls.pressure_response_scheme,
+        )
         velocity = self.solve_momentum_system(matrix, rhs)
         velocity = self.correct_momentum_nonorthogonal_diffusion(
             matrix,
@@ -515,7 +538,7 @@ class CollocatedMomentumEquation:
             tol=self.controls.momentum_nonorthogonal_tol,
             iteration_attr="last_nonorthogonal_iterations",
         )
-        return diagonal, velocity
+        return response_denominator, velocity
 
     def solve_component_steady_momentum_predictor(
         self,
@@ -556,6 +579,11 @@ class CollocatedMomentumEquation:
             relaxation=self.controls.momentum_equation_relaxation,
             matrix_policy=self.controls.momentum_component_matrix_policy,
         )
+        response_denominator = self.momentum_pressure_response_denominator(
+            matrices,
+            diagonal,
+            scheme=self.controls.pressure_response_scheme,
+        )
         velocity = self.solve_component_momentum_systems(matrices, rhs)
         velocity = self.correct_component_momentum_nonorthogonal_diffusion(
             matrices,
@@ -566,7 +594,7 @@ class CollocatedMomentumEquation:
             tol=self.controls.momentum_nonorthogonal_tol,
             iteration_attr="last_nonorthogonal_iterations",
         )
-        return diagonal, velocity
+        return response_denominator, velocity
 
     def solve_transient_momentum_predictor(
         self,

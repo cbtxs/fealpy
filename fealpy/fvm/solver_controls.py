@@ -41,6 +41,7 @@ class SimpleSolverControls:
     pressure_gradient_method: str = "layered_lsq"
     velocity_gradient_method: str = "layered_lsq"
     rhie_chow_pressure_gradient_method: str = "layered_lsq"
+    pressure_response_scheme: str = "simple"
     face_interpolation_method: str = "average"
     momentum_face_interpolation: str | None = None
     pressure_response_interpolation: str | None = None
@@ -80,6 +81,7 @@ class SimpleSolverControls:
         if self.pressure_nonorthogonal_tol <= 0.0:
             raise ValueError("pressure_nonorthogonal_tol must be positive.")
         self.validate_pressure_constraint(self.pressure_constraint)
+        self.validate_pressure_response_scheme(self.pressure_response_scheme)
         self.validate_momentum_solve_strategy(self.momentum_solve_strategy)
         self.validate_momentum_component_matrix_policy(
             self.momentum_component_matrix_policy
@@ -99,6 +101,11 @@ class SimpleSolverControls:
     def validate_pressure_constraint(method: str) -> None:
         if method not in {"gauge", "nullspace"}:
             raise ValueError("pressure_constraint must be 'gauge' or 'nullspace'.")
+
+    @staticmethod
+    def validate_pressure_response_scheme(method: str) -> None:
+        if method not in {"simple", "simplec"}:
+            raise ValueError("pressure_response_scheme must be 'simple' or 'simplec'.")
 
     @staticmethod
     def validate_momentum_solve_strategy(method: str) -> None:
