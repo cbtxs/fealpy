@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import final, Literal, TYPE_CHECKING, ParamSpec
+from typing import Concatenate, final, Literal, TYPE_CHECKING, ParamSpec
 
 from ...backend import bm, Tensor, Index
 from ..schema.entity_schema import EntityContext
@@ -31,15 +31,15 @@ class EntityView:
 
     # User APIs
 
-    def barycentric(self, func: Callable[[Tensor], Tensor], /, *, index: Index | None = None):
+    def barycentric[**P, R](self, func: Callable[Concatenate[Tensor, P], R], /, *, index: Index | None = None):
         """Transform a function defined in cartesian coordinates to barycentric coordinates.
 
         Parameters:
-            func (Callable): A function that takes cartesian coordinates as input and returns a tensor.
+            func (Callable): A function that takes cartesian coordinates as the first positional input.
             index (Index, optional): The index of the entities for which to compute the barycentric function.
 
         Returns:
-            Callable: A function that takes barycentric coordinates as input and returns a tensor.
+            Callable: A function that takes barycentric coordinates as the first positional input.
         """
         return self.schema.barycentric(self.context(), func, index)
 

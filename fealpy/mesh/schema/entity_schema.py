@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, ClassVar, Literal, overload, ParamSpec, TYPE_CHECKING
+from typing import Any, ClassVar, Concatenate, Literal, overload, ParamSpec, TYPE_CHECKING
 
 from ...backend import bm, Tensor, Index
 from ..storage import EntitySector, MeshBlock, Relation
@@ -113,7 +113,12 @@ class EntitySchema:
         raise NotImplementedError()
 
     @classmethod
-    def barycentric(cls, ctx: EntityContext, func: Callable[[Tensor], Tensor], index: Index | None) -> Callable[[Tensor | tuple[Tensor, ...]], Tensor]:
+    def barycentric[**P, R](
+        cls,
+        ctx: EntityContext,
+        func: Callable[Concatenate[Tensor, P], R],
+        index: Index | None
+    ) -> Callable[Concatenate[Tensor | tuple[Tensor, ...], P], R]:
         """Transform functions from cartesian to barycentric coordinates."""
         raise NotImplementedError()
 
@@ -314,17 +319,22 @@ class ShapedEntitySchema(EntitySchema):
     ### [Geometric Computations] ###
 
     @classmethod
-    def barycentric(cls, ctx: EntityContext, func: Callable[[Tensor], Tensor], index: Index | None) -> Callable[[Tensor], Tensor]:
+    def barycentric[**P, R](
+        cls,
+        ctx: EntityContext,
+        func: Callable[Concatenate[Tensor, P], R],
+        index: Index | None
+    ) -> Callable[Concatenate[Tensor | tuple[Tensor, ...], P], R]:
         """Compute the barycentric coordinates of the entity."""
         from functools import wraps
         from ...decorator import barycentric
         @wraps(func)
         @barycentric
-        def wrapper(bcs: Tensor | tuple[Tensor, ...]) -> Tensor:
+        def wrapper(bcs: Tensor | tuple[Tensor, ...], *args, **kwargs) -> R:
             if not isinstance(bcs, tuple):
                 bcs = (bcs,)
             points = cls.bc_to_point(ctx, bcs, index) # [NC, NQ, GD]
-            return func(points)
+            return func(points, *args, **kwargs)
         return wrapper
 
     @classmethod
