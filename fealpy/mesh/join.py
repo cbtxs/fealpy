@@ -109,14 +109,14 @@ def join_mesh_storage(left: MeshBlock, right: MeshBlock) -> MeshBlock:
     node_offset = len(left.positions)
     positions = bm.concat([left.positions, right.positions], axis=0)
 
-    blocks: dict[str, EntitySector] = {}
-    block_names = list(left.sectors)
+    sectors: dict[str, EntitySector] = {}
+    sector_names = list(left.sectors)
     for name in right.sectors:
-        if name not in blocks and name not in block_names:
-            block_names.append(name)
+        if name not in sectors and name not in sector_names:
+            sector_names.append(name)
 
-    for name in block_names:
-        blocks[name] = _merge_block(
+    for name in sector_names:
+        sectors[name] = _merge_block(
             schema_name=name,
             left_block=left.sectors.get(name),
             right_block=right.sectors.get(name),
@@ -146,7 +146,7 @@ def join_mesh_storage(left: MeshBlock, right: MeshBlock) -> MeshBlock:
 
     return MeshBlock(
         positions=positions,
-        blocks=blocks,
+        sectors=sectors,
         relations=relations,
         root_entity_names=_merge_root_names(left, right),
     )
@@ -154,6 +154,9 @@ def join_mesh_storage(left: MeshBlock, right: MeshBlock) -> MeshBlock:
 
 def join(left: Mesh, right: Mesh, /) -> Mesh:
     """Join two meshes by pure concatenation.
+
+    Returns:
+        Mesh: The joined mesh.
 
     Notes:
         - This function only concatenates positions and remaps indices and relations.

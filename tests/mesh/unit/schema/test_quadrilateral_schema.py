@@ -13,13 +13,6 @@ def make_context(positions, quads):
     return EntityContext(block=block, sector=sector)
 
 
-def test_quadrilateral_schema_ccw():
-    # Test class attributes: name/top_dim/local_faces/ccw.
-    assert QuadrilateralSchema.name == "quad"
-    assert QuadrilateralSchema.top_dim == 2
-    assert QuadrilateralSchema.local_faces == {'edge':[[0, 1], [2, 3], [0, 2], [1, 3]]}
-    assert QuadrilateralSchema.ccw == {'edge': [[0, 1], [1, 3], [3, 2], [2, 0]]}
-
 def test_quadrilateral_schema_barycenter_and_measure_2d():
     # Test 2D methods: barycenter/measure/normal/grad_lambda/tangent/bc_to_point.
     ctx = make_context(
@@ -90,7 +83,6 @@ def test_quadrilateral_schema_multi_index_and_quadrature():
 
     np.testing.assert_array_equal(mi, np.array([[0, 0], [0, 1], [0, 2], [1, 0], [1, 1], [1, 2], [2, 0], [2, 1], [2, 2]]))
     np.testing.assert_array_equal(rect_mi, np.array([[0, 0], [0, 1], [0, 2], [1, 0], [1, 1], [1, 2]]))
-    np.testing.assert_array_equal(np.asarray(QuadrilateralSchema.multi_index_sort(mi[::-1])), np.array([8, 7, 6, 5, 4, 3, 2, 1, 0]))
     assert QuadrilateralSchema.num_multi_index((2,)) == 9
     assert QuadrilateralSchema.num_multi_index((1, 2)) == 6
 

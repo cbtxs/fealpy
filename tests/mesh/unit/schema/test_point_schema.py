@@ -1,4 +1,4 @@
-# 文件位置: tests/mesh/unit/schema/test_node_schema.py
+# 文件位置: tests/mesh/unit/schema/test_point_schema.py
 
 from pathlib import Path
 import sys
@@ -10,7 +10,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from fealpy.backend import backend_manager as bm
-from fealpy.mesh.schema import NodeSchema
+from fealpy.mesh.schema import PointSchema
 from fealpy.mesh.storage import EntitySector, MeshBlock
 from fealpy.mesh.view import Mesh
 
@@ -45,7 +45,7 @@ def _assert_shape(actual, expected_shape, message):
     )
 
 
-def _build_node_view():
+def _build_point_view():
     positions = bm.asarray(
         [
             [0.0, 0.0, 0.0],
@@ -54,47 +54,48 @@ def _build_node_view():
         ],
         dtype=bm.float64,
     )
-    node_sector = EntitySector(
-        schema_name="node",
+    point_sector = EntitySector(
+        schema_name="point",
         indices=bm.asarray([0, 2], dtype=bm.int64),
     )
     block = MeshBlock(positions=positions)
-    block.add_sector(node_sector, root=True)
+    block.add_sector(point_sector, root=True)
     mesh = Mesh(block)
-    return mesh, mesh.sector("node")
+    return mesh, mesh.entity_view_by_name("point")
 
 
-class TestNodeSchema:
+class TestPointSchema:
     """
-    NodeSchema 单元测试。
+    PointSchema 单元测试。
 
-    测试通过用户入口 Mesh.sector("node") 获得 EntityView，再验证
-    NodeSchema 的核心算法是否符合 mesh_05_algorithm_migration 的接口合同。
+    测试通过用户入口 Mesh.sector("point") 获得 EntityView，再验证
+    PointSchema 的核心算法是否符合 mesh_05_algorithm_migration 的接口合同。
     """
 
     def test_schema_dispatch_and_metadata(self):
         """
-        [结构验证]：用户从 Mesh.sector("node") 获取的实体视图必须分派到 NodeSchema。
+        [结构验证]：用户从 Mesh.sector("point") 获取的实体视图必须分派到 PointSchema。
         同时验证 node 的拓扑维数、几何维数和 ccw 元数据。
         """
-        mesh, node_view = _build_node_view()
+        mesh, point_view = _build_point_view()
 
-        assert node_view.schema is NodeSchema, (
-            "User entry Mesh.sector('node') should dispatch node algorithms to NodeSchema"
+        assert point_view.schema is PointSchema, (
+            "User entry Mesh.sector('point') should dispatch node algorithms to PointSchema"
         )
-        assert node_view.size() == 2, "Node sector contains exactly the two selected node entities"
-        assert node_view.top_dimension() == 0, "NodeSchema is a 0D entity schema"
-        assert NodeSchema.ccw == {}, "Node has no sub-entities, so ccw must be an empty dict"
-        assert node_view.geo_dimension() == mesh.geo_dimension() == 3, (
+        assert point_view.size() == 2, "Node sector contains exactly the two selected node entities"
+        assert point_view.top_dimension() == 0, "PointSchema is a 0D entity schema"
+        assert PointSchema.OFace == {}, "Point has no sub-entities, so OFace must be an empty dict"
+        assert PointSchema.SFace == {}, "Point has no sub-entities, so SFace must be an empty dict"
+        assert point_view.geo_dimension() == mesh.geo_dimension() == 3, (
             "Node geometric dimension must equal positions.shape[1]"
         )
 
     def test_barycenter_through_user_view(self):
         """
         [几何算法验证]：点实体的重心就是点坐标本身。
-        用户入口 node_view.barycenter() 应返回 positions[node_view.indices]。
+        用户入口 point_view.barycenter() 应返回 positions[point_view.indices]。
         """
-        _, node_view = _build_node_view()
+        _, point_view = _build_point_view()
 
         expected = bm.asarray(
             [
@@ -104,31 +105,31 @@ class TestNodeSchema:
             dtype=bm.float64,
         )
         _assert_allclose(
-            node_view.barycenter(),
+            point_view.barycenter(),
             expected,
-            "A 0D node entity is its own barycenter; expected positions[node_view.indices]",
+            "A 0D node entity is its own barycenter; expected positions[point_view.indices]",
         )
 
     def test_measure_through_user_view(self):
         """
         [几何算法验证]：新 schema 语义下，0 维实体测度为 1。
         """
-        _, node_view = _build_node_view()
+        _, point_view = _build_point_view()
 
         _assert_allclose(
-            node_view.measure(),
-            bm.ones((node_view.size(),), dtype=bm.float64),
+            point_view.measure(),
+            bm.ones((point_view.size(),), dtype=bm.float64),
             "0D entity measure is 1 for each node under new schema semantics",
         )
 
     def test_quadrature_formula_via_schema_behind_user_view(self):
         """
         [积分公式验证]：点实体的 0 维求积公式只有一个重心坐标点 [1]，权重为 1。
-        当前 EntityView 尚未包装 quadrature_formula，因此通过 node_view.schema 验证。
+        当前 EntityView 尚未包装 quadrature_formula，因此通过 point_view.schema 验证。
         """
-        _, node_view = _build_node_view()
+        _, point_view = _build_point_view()
 
-        qf = node_view.schema.quadrature_formula(1, qtype=None)
+        qf = point_view.schema.quadrature_formula(1, qtype=None)
         bcs, weights = qf.get_quadrature_points_and_weights()
 
         assert isinstance(bcs, tuple), "Handoff requires bcs to be a tuple of tensors"
@@ -149,18 +150,18 @@ class TestNodeSchema:
         [几何算法验证]：点上唯一重心坐标恒为 1，因此梯度为 0。
         返回形状应为 (N, 1, GD)。
         """
-        _, node_view = _build_node_view()
-        gd = node_view.geo_dimension()
+        _, point_view = _build_point_view()
+        gd = point_view.geo_dimension()
 
-        grad = node_view.grad_lambda()
+        grad = point_view.grad_lambda()
         _assert_shape(
             grad,
-            (node_view.size(), 1, gd),
+            (point_view.size(), 1, gd),
             "Node has one barycentric coordinate and GD cartesian directions",
         )
         _assert_allclose(
             grad,
-            bm.zeros((node_view.size(), 1, gd), dtype=bm.float64),
+            bm.zeros((point_view.size(), 1, gd), dtype=bm.float64),
             "The only node barycentric coordinate is constant 1, so its gradient is 0",
         )
 
@@ -169,12 +170,12 @@ class TestNodeSchema:
         [维度语义验证]：按照 handoff 约定，法向数量为 G - T，切向数量为 T。
         对 node 而言 T=0，因此 normal 形状为 (N, GD, GD)，tangent 形状为 (N, 0, GD)。
         """
-        _, node_view = _build_node_view()
-        nnode = node_view.size()
-        gd = node_view.geo_dimension()
-        top_dim = node_view.top_dimension()
+        _, point_view = _build_point_view()
+        nnode = point_view.size()
+        gd = point_view.geo_dimension()
+        top_dim = point_view.top_dimension()
 
-        normal = node_view.normal()
+        normal = point_view.normal()
         _assert_shape(
             normal,
             (nnode, gd - top_dim, gd),
@@ -186,7 +187,7 @@ class TestNodeSchema:
             "For a node T=0, the normal space is the full ambient space standard basis",
         )
 
-        tangent = node_view.tangent()
+        tangent = point_view.tangent()
         _assert_shape(
             tangent,
             (nnode, top_dim, gd),
@@ -196,13 +197,13 @@ class TestNodeSchema:
     def test_bc_to_point_via_schema_behind_user_view(self):
         """
         [几何算法验证]：点的合法重心坐标只能是 [1]。
-        当前 EntityView 尚未包装 bc_to_point，因此通过 node_view.schema 验证背后的 schema 方法。
+        当前 EntityView 尚未包装 bc_to_point，因此通过 point_view.schema 验证背后的 schema 方法。
         """
-        _, node_view = _build_node_view()
-        ctx = node_view.context()
+        _, point_view = _build_point_view()
+        ctx = point_view.context()
 
         bcs = (bm.asarray([[1.0], [1.0]], dtype=bm.float64),)
-        points = node_view.schema.bc_to_point(ctx, bcs, None)
+        points = point_view.schema.bc_to_point(ctx, bcs, None)
         expected = bm.asarray(
             [
                 [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
@@ -213,7 +214,7 @@ class TestNodeSchema:
 
         _assert_shape(
             points,
-            (node_view.size(), 2, node_view.geo_dimension()),
+            (point_view.size(), 2, point_view.geo_dimension()),
             "bc_to_point maps two barycentric samples for each node entity",
         )
         _assert_allclose(
@@ -226,22 +227,22 @@ class TestNodeSchema:
         """
         [接口合同验证]：点实体的重心坐标必须恒为 [1]，非法值不能被映射为物理点。
         """
-        _, node_view = _build_node_view()
-        ctx = node_view.context()
+        _, point_view = _build_point_view()
+        ctx = point_view.context()
         invalid_bcs = (bm.asarray([[0.5]], dtype=bm.float64),)
 
         with pytest.raises(ValueError):
-            node_view.schema.bc_to_point(ctx, invalid_bcs, None)
+            point_view.schema.bc_to_point(ctx, invalid_bcs, None)
 
 
     def test_multi_index_via_schema_behind_user_view(self):
         """
         [多重指标验证]：node 是一个顶点的退化单纯形，次数 p 只有一个指标 [p]。
         """
-        _, node_view = _build_node_view()
+        _, point_view = _build_point_view()
 
         _assert_equal(
-            node_view.schema.multi_index((3,)),
+            point_view.schema.multi_index((3,)),
             bm.asarray([[3]], dtype=bm.int32),
             "Node is the one-vertex simplex degeneration; degree p has exactly one index [p]",
         )
@@ -250,7 +251,7 @@ class TestNodeSchema:
         """
         [接口合同验证]：handoff 要求 multi_index 的 p 参数必须是整数元组。
         """
-        _, node_view = _build_node_view()
+        _, point_view = _build_point_view()
 
         with pytest.raises(TypeError):
-            node_view.schema.multi_index(3)
+            point_view.schema.multi_index(3)

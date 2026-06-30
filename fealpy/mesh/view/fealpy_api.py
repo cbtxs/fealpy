@@ -32,7 +32,7 @@ class FEALPyMesh(Mesh):
         Raises ValueError if multiple types of entities with the given dimension are found.
         Use ``entity_views`` to get views of all entities with the given dimension."""
         top_dim = self._ensure_top_dim(etype)
-        sectors = list(self.entity_views(etype))
+        sectors = self.entity_view_by_topdim(top_dim)
 
         if len(sectors) > 1:
             raise ValueError(f"Multiple types of entities with top dimension {top_dim} found: {sectors}")
@@ -153,7 +153,7 @@ class FEALPyMesh(Mesh):
         p: int | tuple[int, ...] = 1,
         *,
         index: Index | None = None,
-        variables: str = "u",
+        variables: Literal['b', 'u', 'x'] = "u",
         mi=None
     ) -> Tensor:
         return self.entity_view(-1).grad_shape_function(
@@ -175,7 +175,7 @@ class FEALPyMesh(Mesh):
     def number_of_global_ipoints(self, p: int | tuple[int, ...]) -> int:
         total = 0
         for name in self.block.sectors:
-            sector_view = self.sector(name)
+            sector_view = self.entity_view_by_name(name)
             total += sector_view.num_multi_index(p, internal=True) * sector_view.size()
         return total
 
@@ -295,10 +295,10 @@ class FEALPyMesh(Mesh):
             entity_iter = (entity,)
         else:
             entity_iter = entity
-        names: list[EntityView] = []
+        views: list[EntityView] = []
         for et in entity_iter:
-            names.extend(self.entity_views(et))
-        names = [sec.schema.name for sec in names]
+            views.extend(self.entity_view_by_topdim(et))
+        names = [sec.schema.name for sec in views]
         ips = ipoints(self, p, names)
 
         if index is None:
@@ -365,8 +365,8 @@ class FEALPyMesh(Mesh):
 
     def error(
         self,
-        f1: Callable[[Tensor], Tensor],
-        f2: Callable[[Tensor], Tensor],
+        f1: Callable[..., Tensor],
+        f2: Callable[..., Tensor],
         /,
         power: float = 2.0,
         q: int = 3,

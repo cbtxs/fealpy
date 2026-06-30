@@ -3,8 +3,8 @@ import pytest
 
 from fealpy.backend import backend_manager as bm
 from fealpy.mesh.schema import (
-    NodeSchema,
-    EdgeSchema,
+    PointSchema,
+    SegmentSchema,
     TriangleSchema,
     QuadrilateralSchema,
     TetrahedronSchema,
@@ -18,19 +18,12 @@ def to_numpy(value):
     return bm.to_numpy(value)
 
 
-def test_multi_index_api_has_no_sort_or_internal_parameter():
-    for schema in (NodeSchema, EdgeSchema, TriangleSchema, QuadrilateralSchema, TetrahedronSchema, HexahedronSchema, PrismSchema, PyramidSchema):
-        assert not hasattr(schema, "multi_index_sort")
-        with pytest.raises(TypeError):
-            schema.multi_index((1,), internal=True)
-
-
 def test_simplex_multi_index_shape_is_num_points_by_num_vertices():
-    assert NodeSchema.multi_index((3,)).shape == (1, 1)
-    np.testing.assert_array_equal(to_numpy(NodeSchema.multi_index((3,))), [[3]])
+    assert PointSchema.multi_index((3,)).shape == (1, 1)
+    np.testing.assert_array_equal(to_numpy(PointSchema.multi_index((3,))), [[3]])
 
-    np.testing.assert_array_equal(to_numpy(EdgeSchema.multi_index((2,))), [[2, 0], [1, 1], [0, 2]])
-    assert EdgeSchema.multi_index((2,)).shape == (3, 2)
+    np.testing.assert_array_equal(to_numpy(SegmentSchema.multi_index((2,))), [[2, 0], [1, 1], [0, 2]])
+    assert SegmentSchema.multi_index((2,)).shape == (3, 2)
 
     tri = TriangleSchema.multi_index((2,))
     assert tri.shape == (6, 3)

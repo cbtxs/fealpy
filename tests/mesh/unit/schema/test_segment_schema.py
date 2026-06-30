@@ -9,7 +9,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from fealpy.backend import backend_manager as bm
-from fealpy.mesh.schema import EdgeSchema
+from fealpy.mesh.schema import SegmentSchema
 from fealpy.mesh.storage import EntitySector, MeshBlock
 from fealpy.mesh.topology.ipoints import multi_index_sort
 from fealpy.mesh.view import Mesh
@@ -52,7 +52,7 @@ def _assert_shape(actual, expected_shape, message):
     )
 
 
-def _build_edge_view():
+def _build_segment_view():
     positions = bm.asarray(
         [
             [0.0, 0.0],
@@ -72,14 +72,14 @@ def _build_edge_view():
         dtype=bm.int64,
     )
     block = MeshBlock(positions=positions)
-    block.add_sector(EntitySector("edge", edge), root=True)
+    block.add_sector(EntitySector("segment", edge), root=True)
     mesh = Mesh(block)
-    return mesh, mesh.sector("edge")
+    return mesh, mesh.entity_view_by_name("segment")
 
 
 
 
-def _build_3d_edge_view():
+def _build_3d_segment_view():
     positions = bm.asarray(
         [
             [0.0, 0.0, 0.0],
@@ -93,12 +93,12 @@ def _build_3d_edge_view():
     )
     edge = bm.asarray([[0, 1], [2, 3], [4, 5]], dtype=bm.int64)
     block = MeshBlock(positions=positions)
-    block.add_sector(EntitySector("edge", edge), root=True)
+    block.add_sector(EntitySector("segment", edge), root=True)
     mesh = Mesh(block)
-    return mesh, mesh.sector("edge")
+    return mesh, mesh.entity_view_by_name("segment")
 
 
-def _build_degenerate_edge_view():
+def _build_degenerate_segment_view():
     positions = bm.asarray(
         [
             [1.0, 2.0, 3.0],
@@ -108,11 +108,11 @@ def _build_degenerate_edge_view():
     )
     edge = bm.asarray([[0, 1]], dtype=bm.int64)
     block = MeshBlock(positions=positions)
-    block.add_sector(EntitySector("edge", edge), root=True)
+    block.add_sector(EntitySector("segment", edge), root=True)
     mesh = Mesh(block)
-    return mesh, mesh.sector("edge")
+    return mesh, mesh.entity_view_by_name("segment")
 
-def _build_two_edge_view():
+def _build_two_segment_view():
     positions = bm.asarray(
         [
             [0.0, 0.0],
@@ -124,56 +124,57 @@ def _build_two_edge_view():
     )
     edge = bm.asarray([[0, 1], [2, 3]], dtype=bm.int64)
     block = MeshBlock(positions=positions)
-    block.add_sector(EntitySector("edge", edge), root=True)
+    block.add_sector(EntitySector("segment", edge), root=True)
     mesh = Mesh(block)
-    return mesh, mesh.sector("edge")
+    return mesh, mesh.entity_view_by_name("segment")
 
 
-class TestEdgeSchema:
+class TestSegmentSchema:
     @pytest.mark.parametrize("backend", BACKENDS, ids=BACKEND_IDS)
     def test_schema_dispatch_and_metadata(self, backend):
         bm.set_backend(backend)
-        mesh, edge_view = _build_edge_view()
+        mesh, segment_view = _build_segment_view()
 
-        assert edge_view.schema is EdgeSchema
-        assert edge_view.size() == 4
-        assert edge_view.top_dimension() == 1
-        assert edge_view.geo_dimension() == mesh.geo_dimension() == 2
-        assert EdgeSchema.local_entity("node") == [[0], [1]]
-        assert EdgeSchema.ccw == {"node": [[0], [1]]}
+        assert segment_view.schema is SegmentSchema
+        assert segment_view.size() == 4
+        assert segment_view.top_dimension() == 1
+        assert segment_view.geo_dimension() == mesh.geo_dimension() == 2
+        assert SegmentSchema.local_entity("point") == [[0], [1]]
+        assert SegmentSchema.OFace == {"point": [[0], [1]]}
+        assert SegmentSchema.SFace == {"point": [[0], [1]]}
 
     @pytest.mark.parametrize("backend", BACKENDS, ids=BACKEND_IDS)
     def test_multi_index_via_schema_behind_user_view(self, backend):
         bm.set_backend(backend)
-        _, edge_view = _build_edge_view()
+        _, segment_view = _build_segment_view()
 
         _assert_equal(
-            edge_view.schema.multi_index((0,)),
+            segment_view.schema.multi_index((0,)),
             bm.asarray([[0, 0]], dtype=bm.int32),
             "Degree 0 edge multi-index has one all-zero row",
         )
         _assert_equal(
-            edge_view.schema.multi_index((2,)),
+            segment_view.schema.multi_index((2,)),
             bm.asarray([[2, 0], [1, 1], [0, 2]], dtype=bm.int32),
             "Degree 2 edge multi-index should enumerate the two-vertex simplex indices",
         )
-        assert edge_view.schema.num_multi_index((2,)) == 3
+        assert segment_view.schema.num_multi_index((2,)) == 3
 
     @pytest.mark.parametrize("backend", BACKENDS, ids=BACKEND_IDS)
     def test_multi_index_rejects_invalid_order_argument(self, backend):
         bm.set_backend(backend)
-        _, edge_view = _build_edge_view()
+        _, segment_view = _build_segment_view()
 
         with pytest.raises(TypeError):
-            edge_view.schema.multi_index(2)
+            segment_view.schema.multi_index(2)
 
         with pytest.raises(ValueError):
-            edge_view.schema.multi_index((-1,))
+            segment_view.schema.multi_index((-1,))
 
     @pytest.mark.parametrize("backend", BACKENDS, ids=BACKEND_IDS)
     def test_multi_index_sort_returns_lexicographic_order(self, backend):
         bm.set_backend(backend)
-        _, edge_view = _build_edge_view()
+        _, segment_view = _build_segment_view()
 
         multi_index = bm.asarray(
             [
@@ -192,20 +193,20 @@ class TestEdgeSchema:
     @pytest.mark.parametrize("backend", BACKENDS, ids=BACKEND_IDS)
     def test_barycenter_measure_grad_lambda_through_user_view(self, backend):
         bm.set_backend(backend)
-        _, edge_view = _build_edge_view()
+        _, segment_view = _build_segment_view()
 
         _assert_allclose(
-            edge_view.barycenter(),
+            segment_view.barycenter(),
             bm.asarray([[0.5, 0.0], [0.0, 0.5], [0.5, 0.5], [1.0, 0.5]], dtype=bm.float64),
             "Edge barycenter should be the average of its two endpoints",
         )
         _assert_allclose(
-            edge_view.measure(),
+            segment_view.measure(),
             bm.asarray([1.0, 1.0, 2.0**0.5, 1.0], dtype=bm.float64),
             "Edge measure should be endpoint distance",
         )
         _assert_allclose(
-            edge_view.grad_lambda(),
+            segment_view.grad_lambda(),
             bm.asarray(
                 [
                     [[-1.0, -0.0], [1.0, 0.0]],
@@ -221,8 +222,8 @@ class TestEdgeSchema:
     @pytest.mark.parametrize("backend", BACKENDS, ids=BACKEND_IDS)
     def test_bc_to_point_via_schema_behind_user_view(self, backend):
         bm.set_backend(backend)
-        _, edge_view = _build_two_edge_view()
-        ctx = edge_view.context()
+        _, segment_view = _build_two_segment_view()
+        ctx = segment_view.context()
         bcs = (
             bm.asarray(
                 [
@@ -233,7 +234,7 @@ class TestEdgeSchema:
             ),
         )
 
-        points = edge_view.schema.bc_to_point(ctx, bcs, None)
+        points = segment_view.schema.bc_to_point(ctx, bcs, None)
 
         _assert_shape(points, (2, 2, 2), "bc_to_point maps two barycentric samples for each edge entity")
         _assert_allclose(
@@ -251,9 +252,9 @@ class TestEdgeSchema:
     @pytest.mark.parametrize("backend", BACKENDS, ids=BACKEND_IDS)
     def test_quadrature_formula_via_schema_behind_user_view(self, backend):
         bm.set_backend(backend)
-        _, edge_view = _build_edge_view()
+        _, segment_view = _build_segment_view()
 
-        qf = edge_view.schema.quadrature_formula(2, qtype="legendre")
+        qf = segment_view.schema.quadrature_formula(2, qtype="legendre")
         bcs, weights = qf.get_quadrature_points_and_weights()
 
         _assert_shape(bcs, (2, 2), "Edge order-2 quadrature has two barycentric points")
@@ -262,8 +263,8 @@ class TestEdgeSchema:
     @pytest.mark.parametrize("backend", BACKENDS, ids=BACKEND_IDS)
     def test_grad_shape_function_and_jacobi_matrix_follow_b_u_x_convention(self, backend):
         bm.set_backend(backend)
-        _, edge_view = _build_two_edge_view()
-        ctx = edge_view.context()
+        _, segment_view = _build_two_segment_view()
+        ctx = segment_view.context()
         bcs = (
             bm.asarray(
                 [
@@ -274,10 +275,10 @@ class TestEdgeSchema:
             ),
         )
 
-        grad_b = edge_view.schema.grad_shape_function_barycentric(bcs, (1,))
-        grad_u = edge_view.schema.grad_shape_function_reference(bcs, (1,))
-        jacobi = edge_view.schema.jacobi_matrix(ctx, bcs, None)
-        grad_x = edge_view.grad_shape_function(bcs, p=1, variables="x")
+        grad_b = segment_view.schema.grad_shape_function_barycentric(bcs, (1,))
+        grad_u = segment_view.schema.grad_shape_function_reference(bcs, (1,))
+        jacobi = segment_view.schema.jacobi_matrix(ctx, bcs, None)
+        grad_x = segment_view.grad_shape_function(bcs, p=1, variables="x")
 
         _assert_shape(grad_b, (2, 2, 2), "Barycentric edge shape gradients are [NQ, num_shape, num_bc]")
         _assert_allclose(
@@ -334,12 +335,12 @@ class TestEdgeSchema:
     @pytest.mark.parametrize("backend", BACKENDS, ids=BACKEND_IDS)
     def test_grad_shape_function_user_api_supports_b_u_x_variables(self, backend):
         bm.set_backend(backend)
-        _, edge_view = _build_two_edge_view()
+        _, segment_view = _build_two_segment_view()
         bcs = bm.asarray([[0.5, 0.5]], dtype=bm.float64)
 
-        grad_b = edge_view.grad_shape_function(bcs, p=1, variables="b")
-        grad_u = edge_view.grad_shape_function(bcs, p=1, variables="u")
-        grad_x = edge_view.grad_shape_function(bcs, p=1, variables="x")
+        grad_b = segment_view.grad_shape_function(bcs, p=1, variables="b")
+        grad_u = segment_view.grad_shape_function(bcs, p=1, variables="u")
+        grad_x = segment_view.grad_shape_function(bcs, p=1, variables="x")
 
         _assert_shape(grad_b, (1, 2, 2), "User API should expose barycentric gradients for edges")
         _assert_shape(grad_u, (1, 2, 1), "User API should expose reference gradients for edges")
@@ -348,18 +349,18 @@ class TestEdgeSchema:
     @pytest.mark.parametrize("backend", BACKENDS, ids=BACKEND_IDS)
     def test_normal_and_tangent_through_user_view(self, backend):
         bm.set_backend(backend)
-        _, edge_view = _build_edge_view()
+        _, segment_view = _build_segment_view()
 
-        tangent = edge_view.tangent()
-        normal = edge_view.normal()
+        tangent = segment_view.tangent()
+        normal = segment_view.normal()
 
-        _assert_shape(tangent, (edge_view.size(), 1, edge_view.geo_dimension()), "Handoff rule: tangent shape is [entity_count, T, G]")
+        _assert_shape(tangent, (segment_view.size(), 1, segment_view.geo_dimension()), "Handoff rule: tangent shape is [entity_count, T, G]")
         _assert_allclose(
             tangent,
             bm.asarray([[[1.0, 0.0]], [[0.0, 1.0]], [[-1.0, 1.0]], [[0.0, 1.0]]], dtype=bm.float64),
             "Edge tangent is the non-unit endpoint difference x1 - x0",
         )
-        _assert_shape(normal, (edge_view.size(), 1, edge_view.geo_dimension()), "2D edge normal has one direction")
+        _assert_shape(normal, (segment_view.size(), 1, segment_view.geo_dimension()), "2D edge normal has one direction")
         _assert_allclose(
             normal,
             bm.asarray([[[0.0, -1.0]], [[1.0, -0.0]], [[1.0, 1.0]], [[1.0, -0.0]]], dtype=bm.float64),
@@ -369,46 +370,46 @@ class TestEdgeSchema:
     @pytest.mark.parametrize("backend", BACKENDS, ids=BACKEND_IDS)
     def test_scalar_index_keeps_single_entity_axis(self, backend):
         bm.set_backend(backend)
-        _, edge_view = _build_two_edge_view()
+        _, segment_view = _build_two_segment_view()
 
         _assert_allclose(
-            edge_view.barycenter(index=1),
+            segment_view.barycenter(index=1),
             bm.asarray([[2.0, 3.5]], dtype=bm.float64),
             "Scalar index should preserve one edge entity axis in barycenter",
         )
         _assert_allclose(
-            edge_view.measure(index=1),
+            segment_view.measure(index=1),
             bm.asarray([3.0], dtype=bm.float64),
             "Scalar index should preserve one edge entity axis in measure",
         )
-        _assert_shape(edge_view.grad_lambda(index=1), (1, 2, 2), "Scalar index should preserve grad_lambda entity axis")
-        _assert_shape(edge_view.tangent(index=1), (1, 1, 2), "Scalar index should preserve tangent entity axis")
+        _assert_shape(segment_view.grad_lambda(index=1), (1, 2, 2), "Scalar index should preserve grad_lambda entity axis")
+        _assert_shape(segment_view.tangent(index=1), (1, 1, 2), "Scalar index should preserve tangent entity axis")
 
     @pytest.mark.parametrize("backend", BACKENDS, ids=BACKEND_IDS)
     def test_3d_normal_returns_two_orthogonal_directions(self, backend):
         bm.set_backend(backend)
-        _, edge_view = _build_3d_edge_view()
+        _, segment_view = _build_3d_segment_view()
 
-        tangent = edge_view.tangent()
-        normal = edge_view.normal()
+        tangent = segment_view.tangent()
+        normal = segment_view.normal()
 
-        _assert_shape(normal, (edge_view.size(), 2, 3), "3D edge normal should have G - T = 2 directions")
+        _assert_shape(normal, (segment_view.size(), 2, 3), "3D edge normal should have G - T = 2 directions")
         dot_n0_t = bm.sum(normal[:, 0, :] * tangent[:, 0, :], axis=1)
         dot_n1_t = bm.sum(normal[:, 1, :] * tangent[:, 0, :], axis=1)
         dot_n0_n1 = bm.sum(normal[:, 0, :] * normal[:, 1, :], axis=1)
         _assert_allclose(
             dot_n0_t,
-            bm.zeros((edge_view.size(),), dtype=bm.float64),
+            bm.zeros((segment_view.size(),), dtype=bm.float64),
             "First 3D edge normal direction must be orthogonal to tangent",
         )
         _assert_allclose(
             dot_n1_t,
-            bm.zeros((edge_view.size(),), dtype=bm.float64),
+            bm.zeros((segment_view.size(),), dtype=bm.float64),
             "Second 3D edge normal direction must be orthogonal to tangent",
         )
         _assert_allclose(
             dot_n0_n1,
-            bm.zeros((edge_view.size(),), dtype=bm.float64),
+            bm.zeros((segment_view.size(),), dtype=bm.float64),
             "The two 3D edge normal directions must be mutually orthogonal",
         )
         assert bm.all(bm.sum(normal[:, 0, :] * normal[:, 0, :], axis=1) > 0)
@@ -417,8 +418,8 @@ class TestEdgeSchema:
     @pytest.mark.parametrize("backend", BACKENDS, ids=BACKEND_IDS)
     def test_degenerate_edge_normal_raises_value_error(self, backend):
         bm.set_backend(backend)
-        _, edge_view = _build_degenerate_edge_view()
+        _, segment_view = _build_degenerate_segment_view()
 
         with pytest.raises(ValueError):
-            edge_view.normal()
+            segment_view.normal()
 

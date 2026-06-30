@@ -1,6 +1,6 @@
 
-from .node import *
-from .edge import *
+from .point import *
+from .segment import *
 from .triangle import *
 from .quadrilateral import *
 from .tetrahedron import *

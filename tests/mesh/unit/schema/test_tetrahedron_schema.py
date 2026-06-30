@@ -59,7 +59,7 @@ def _build_single_tet_view():
     block = MeshBlock(positions=positions)
     block.add_sector(EntitySector("tet", tet), root=True)
     mesh = Mesh(block)
-    return mesh, mesh.sector("tet")
+    return mesh, mesh.entity_view_by_name("tet")
 
 
 def _build_two_tet_view():
@@ -81,7 +81,7 @@ def _build_two_tet_view():
     block = MeshBlock(positions=positions)
     block.add_sector(EntitySector("tet", tet), root=True)
     mesh = Mesh(block)
-    return mesh, mesh.sector("tet")
+    return mesh, mesh.entity_view_by_name("tet")
 
 
 class TestTetrahedronSchema:
@@ -89,7 +89,7 @@ class TestTetrahedronSchema:
     TetrahedronSchema 单元测试。
 
     测试通过新 mesh 入口构造含四面体实体的 Mesh，再通过
-    Mesh.sector("tet") 获得 EntityView，验证四面体形状 Schema
+    Mesh.entity_view_by_name("tet") 获得 EntityView，验证四面体形状 Schema
     内部应承担的实体级算法。
     """
 
@@ -102,7 +102,7 @@ class TestTetrahedronSchema:
         assert tet_view.geo_dimension() == mesh.geo_dimension() == 3
 
         tri_faces = TetrahedronSchema.local_entity("tri")
-        edge_faces = TetrahedronSchema.local_entity("edge")
+        edge_faces = TetrahedronSchema.local_entity("segment")
 
         assert len(tri_faces) == 4
         assert len(edge_faces) == 6
@@ -422,7 +422,7 @@ class TestTetrahedronSchema:
 
     def test_box3d_tetrahedralize_uses_tetrahedron_schema_geometry(self):
         mesh = Box3d(nx=1, ny=1, nz=1).tetrahedralize()
-        tet_view = mesh.sector("tet")
+        tet_view = mesh.entity_view_by_name("tet")
 
         measures = tet_view.measure()
         barycenters = tet_view.barycenter()

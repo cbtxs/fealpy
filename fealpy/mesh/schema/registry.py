@@ -1,7 +1,7 @@
 
 from .entity_schema import EntitySchema
-from .node import NodeSchema
-from .edge import EdgeSchema
+from .point import PointSchema
+from .segment import SegmentSchema
 from .triangle import TriangleSchema
 from .quadrilateral import QuadrilateralSchema
 from .tetrahedron import TetrahedronSchema
@@ -13,8 +13,8 @@ __all__ = ["SCHEMA_REGISTRY"]
 
 
 SCHEMA_REGISTRY: dict[str, type[EntitySchema]] = {
-	"node": NodeSchema,
-	"edge": EdgeSchema,
+	"point": PointSchema,
+	"segment": SegmentSchema,
 	"tri": TriangleSchema,
 	"quad": QuadrilateralSchema,
 	"tet": TetrahedronSchema,

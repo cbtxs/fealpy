@@ -146,12 +146,12 @@ def _remap_block_with_position(
     remapped_indices = pos_old_to_new[old_indices]
     new_indices_np, old_to_new_np, representative_old_idx = _stable_unique_rows(remapped_indices)
 
-    new_block = EntitySector(
+    new_sector = EntitySector(
         schema_name=block.schema_name,
         indices=bm.asarray(new_indices_np),
         metadata=dict(block.metadata),
     )
-    return new_block, bm.asarray(old_to_new_np, dtype=bm.int64), representative_old_idx
+    return new_sector, bm.asarray(old_to_new_np, dtype=bm.int64), representative_old_idx
 
 
 def _remap_relation(
@@ -231,14 +231,14 @@ def merge_mesh_storage(
     )
     pos_old_to_new_np = np.asarray(pos_old_to_new)
 
-    new_blocks: dict[str, EntitySector] = {}
+    new_sectors: dict[str, EntitySector] = {}
     entity_old_to_new: dict[str, Tensor] = {}
     entity_maps_np: dict[str, np.ndarray] = {}
     entity_representatives_np: dict[str, np.ndarray] = {}
 
     for schema_name, block in storage.sectors.items():
-        new_block, old_to_new, representative_old_idx = _remap_block_with_position(block, pos_old_to_new_np)
-        new_blocks[schema_name] = new_block
+        new_sector, old_to_new, representative_old_idx = _remap_block_with_position(block, pos_old_to_new_np)
+        new_sectors[schema_name] = new_sector
         entity_old_to_new[schema_name] = old_to_new
         entity_maps_np[schema_name] = np.asarray(old_to_new)
         entity_representatives_np[schema_name] = representative_old_idx
@@ -249,7 +249,7 @@ def merge_mesh_storage(
 
     new_storage = MeshBlock(
         positions=new_positions,
-        blocks=new_blocks,
+        sectors=new_sectors,
         relations=new_relations,
         root_entity_names=list(storage.root_entity_names),
     )
@@ -264,6 +264,25 @@ def merge(
     tol: float = 1e-5,
     leafsize: int = 16,
 ) -> tuple[Mesh, dict[str, Tensor]]:
-    """Merge a mesh by deduplicating close points and remapping entities/relations."""
+    """Merge a mesh by deduplicating close points and remapping entities/relations.
+
+    Parameters:
+        mesh (Mesh): The input mesh to merge.
+        tol (float): Distance tolerance used for deduplication. Must be non-negative.
+        leafsize (int): Leaf size used to build ``scipy.spatial.KDTree``.
+            In a KDTree, leaf_size specifies the maximum number of data points
+            stored in a leaf node. When building the tree, the algorithm
+            recursively splits the dataset until each leaf contains at most
+            leaf_size points. If a region has fewer points than leaf_size,
+            it becomes a leaf without further splitting.
+            Smaller leaf_size values create deeper trees because the data is
+            split more frequently, while larger values produce shallower trees
+            with fewer levels.
+
+    Returns:
+        A tuple (new_mesh, entity_old_to_new) where:
+        - ``new_mesh`` is the merged mesh.
+        - ``entity_old_to_new`` maps each schema name to old-entity -> new-entity indices.
+    """
     storage, entity_old_to_new = merge_mesh_storage(mesh.block, tol=tol, leafsize=leafsize)
     return Mesh(storage), entity_old_to_new

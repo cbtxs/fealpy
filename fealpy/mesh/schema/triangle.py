@@ -20,12 +20,12 @@ class TriangleSchema(ShapedEntitySchema):
     name = "tri"
     top_dim = 2
     OFace = {
-        "edge": [[1, 2], [2, 0], [0, 1]],
-        "node": [[0], [1], [2]],
+        "segment": [[1, 2], [2, 0], [0, 1]],
+        "point": [[0], [1], [2]],
     }
     SFace = {
-        "edge": [[1, 2], [0, 2], [0, 1]],
-        "node": [[0], [1], [2]],
+        "segment": [[1, 2], [0, 2], [0, 1]],
+        "point": [[0], [1], [2]],
     }
     orientation = [
         (0, 1, 2), (1, 2, 0), (2, 0, 1),

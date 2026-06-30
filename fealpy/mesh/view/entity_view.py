@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Concatenate, final, Literal, TYPE_CHECKING, ParamSpec
+from typing import Concatenate, final, Literal, ParamSpec, TYPE_CHECKING
 
 from ...backend import bm, Tensor, Index
 from ..schema.entity_schema import EntityContext
@@ -68,8 +68,8 @@ class EntityView:
 
     def error(
         self,
-        f1: Callable[[Tensor | tuple[Tensor, ...]], Tensor],
-        f2: Callable[[Tensor | tuple[Tensor, ...]], Tensor],
+        f1: Callable[..., Tensor],
+        f2: Callable[..., Tensor],
         /,
         power: float = 2.0,
         q: int = 3,
@@ -149,7 +149,7 @@ class EntityView:
 
     def integral(
         self,
-        func: Callable[[Tensor | tuple[Tensor, ...]], Tensor],
+        func: Callable[..., Tensor],
         /,
         q: int = 3,
         *,

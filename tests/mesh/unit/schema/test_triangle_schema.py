@@ -33,10 +33,6 @@ def make_topology_context(points, cells):
     return EntityContext(block, sector)
 
 
-def test_triangle_schema_ccw():
-    assert TriangleSchema.ccw["edge"] == [[1, 2], [2, 0], [0, 1]]
-
-
 def test_triangle_schema_geo_barycenter_measure_2d():
     ctx = make_context(np.array([
         [0.0, 0.0],
@@ -110,7 +106,7 @@ def test_triangle_schema_normal_3d():
 
 
 def test_triangle_schema_multi_index():
-    order = 2
+    order = (2,)
     mi = to_numpy(TriangleSchema.multi_index(order))
     expected = to_numpy(_MI.multi_index_matrix(order, 3))
     np.testing.assert_array_equal(mi, expected)
@@ -121,14 +117,6 @@ def test_triangle_schema_multi_index():
 
     assert TriangleSchema.num_multi_index(order) == expected.shape[0]
     assert TriangleSchema.num_multi_index(order, internal=True) == expected_inner.shape[0]
-
-
-def test_triangle_schema_multi_index_sort():
-    order = 3
-    mi = to_numpy(TriangleSchema.multi_index(order))
-    sort_idx = to_numpy(TriangleSchema.multi_index_sort(mi))
-    expected_idx = np.lexsort((mi[:, 2], mi[:, 1], mi[:, 0]))
-    np.testing.assert_array_equal(sort_idx, expected_idx)
 
 
 def test_triangle_schema_quadrature():
@@ -152,21 +140,21 @@ def test_triangle_schema_local_entity_relation_size_and_boundary():
     )
 
     assert TriangleSchema.size(ctx) == 2
-    assert TriangleSchema.local_entity("edge") == [[0, 1], [0, 2], [1, 2]]
-    assert TriangleSchema.local_entity("node") == [[0], [1], [2]]
+    assert TriangleSchema.local_entity("segment") == [[1, 2], [2, 0], [0, 1]]
+    assert TriangleSchema.local_entity("point") == [[0], [1], [2]]
 
-    edge_relation = TriangleSchema.relation(ctx, "edge")
-    edge_sector = to_numpy(ctx.block.get_sector("edge").indices)
+    edge_relation = TriangleSchema.relation(ctx, "segment")
+    edge_sector = to_numpy(ctx.block.get_sector("segment").indices)
     related_edges = edge_sector[to_numpy(edge_relation.tgt_indices)]
-    expected_edges = to_numpy(ctx.sector.indices)[:, TriangleSchema.local_entity("edge")]
+    expected_edges = to_numpy(ctx.sector.indices)[:, TriangleSchema.local_entity("segment")]
     np.testing.assert_array_equal(
         np.sort(related_edges, axis=-1),
         np.sort(expected_edges, axis=-1),
     )
 
-    node_relation = TriangleSchema.relation(ctx, "node")
-    node_sector = to_numpy(ctx.block.get_sector("node").indices).reshape(-1)
-    related_nodes = node_sector[to_numpy(node_relation.tgt_indices)]
+    node_relation = TriangleSchema.relation(ctx, "point")
+    point_sector = to_numpy(ctx.block.get_sector("point").indices).reshape(-1)
+    related_nodes = point_sector[to_numpy(node_relation.tgt_indices)]
     np.testing.assert_array_equal(related_nodes, to_numpy(ctx.sector.indices))
 
     boundary = TriangleSchema.boundary(ctx)

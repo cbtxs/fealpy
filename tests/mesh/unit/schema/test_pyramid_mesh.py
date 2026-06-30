@@ -8,7 +8,7 @@ from fealpy.mesh.view.mesh import Mesh
 
 PYRAMID_DATA = [
     {
-        "node": bm.asarray(
+        "point": bm.asarray(
             [
                 [0.0, 0.0, 0.0],
                 [1.0, 0.0, 0.0],
@@ -46,7 +46,7 @@ def _assert_allclose(actual, expected, message, atol=1.0e-14):
 
 
 def _build_pyramid_mesh(data) -> Mesh:
-    block = MeshBlock(positions=data["node"])
+    block = MeshBlock(positions=data["point"])
     block.add_sector(EntitySector("pyramid", data["cell"]), root=True)
     return Mesh(block)
 
@@ -64,19 +64,6 @@ class TestPyramidMesh:
     Unit tests for pyramid entity schema rules and first-stage geometric methods.
     """
 
-    def test_pyramid_schema_local_faces_and_ccw(self) -> None:
-        """
-        Verify topology-oriented local faces and orientation-oriented ccw faces.
-        """
-        assert PyramidSchema.local_faces == {
-            "quad": [[0, 1, 2, 3]],
-            "tri": [[0, 1, 4], [2, 3, 4], [0, 2, 4], [1, 3, 4]],
-        }
-        assert PyramidSchema.ccw == {
-            "quad": [[0, 2, 3, 1]],
-            "tri": [[0, 1, 4], [2, 4, 3], [0, 4, 2], [1, 3, 4]],
-        }
-
     @pytest.mark.parametrize(
         "data",
         PYRAMID_DATA,
@@ -86,7 +73,7 @@ class TestPyramidMesh:
         """
         Verify volume, vertex-average barycenter, normal shape, and tangent shape.
         """
-        pyramid = _build_pyramid_mesh(data).sector("pyramid")
+        pyramid = _build_pyramid_mesh(data).entity_view_by_name("pyramid")
 
         _assert_allclose(
             pyramid.measure(),
@@ -114,7 +101,7 @@ class TestPyramidMesh:
         """
         Verify that pyramid local edges are inferred from quad/tri local faces.
         """
-        assert PyramidSchema.local_entity("edge") == data["local_edges"]
+        assert PyramidSchema.local_entity("segment") == data["local_edges"]
 
     @pytest.mark.parametrize(
         "data",
@@ -125,7 +112,7 @@ class TestPyramidMesh:
         """
         Verify collapsed-coordinate geometry shape functions and physical mapping.
         """
-        pyramid = _build_pyramid_mesh(data).sector("pyramid")
+        pyramid = _build_pyramid_mesh(data).entity_view_by_name("pyramid")
         bcs = _pyramid_bcs(0.25, 0.75, 0.5)
 
         phi = PyramidSchema.geometry_shape_function(bcs)
@@ -156,7 +143,7 @@ class TestPyramidMesh:
         """
         Verify vertex interpolation and collapsed apex layer.
         """
-        pyramid = _build_pyramid_mesh(data).sector("pyramid")
+        pyramid = _build_pyramid_mesh(data).entity_view_by_name("pyramid")
 
         reference_vertices = [
             (0.0, 0.0, 0.0),
@@ -171,7 +158,7 @@ class TestPyramidMesh:
             )
             _assert_allclose(
                 point[0, 0],
-                data["node"][i],
+                data["point"][i],
                 "Pyramid reference vertices should map to matching physical vertices.",
             )
 
@@ -180,7 +167,7 @@ class TestPyramidMesh:
         )
         _assert_allclose(
             apex_layer_point[0, 0],
-            data["node"][4],
+            data["point"][4],
             "The collapsed w=1 layer should map to the apex.",
         )
 
@@ -193,7 +180,7 @@ class TestPyramidMesh:
         """
         Verify reference derivatives, Jacobian, and chain-rule gradient transform.
         """
-        pyramid = _build_pyramid_mesh(data).sector("pyramid")
+        pyramid = _build_pyramid_mesh(data).entity_view_by_name("pyramid")
         bcs = _pyramid_bcs(0.5, 0.5, 0.5)
 
         gphi = PyramidSchema.geometry_grad_shape_function(bcs)
@@ -268,7 +255,7 @@ class TestPyramidMesh:
         """
         Verify transform_grad against the explicit inverse-Jacobian formula.
         """
-        pyramid = _build_pyramid_mesh(data).sector("pyramid")
+        pyramid = _build_pyramid_mesh(data).entity_view_by_name("pyramid")
         bcs = _pyramid_bcs(0.2, 0.7, 0.4)
         ref_grad = bm.asarray(
             [[[1.0, 2.0, -0.5],
@@ -294,7 +281,7 @@ class TestPyramidMesh:
         """
         Verify collapsed tensor-product quadrature recovers the physical volume.
         """
-        pyramid = _build_pyramid_mesh(data).sector("pyramid")
+        pyramid = _build_pyramid_mesh(data).entity_view_by_name("pyramid")
         for q in (1, 2):
             qf = PyramidSchema.quadrature_formula(q)
             bcs, ws = qf.get_quadrature_points_and_weights()

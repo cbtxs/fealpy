@@ -62,7 +62,7 @@ def _build_single_hex_view():
     block = MeshBlock(positions=positions)
     block.add_sector(EntitySector("hex", hex_cell), root=True)
     mesh = Mesh(block)
-    return mesh, mesh.sector("hex")
+    return mesh, mesh.entity_view_by_name("hex")
 
 
 def _build_rectangular_hex_view():
@@ -84,7 +84,7 @@ def _build_rectangular_hex_view():
     block = MeshBlock(positions=positions)
     block.add_sector(EntitySector("hex", hex_cell), root=True)
     mesh = Mesh(block)
-    return mesh, mesh.sector("hex")
+    return mesh, mesh.entity_view_by_name("hex")
 
 
 class TestHexahedronSchema:
@@ -96,8 +96,8 @@ class TestHexahedronSchema:
         assert hex_view.top_dimension() == 3
         assert hex_view.geo_dimension() == mesh.geo_dimension() == 3
 
-        assert len(HexahedronSchema.local_entity("quad")) == 6
-        assert len(HexahedronSchema.ccw["quad"]) == 6
+        assert len(HexahedronSchema.OFace["quad"]) == 6
+        assert len(HexahedronSchema.SFace["quad"]) == 6
 
     def test_schema_only_defines_handoff_methods(self):
         allowed_methods = {

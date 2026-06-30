@@ -190,7 +190,7 @@ class EntitySchema:
     def integral(
         cls,
         ctx: EntityContext,
-        func: Callable[[Tensor | tuple[Tensor, ...]], Tensor],
+        func: Callable[[Tensor], Tensor] | Callable[[tuple[Tensor, ...]], Tensor],
         q: int, index: Index | None
     ) -> Tensor:
         """Integral of a barycentric function."""

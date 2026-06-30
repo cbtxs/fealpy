@@ -1,5 +1,4 @@
 
-from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import NamedTuple
 
@@ -33,64 +32,85 @@ class Mesh:
             return self.top_dimension() - 1
         if etype in {"edge", "EDGE", "Edge"}:
             return 1
-        if etype in {"vertex", "VERTEX", "Vertex"}:
-            return 0
         if etype in {"node", "NODE", "Node"}:
             return 0
         raise ValueError(f"Unknown entity name: {etype}")
 
     ## Entity getters
 
-    def entity_count(self, etype: str | int, /) -> int:
-        """Number of entity types with the given dimension."""
-        top_dim = self._ensure_top_dim(etype)
+    def entity_view_by_topdim(self, top_dim: int | str, /) -> list[EntityView]:
+        return [
+            EntityView(self.block, block) for block in self.block.sectors.values()
+            if block.schema.top_dim == self._ensure_top_dim(top_dim)
+        ]
 
-        count = 0
-        for block in self.block.sectors.values():
-            if block.schema.top_dim == top_dim:
-                count += block.indices.shape[0]
-        return count
+    def entity_view_by_name(self, name: str, /) -> EntityView:
+        try:
+            return EntityView(self.block, self.block.get_sector(name))
+        except KeyError:
+            raise ValueError(f"No entity found with name: {name}")
 
-    def entities(self, etype: str | int, /) -> Iterable[Tensor]:
-        """Provides an iterable of indices/positions for entities with the given dimension."""
-        top_dim = self._ensure_top_dim(etype)
+    @property
+    def Point(self) -> EntityView:
+        return self.entity_view_by_name("point")
 
-        if top_dim == 0:
-            yield self.block.positions
-            return
+    @property
+    def Segment(self) -> EntityView:
+        return self.entity_view_by_name("segment")
 
-        for block in self.entity_views(etype):
-            yield block.indices
+    @property
+    def Tri(self) -> EntityView:
+        return self.entity_view_by_name("tri")
 
-    def entity_views(self, etype: str | int, /) -> Iterable[EntityView]:
-        """Provides an iterable of views for entities with the given dimension."""
-        top_dim = self._ensure_top_dim(etype)
+    @property
+    def Quad(self) -> EntityView:
+        return self.entity_view_by_name("quad")
 
-        for block in self.block.sectors.values():
-            if block.schema.top_dim == top_dim:
-                yield EntityView(self.block, block)
+    @property
+    def Tet(self) -> EntityView:
+        return self.entity_view_by_name("tet")
 
-    ## Relation getters
+    @property
+    def Prism(self) -> EntityView:
+        return self.entity_view_by_name("prism")
 
-    def relation(self, src_etype: int | str, tgt_etype: int | str, /):
-        """Provide topological relationship between entities with given types."""
-        for src in self.entity_views(src_etype):
-            for tgt in self.entity_views(tgt_etype):
-                yield src.to(tgt)
+    @property
+    def Pyramid(self) -> EntityView:
+        return self.entity_view_by_name("pyramid")
+
+    @property
+    def Hex(self) -> EntityView:
+        return self.entity_view_by_name("hex")
+
+    @property
+    def Cells(self) -> list[EntityView]:
+        return self.entity_view_by_topdim(-1)
+
+    @property
+    def Faces(self) -> list[EntityView]:
+        return self.entity_view_by_topdim(-2)
+
+    @property
+    def Edges(self) -> list[EntityView]:
+        return self.entity_view_by_topdim(1)
+
+    @property
+    def Nodes(self) -> list[EntityView]:
+        return self.entity_view_by_topdim(0)
 
     ## Checkers
 
     def is_simplex_mesh(self) -> bool:
         """Check if the mesh is a simplex mesh."""
         for name in self.block.sectors.keys():
-            if name not in {"node", "edge", "tri", "tet"}:
+            if name not in {"point", "segment", "tri", "tet"}:
                 return False
         return True
 
     def is_tensor_mesh(self) -> bool:
         """Check if the mesh is a tensor mesh."""
         for name in self.block.sectors.keys():
-            if name not in {"node", "edge", "quad", "hex"}:
+            if name not in {"point", "segment", "quad", "hex"}:
                 return False
         return True
 
@@ -110,10 +130,6 @@ class Mesh:
         """Provides a view of the mesh compatible with FEALPy's API."""
         from .fealpy_api import FEALPyMesh
         return FEALPyMesh(self.block)
-
-    def sector(self, name: str, /) -> EntityView:
-        """Provides a view of the entity with the given name."""
-        return EntityView(self.block, self.block.get_sector(name))
 
     def top_dimension(self) -> int:
         if not self.block.root_entity_names:

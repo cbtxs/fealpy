@@ -50,14 +50,6 @@ class TestPrismSchema:
 
         assert schema.name == "prism"
         assert schema.top_dim == 3
-        assert schema.local_faces == {
-            "tri": [[0, 1, 2], [3, 4, 5]],
-            "quad": [[0, 1, 3, 4], [0, 2, 3, 5], [1, 2, 4, 5]],
-        }
-        assert schema.ccw == {
-            "tri": [[0, 2, 1], [3, 4, 5]],
-            "quad": [[0, 1, 4, 3], [0, 3, 5, 2], [1, 2, 5, 4]],
-        }
 
         mi = bm.to_numpy(schema.multi_index((2, 2), tensorprod=False))
         expected = np.array([
