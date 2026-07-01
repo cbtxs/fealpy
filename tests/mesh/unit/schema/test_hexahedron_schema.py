@@ -88,7 +88,7 @@ def _build_rectangular_hex_view():
 
 
 class TestHexahedronSchema:
-    def test_schema_dispatch_and_metadata(self):
+    def test_schema_dispatch_and_attributes(self):
         mesh, hex_view = _build_single_hex_view()
 
         assert hex_view.schema is HexahedronSchema

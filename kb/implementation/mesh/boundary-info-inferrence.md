@@ -197,7 +197,7 @@ def propagate_boundary_downward(storage, parent_name, parent_mask, child_name):
 
 **结果缓存**
 
-若 relation 不变，建议把 `mask/index/count` 缓存到 block metadata ，避免重复计算。
+若 relation 不变，建议把 `mask/index/count` 缓存到 block attributes ，避免重复计算。
 
 ## 八、小结
 

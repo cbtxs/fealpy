@@ -248,10 +248,10 @@ def read_mesh_from_vtu(
     for name, values in _iter_data_arrays(grid.GetPointData(), vnp):
         if values.shape[0] != positions.shape[0]:
             raise ValueError(
-                f"Point metadata {name!r} has incompatible leading dimension: "
+                f"Point attributes {name!r} has incompatible leading dimension: "
                 f"expected {positions.shape[0]}, got {values.shape[0]}."
             )
-        block.get_sector("point").metadata[name] = values
+        block.get_sector("point").attributes[name] = values
 
     cell_data_arrays = _iter_data_arrays(grid.GetCellData(), vnp)
     for schema_name, cell_indices in cell_indices_by_schema.items():
@@ -259,10 +259,10 @@ def read_mesh_from_vtu(
         for name, values in cell_data_arrays:
             if values.shape[0] != total_cells:
                 raise ValueError(
-                    f"Cell metadata {name!r} has incompatible leading dimension: "
+                    f"Cell attributes {name!r} has incompatible leading dimension: "
                     f"expected {total_cells}, got {values.shape[0]}."
                 )
-            sector.metadata[name] = values[cell_indices]
+            sector.attributes[name] = values[cell_indices]
 
     if construct_topology and block.root_entity_names:
         root_dims = [SCHEMA_REGISTRY[name].top_dim for name in block.root_entity_names]

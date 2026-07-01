@@ -97,7 +97,7 @@ def _iter_block_cells(schema_name: str, indices: np.ndarray) -> Iterable[np.ndar
 		yield np.asarray(row, dtype=np.int64)
 
 
-def _normalize_metadata_array(value: Any, count: int, field_name: str) -> np.ndarray:
+def _normalize_attributes_array(value: Any, count: int, field_name: str) -> np.ndarray:
 	arr = _as_numpy(value)
 
 	if arr.ndim == 0:
@@ -105,7 +105,7 @@ def _normalize_metadata_array(value: Any, count: int, field_name: str) -> np.nda
 
 	if arr.shape[0] != count:
 		raise ValueError(
-			f"Metadata '{field_name}' has incompatible leading dimension: "
+			f"attributes '{field_name}' has incompatible leading dimension: "
 			f"expected {count}, got {arr.shape[0]}."
 		)
 
@@ -185,8 +185,8 @@ def write_mesh_to_vtu(
 		raise ValueError(f"Unknown entity names for export: {unknown}")
 
 	total_cells = 0
-	cell_metadata_records: list[tuple[str, str, int, int, Any]] = []
-	point_metadata_records: list[tuple[str, Any]] = []
+	cell_attributes_records: list[tuple[str, str, int, int, Any]] = []
+	point_attributes_records: list[tuple[str, Any]] = []
 
 	for schema_name in selected:
 		sector = block.get_sector(schema_name)
@@ -199,18 +199,18 @@ def write_mesh_to_vtu(
 			total_cells += 1
 		end = total_cells
 
-		for key, value in sector.metadata.items():
+		for key, value in sector.attributes.items():
 			if value is None:
 				continue
 			if schema_name == "point":
-				point_metadata_records.append((key, value))
+				point_attributes_records.append((key, value))
 			else:
-				cell_metadata_records.append((schema_name, key, start, end, value))
+				cell_attributes_records.append((schema_name, key, start, end, value))
 
 	cell_data = grid.GetCellData()
-	for schema_name, key, start, end, value in cell_metadata_records:
+	for schema_name, key, start, end, value in cell_attributes_records:
 		field_name = key
-		values = _normalize_metadata_array(value, end - start, field_name)
+		values = _normalize_attributes_array(value, end - start, field_name)
 		filled = _create_cell_data_array(values, total_cells, start, end)
 
 		if filled.dtype == np.bool_:
@@ -222,9 +222,9 @@ def write_mesh_to_vtu(
 
 	point_data = grid.GetPointData()
 	point_count = points.shape[0]
-	for key, value in point_metadata_records:
+	for key, value in point_attributes_records:
 		field_name = key
-		normalized = _normalize_metadata_array(value, point_count, field_name)
+		normalized = _normalize_attributes_array(value, point_count, field_name)
 		if normalized.dtype == np.bool_:
 			vtk_arr = vnp.numpy_to_vtk(normalized.astype(np.int_))
 		else:

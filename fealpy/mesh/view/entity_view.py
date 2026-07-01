@@ -49,9 +49,11 @@ class EntityView:
         return self.schema.barycentric(self.context(), func, index)
 
     def barycenter(self, *, index: Index | None = None) -> Tensor:
+        """Compute the barycenter of the entities."""
         return self.schema.barycenter(self.context(), index)
 
     def bc_to_point(self, bc: Tensor | tuple[Tensor, ...], *, index: Index | None = None) -> Tensor:
+        """Convert barycentric coordinates to cartesian coordinates."""
         if not isinstance(bc, tuple):
             bc = (bc,)
         return self.schema.bc_to_point(self.context(), bc, index)
@@ -70,6 +72,17 @@ class EntityView:
                 entities.
         """
         return self.schema.boundary(self.context())
+
+    def del_attribute(self, name: str) -> None:
+        """Delete an attribute from the entity sector.
+
+        Parameters:
+            name (str): The name of the attribute to delete.
+        """
+        if name in self.sector.attributes:
+            del self.sector.attributes[name]
+        else:
+            raise KeyError(f"Attribute '{name}' not found in sector attributes.")
 
     def error(
         self,
@@ -98,7 +111,12 @@ class EntityView:
         return bm.sum(self.integral(integrand, q=q, index=index)) ** (1.0 / power)
 
     def geo_dimension(self) -> int:
+        """Get the geometric dimension of the entity."""
         return self.schema.geo_dimension(self.context())
+
+    def get_attribute(self, name: str) -> Any:
+        """Get an attribute from the entity sector."""
+        return self.sector.attributes.get(name)
 
     def global_permutations(self, tgt_name: str) -> Tensor:
         return self.schema.global_permutations(self.context(), tgt_name)
@@ -185,6 +203,9 @@ class EntityView:
 
     def quadrature_formula(self, q: int = 3, qtype: str = "legendre"):
         return self.schema.quadrature_formula(q, qtype)
+
+    def set_attribute(self, name: str, value: Any) -> None:
+        self.sector.attributes[name] = value
 
     def shape_function(
         self,

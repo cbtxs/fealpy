@@ -93,7 +93,7 @@ class TestTetrahedronSchema:
     内部应承担的实体级算法。
     """
 
-    def test_schema_dispatch_and_metadata(self):
+    def test_schema_dispatch_and_attributes(self):
         mesh, tet_view = _build_single_tet_view()
 
         assert tet_view.schema is TetrahedronSchema

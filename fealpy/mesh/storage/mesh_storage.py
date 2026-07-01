@@ -13,7 +13,7 @@ class EntitySector:
     schema_name: str
     indices: Tensor
     indptr: Tensor | None = None
-    metadata: dict[str, Any] = field(default_factory=dict)
+    attributes: dict[str, Any] = field(default_factory=dict)
 
     @property
     def schema(self):

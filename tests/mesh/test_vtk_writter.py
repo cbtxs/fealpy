@@ -87,12 +87,12 @@ def _build_mesh() -> Mesh:
     node_block = EntitySector(
         schema_name="point",
         indices=np.array([0, 1, 2], dtype=np.int64),
-        metadata={"temperature": np.array([10.0, 20.0, 30.0], dtype=float)},
+        attributes={"temperature": np.array([10.0, 20.0, 30.0], dtype=float)},
     )
     tri_block = EntitySector(
         schema_name="tri",
         indices=np.array([[0, 1, 2]], dtype=np.int64),
-        metadata={"material": np.array([7], dtype=np.int64)},
+        attributes={"material": np.array([7], dtype=np.int64)},
     )
 
     storage = MeshBlock(positions=positions)
@@ -101,7 +101,7 @@ def _build_mesh() -> Mesh:
     return Mesh(storage)
 
 
-def test_write_mesh_to_vtu_puts_node_metadata_in_point_data(monkeypatch) -> None:
+def test_write_mesh_to_vtu_puts_node_attributes_in_point_data(monkeypatch) -> None:
     fake_vtk = type("FakeVtkModule", (), {
         "VTK_VERTEX": 1,
         "VTK_LINE": 3,

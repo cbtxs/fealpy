@@ -72,7 +72,7 @@ class TestPointSchema:
     PointSchema 的核心算法是否符合 mesh_05_algorithm_migration 的接口合同。
     """
 
-    def test_schema_dispatch_and_metadata(self):
+    def test_schema_dispatch_and_attributes(self):
         """
         [结构验证]：用户从 Mesh.sector("point") 获取的实体视图必须分派到 PointSchema。
         同时验证 node 的拓扑维数、几何维数和 ccw 元数据。

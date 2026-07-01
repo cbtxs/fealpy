@@ -25,18 +25,18 @@ def _merge_block(
         raise ValueError(f"missing blocks for schema {schema_name!r}")
 
     arrays = []
-    metadata: dict = {}
+    attributes: dict = {}
 
     if left_block is not None:
         arrays.append(left_block.indices)
-        metadata.update(left_block.metadata)
+        attributes.update(left_block.attributes)
 
     if right_block is not None:
         arrays.append(right_block.indices + node_offset)
-        metadata.update(right_block.metadata)
+        attributes.update(right_block.attributes)
 
     indices = arrays[0] if len(arrays) == 1 else bm.concat(arrays, axis=0)
-    return EntitySector(schema_name=schema_name, indices=indices, metadata=metadata)
+    return EntitySector(schema_name=schema_name, indices=indices, attributes=attributes)
 
 
 def _merge_relation(

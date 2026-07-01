@@ -149,7 +149,7 @@ def _remap_block_with_position(
     new_sector = EntitySector(
         schema_name=block.schema_name,
         indices=bm.asarray(new_indices_np),
-        metadata=dict(block.metadata),
+        attributes=dict(block.attributes),
     )
     return new_sector, bm.asarray(old_to_new_np, dtype=bm.int64), representative_old_idx
 

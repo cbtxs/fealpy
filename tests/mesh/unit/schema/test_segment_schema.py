@@ -131,7 +131,7 @@ def _build_two_segment_view():
 
 class TestSegmentSchema:
     @pytest.mark.parametrize("backend", BACKENDS, ids=BACKEND_IDS)
-    def test_schema_dispatch_and_metadata(self, backend):
+    def test_schema_dispatch_and_attributes(self, backend):
         bm.set_backend(backend)
         mesh, segment_view = _build_segment_view()
 

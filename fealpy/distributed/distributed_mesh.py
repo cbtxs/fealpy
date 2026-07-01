@@ -145,7 +145,7 @@ def _build_local_storage(
             EntitySector(
                 schema_name=name,
                 indices=local_indices,
-                metadata=dict(block.metadata),
+                attributes=dict(block.attributes),
             ),
             root=(name in root_names),
         )

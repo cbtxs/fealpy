@@ -158,7 +158,7 @@ def fake_vtk_modules(monkeypatch):
     monkeypatch.setattr(vr, "_load_vtk", lambda: (fake_vtk, fake_vnp))
 
 
-def test_read_mesh_from_vtu_rebuilds_grouped_entities_and_metadata(fake_vtk_modules):
+def test_read_mesh_from_vtu_rebuilds_grouped_entities_and_attributes(fake_vtk_modules):
     mesh = read_mesh_from_vtu("dummy.vtu")
 
     assert mesh.geo_dimension() == 2
@@ -169,11 +169,11 @@ def test_read_mesh_from_vtu_rebuilds_grouped_entities_and_metadata(fake_vtk_modu
     )
     np.testing.assert_array_equal(mesh.block.get_sector("tri").indices, np.array([[0, 1, 2], [1, 3, 2]]))
     np.testing.assert_array_equal(mesh.block.get_sector("segment").indices, np.array([[0, 1]]))
-    np.testing.assert_array_equal(mesh.block.get_sector("tri").metadata["marker"], np.array([2, 4]))
-    np.testing.assert_array_equal(mesh.block.get_sector("tri").metadata["RegionId"], np.array([11, 13]))
-    np.testing.assert_array_equal(mesh.block.get_sector("segment").metadata["boundary"], np.array([9]))
+    np.testing.assert_array_equal(mesh.block.get_sector("tri").attributes["marker"], np.array([2, 4]))
+    np.testing.assert_array_equal(mesh.block.get_sector("tri").attributes["RegionId"], np.array([11, 13]))
+    np.testing.assert_array_equal(mesh.block.get_sector("segment").attributes["boundary"], np.array([9]))
     np.testing.assert_allclose(
-        mesh.block.get_sector("point").metadata["temperature"],
+        mesh.block.get_sector("point").attributes["temperature"],
         np.array([10.0, 20.0, 30.0, 40.0]),
     )
 

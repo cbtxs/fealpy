@@ -22,8 +22,10 @@
 | `barycenter`          | 计算单元重心               |
 | `bc_to_point`         | 重心坐标转换为笛卡尔坐标         |
 | `boundary`            | 获得边界信息               |
+| `del_attribute`       | 删除实体上的属性             |
 | `error`               | 计算两个函数之间的误差          |
 | `geo_dimension`       | 几何维数                 |
+| `get_attribute`       | 获取实体上的属性             |
 | `global_permutations` | 子实体局部朝向到全局朝向的顶点置换矩阵  |
 | `grad_shape_function` | 计算形函数的梯度             |
 | `indices`             | 属性，单元顶点的全局编号         |
@@ -34,6 +36,7 @@
 | `normal`              | 计算单元法向               |
 | `num_multi_index`     | 计算多重指标数量             |
 | `quadrature_formula`  | 获取积分公式               |
+| `set_attribute`       | 设置实体上的属性             |
 | `shape_function`      | 计算形函数值               |
 | `size`                | 获取实体数量               |
 | `tangent`             | 计算单元切向               |
