@@ -252,7 +252,7 @@ class FEALPyMesh(Mesh):
         edge_sec = self.entity_view(1)
         f2e = self.face_to_edge()
         sign = bm.zeros((face_sec.indices.shape[0], 3), dtype=bm.bool)
-        local_f2e = face_sec.schema.local_entity("edge")
+        local_f2e = face_sec.schema.local_entity("segment")
         n = [item[0] for item in local_f2e]
 
         for i in range(len(n)):

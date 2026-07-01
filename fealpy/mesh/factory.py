@@ -44,11 +44,11 @@ class _MeshFactoryNewMixin(metaclass=MeshFactory):
 
 
 class IntervalMesh(_MeshFactoryNewMixin):
-    schema = "edge"
+    schema = "segment"
 
 
 class EdgeMesh(_MeshFactoryNewMixin):
-    schema = "edge"
+    schema = "segment"
 
 
 class TriangleMesh(_MeshFactoryNewMixin):

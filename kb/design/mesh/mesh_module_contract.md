@@ -38,6 +38,7 @@ mesh/
 		classic.py
 	
 	vtk_writter.py            # 工具：VTK 存储
+	vtk_reader.py             # 工具：VTK 读取
 	
 	#---------- 兼容层 ----------#
 	factory.py                # 提供 TriangleMesh 等类

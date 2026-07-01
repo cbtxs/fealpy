@@ -16,8 +16,8 @@ __all__ = [
 
 # Keep the mapping by constant name to avoid importing vtk at module import time.
 SCHEMA_TO_VTK_CELL_TYPE_NAME: dict[str, str] = {
-	"node": "VTK_VERTEX",
-	"edge": "VTK_LINE",
+	"point": "VTK_VERTEX",
+	"segment": "VTK_LINE",
 	"tri": "VTK_TRIANGLE",
 	"quad": "VTK_QUAD",
 	"tet": "VTK_TETRA",
@@ -74,7 +74,7 @@ def _resolve_vtk_cell_type(schema_name: str, vtk_mod) -> int:
 
 
 def _iter_block_cells(schema_name: str, indices: np.ndarray) -> Iterable[np.ndarray]:
-	if schema_name == "node":
+	if schema_name == "point":
 		if indices.ndim == 1:
 			for idx in indices:
 				yield np.asarray([idx], dtype=np.int64)
@@ -84,7 +84,7 @@ def _iter_block_cells(schema_name: str, indices: np.ndarray) -> Iterable[np.ndar
 				yield np.asarray(row, dtype=np.int64)
 			return
 		raise ValueError(
-			"Node entity indices must have shape (N,) or (N, 1), "
+			"Point entity indices must have shape (N,) or (N, 1), "
 			f"got shape {indices.shape}."
 		)
 
@@ -154,7 +154,7 @@ def write_mesh_to_vtu(
         filename (str): Output `.vtu` file path.
         mesh (Mesh | MeshBlock): Input mesh block or its view.
         entity_names (Iterable[str] | None, optional): Optional iterable of
-            schema names to export, e.g. `["tri", "edge"]`.
+            schema names to export, e.g. `["tri", "segment"]`.
             If omitted, all entity blocks in `mesh.block` are exported.
         binary (bool, optional): If `True`, write binary VTU;
             otherwise write ASCII VTU.
@@ -202,14 +202,14 @@ def write_mesh_to_vtu(
 		for key, value in sector.metadata.items():
 			if value is None:
 				continue
-			if schema_name == "node":
+			if schema_name == "point":
 				point_metadata_records.append((key, value))
 			else:
 				cell_metadata_records.append((schema_name, key, start, end, value))
 
 	cell_data = grid.GetCellData()
 	for schema_name, key, start, end, value in cell_metadata_records:
-		field_name = f"{schema_name}:{key}"
+		field_name = key
 		values = _normalize_metadata_array(value, end - start, field_name)
 		filled = _create_cell_data_array(values, total_cells, start, end)
 
@@ -223,7 +223,7 @@ def write_mesh_to_vtu(
 	point_data = grid.GetPointData()
 	point_count = points.shape[0]
 	for key, value in point_metadata_records:
-		field_name = f"node:{key}"
+		field_name = key
 		normalized = _normalize_metadata_array(value, point_count, field_name)
 		if normalized.dtype == np.bool_:
 			vtk_arr = vnp.numpy_to_vtk(normalized.astype(np.int_))

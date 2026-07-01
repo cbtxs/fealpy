@@ -1,5 +1,5 @@
 
-from  dataclasses import dataclass, field
+from dataclasses import dataclass, field
 from typing import Any
 
 from ...backend import Tensor
@@ -13,7 +13,7 @@ class EntitySector:
     schema_name: str
     indices: Tensor
     indptr: Tensor | None = None
-    metadata: dict = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
     def schema(self):

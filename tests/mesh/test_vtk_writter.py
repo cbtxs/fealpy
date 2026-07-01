@@ -85,7 +85,7 @@ def _build_mesh() -> Mesh:
         dtype=float,
     )
     node_block = EntitySector(
-        schema_name="node",
+        schema_name="point",
         indices=np.array([0, 1, 2], dtype=np.int64),
         metadata={"temperature": np.array([10.0, 20.0, 30.0], dtype=float)},
     )
@@ -135,10 +135,10 @@ def test_write_mesh_to_vtu_puts_node_metadata_in_point_data(monkeypatch) -> None
     point_data = {arr.name: arr.data for arr in grid.GetPointData().arrays}
     cell_data = {arr.name: arr.data for arr in grid.GetCellData().arrays}
 
-    assert "node:temperature" in point_data
-    np.testing.assert_allclose(point_data["node:temperature"], np.array([10.0, 20.0, 30.0]))
+    assert "temperature" in point_data
+    np.testing.assert_allclose(point_data["temperature"], np.array([10.0, 20.0, 30.0]))
 
-    assert "tri:material" in cell_data
-    np.testing.assert_array_equal(cell_data["tri:material"], np.array([0, 0, 0, 7]))
+    assert "material" in cell_data
+    np.testing.assert_array_equal(cell_data["material"], np.array([0, 0, 0, 7]))
 
-    assert "node:temperature" not in cell_data
+    assert "temperature" not in cell_data

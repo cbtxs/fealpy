@@ -55,7 +55,7 @@ class Box1d:
         node, cell = self.initialize()
 
         block = MeshBlock(positions=node)
-        block.add_sector(EntitySector("edge", cell), root=True)
+        block.add_sector(EntitySector("segment", cell), root=True)
         TopologyBuilder.construct(block)
         mesh = Mesh(block)
 
