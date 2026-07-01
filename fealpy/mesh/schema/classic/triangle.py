@@ -1,17 +1,13 @@
-from typing import TYPE_CHECKING
 
-from ...backend import bm
-from ...backend import Index, Tensor
-from ..topology.ipoints import MultiIndex as _MI
-from .entity_schema import (
+from ....backend import bm
+from ....backend import Index, Tensor
+from ...ipoints import MultiIndex as _MI, multi_index_tensorprod
+from .base import (
     EntityContext,
     ShapedEntitySchema,
     _require_bcs_tuple,
     _require_order_tuple,
 )
-
-if TYPE_CHECKING:
-    from ...quadrature import Quadrature
 
 __all__ = ["TriangleSchema"]
 
@@ -47,7 +43,6 @@ class TriangleSchema(ShapedEntitySchema):
         else:
             mi = _MI.multi_index_matrix(p, 3)
         if tensorprod:
-            from ..topology.ipoints import multi_index_tensorprod
             return multi_index_tensorprod(mi)
         return mi
 
@@ -134,13 +129,13 @@ class TriangleSchema(ShapedEntitySchema):
         return bm.broadcast_to(grad[:, None, :, :], (tri.shape[0], nq, grad.shape[1], grad.shape[2]))
 
     @classmethod
-    def quadrature_formula(cls, q: int, qtype: str | None = "legendre", device=None) -> "Quadrature":
+    def quadrature_formula(cls, q: int, qtype: str | None = "legendre", device=None):
         if qtype != "legendre":
             raise ValueError(f"unsupported quadrature type: {qtype}")
         if q > 9:
-            from ...quadrature.stroud_quadrature import StroudQuadrature
+            from ....quadrature.stroud_quadrature import StroudQuadrature
             return StroudQuadrature(2, q)
-        from ...quadrature import TriangleQuadrature
+        from ....quadrature import TriangleQuadrature
         return TriangleQuadrature(q, device=device)
 
     @classmethod

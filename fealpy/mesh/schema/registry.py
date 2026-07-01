@@ -1,13 +1,6 @@
 
 from .entity_schema import EntitySchema
-from .point import PointSchema
-from .segment import SegmentSchema
-from .triangle import TriangleSchema
-from .quadrilateral import QuadrilateralSchema
-from .tetrahedron import TetrahedronSchema
-from .prism import PrismSchema
-from .pyramid import PyramidSchema
-from .hexahedron import HexahedronSchema
+from .classic import *
 
 __all__ = ["SCHEMA_REGISTRY"]
 

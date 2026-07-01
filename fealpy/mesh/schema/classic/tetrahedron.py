@@ -1,17 +1,13 @@
-from typing import TYPE_CHECKING
 
-from ...backend import bm
-from ...backend import Index, Tensor
-from ..topology.ipoints import MultiIndex as _MI
-from .entity_schema import (
+from ....backend import bm
+from ....backend import Index, Tensor
+from ...ipoints import MultiIndex as _MI, multi_index_tensorprod
+from .base import (
     EntityContext,
     ShapedEntitySchema,
     _require_bcs_tuple,
     _require_order_tuple,
 )
-
-if TYPE_CHECKING:
-    from ...quadrature import Quadrature
 
 __all__ = ["TetrahedronSchema"]
 
@@ -172,13 +168,12 @@ class TetrahedronSchema(ShapedEntitySchema):
 
     @classmethod
     def multi_index(cls, order: tuple[int, ...], *, internal: bool = False, tensorprod: bool = True) -> Tensor:
-        order = _require_order_tuple(order, "tetrahedron multi_index", 1)[0]
+        p = _require_order_tuple(order, "tetrahedron multi_index", 1)[0]
         if internal:
-            mi = _MI.multi_index_inner(order, 4)
+            mi = _MI.multi_index_inner(p, 4)
         else:
-            mi = _MI.multi_index_matrix(order, 4)
+            mi = _MI.multi_index_matrix(p, 4)
         if tensorprod:
-            from ..topology.ipoints import multi_index_tensorprod
             return multi_index_tensorprod(mi)
         return mi
 
@@ -194,13 +189,13 @@ class TetrahedronSchema(ShapedEntitySchema):
         return bm.zeros((tet.shape[0], 0, 3), dtype=ctx.block.positions.dtype)
 
     @classmethod
-    def quadrature_formula(cls, q: int, qtype: str | None = "legendre", device=None) -> "Quadrature":
+    def quadrature_formula(cls, q: int, qtype: str | None = "legendre", device=None):
         if qtype not in (None, "legendre"):
             raise ValueError(f"unsupported tetrahedron quadrature type: {qtype!r}")
         if q > 7:
-            from fealpy.quadrature.stroud_quadrature import StroudQuadrature
+            from ....quadrature.stroud_quadrature import StroudQuadrature
             return StroudQuadrature(3, q)
-        from fealpy.quadrature import TetrahedronQuadrature
+        from ....quadrature import TetrahedronQuadrature
         return TetrahedronQuadrature(q, device=device)
 
     @classmethod

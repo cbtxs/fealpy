@@ -3,12 +3,12 @@ from collections.abc import Iterable
 from itertools import combinations_with_replacement
 from typing import TYPE_CHECKING
 
-from ...backend import bm
-from ...backend import Tensor, dtype, device
+from ..backend import bm
+from ..backend import Tensor, dtype
 
 if TYPE_CHECKING:
-    from ..schema import EntitySchema
-    from ..view import Mesh
+    from .schema import EntitySchema
+    from .view import Mesh
 
 
 __all__ = [
@@ -83,7 +83,7 @@ def multi_index_sort_by_locals(multi_index: Tensor, local_faces: dict[str, list[
     face_instance_index = bm.zeros((num_multi_index,), dtype=bm.int8)
     weights = bm.zeros_like(multi_index, dtype=bm.int64)
 
-    from ..schema.registry import SCHEMA_REGISTRY
+    from .schema.registry import SCHEMA_REGISTRY
 
     for fti, (key, value) in enumerate(local_faces.items()):
         schema_cls = SCHEMA_REGISTRY[key]
@@ -152,11 +152,11 @@ def to_ipoint(mesh: "Mesh", name: str, order: int) -> Tensor: # [num_entities, n
     collected = []
     dim_cursor = 0
     ip_cursor = 0
-    tgt_entity = mesh.sector(name)
+    tgt_entity = mesh.entity_view_by_name(name)
     shutdown = False
 
     while True:
-        for subentity in mesh.entity_views(dim_cursor):
+        for subentity in mesh.entity_view_by_topdim(dim_cursor):
             ### (1) Get ip mapping from sub-entity to the global
             num_sub_entity = subentity.size()
             num_internal_ip = subentity.num_multi_index(order, internal=True)
@@ -246,7 +246,7 @@ def ipoints(mesh: "Mesh", order: int | tuple[int, ...], names: Iterable[str]) ->
     device = mesh.block.positions.device
 
     collected = []
-    for subentity in [mesh.sector(entity) for entity in names]:
+    for subentity in [mesh.entity_view_by_name(entity) for entity in names]:
         mi = subentity.schema.multi_index(order, internal=True)
         mi = bm.device_put(mi, device)
         if mi.shape[0] == 0:

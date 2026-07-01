@@ -1,27 +1,32 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Concatenate, final, Literal, ParamSpec, TYPE_CHECKING
+from dataclasses import dataclass, field
+from typing import Any, Concatenate, final, Literal, ParamSpec, TYPE_CHECKING
 
 from ...backend import bm, Tensor, Index
-from ..schema.entity_schema import EntityContext
+from ..schema.entity_schema import EntityContext, EntitySchema
 
 if TYPE_CHECKING:
-    from ..storage import EntitySector, MeshBlock, Relation
+    from ..storage import MeshBlock, EntitySector, Relation
     from ..topology.boundary import BoundaryInfo
 
 __all__ = ["EntityView"]
 
 P = ParamSpec("P")
 
+
 @final
+@dataclass(slots=True)
 class EntityView:
     """Provide a view of an entity sector, with user-friendly APIs to access its
     properties and relations."""
-    def __init__(self, block: MeshBlock, sec: EntitySector):
-        self.block = block
-        self.sector = sec
-        self.schema = sec.schema
+    block: MeshBlock
+    sector: EntitySector
+    schema: type[EntitySchema] = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.schema = self.sector.schema
 
     def __len__(self) -> int:
         return self.schema.size(self.context())
@@ -145,7 +150,7 @@ class EntityView:
 
     @property
     def indices(self) -> Tensor:
-        return self.sector.indices
+        return getattr(self.sector, "indices")
 
     def integral(
         self,
@@ -211,8 +216,10 @@ class EntityView:
     def to(self, target: str | EntityView, /) -> Relation:
         """Compute the relation between this entity and the target entity."""
         if isinstance(target, EntityView):
-            target = target.schema.name
-        return self.schema.relation(self.context(), target)
+            tgt = target.schema.name
+        else:
+            tgt = target
+        return self.schema.relation(self.context(), tgt)
 
     def top_dimension(self) -> int:
         return self.schema.top_dim

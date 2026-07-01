@@ -1,17 +1,13 @@
-from typing import TYPE_CHECKING
 
-from ...backend import bm
-from ...backend import Index, Tensor
-from ..topology.ipoints import MultiIndex as _MI
-from .entity_schema import (
+from ....backend import bm
+from ....backend import Index, Tensor
+from ...ipoints import MultiIndex as _MI, multi_index_tensorprod
+from .base import (
     EntityContext,
     ShapedEntitySchema,
     _require_bcs_tuple,
     _require_order_tuple,
 )
-
-if TYPE_CHECKING:
-    from ...quadrature import Quadrature
 
 __all__ = ["SegmentSchema"]
 
@@ -77,7 +73,6 @@ class SegmentSchema(ShapedEntitySchema):
         else:
             mi = _MI.multi_index_matrix(p, 2)
         if tensorprod:
-            from ..topology.ipoints import multi_index_tensorprod
             return multi_index_tensorprod(mi)
         return mi
 
@@ -199,7 +194,7 @@ class SegmentSchema(ShapedEntitySchema):
         return bm.broadcast_to(grad[:, None, :, :], (nc, nq, grad.shape[1], grad.shape[2]))
 
     @classmethod
-    def quadrature_formula(cls, q: int, qtype: str | None = "legendre", device=None) -> "Quadrature":
+    def quadrature_formula(cls, q: int, qtype: str | None = "legendre", device=None):
         """Return a 1D Gauss-Legendre quadrature rule on the reference segment.
 
         Parameters:

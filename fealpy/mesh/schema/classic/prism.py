@@ -1,17 +1,13 @@
-from typing import TYPE_CHECKING
 
-from ...backend import bm
-from ...backend import Index, Tensor
-from ..topology.ipoints import MultiIndex as _MI
-from .entity_schema import (
+from ....backend import bm
+from ....backend import Index, Tensor
+from ...ipoints import MultiIndex as _MI, multi_index_tensorprod
+from .base import (
     EntityContext,
     ShapedEntitySchema,
     _require_bcs_tuple,
     _require_order_tuple,
 )
-
-if TYPE_CHECKING:
-    from ...quadrature import Quadrature
 
 __all__ = ["PrismSchema"]
 
@@ -96,8 +92,8 @@ class PrismSchema(ShapedEntitySchema):
 
     # quadrature
     @classmethod
-    def quadrature_formula(cls, q: int, qtype: str | None = "legendre", device=None) -> "Quadrature":
-        from ...quadrature import (
+    def quadrature_formula(cls, q: int, qtype: str | None = "legendre", device=None):
+        from ....quadrature import (
             GaussLegendreQuadrature,
             TensorProductQuadrature,
             TriangleQuadrature,
@@ -282,7 +278,6 @@ class PrismSchema(ShapedEntitySchema):
 
         mi = bm.concat([mi0, mi1], axis=-1).reshape(-1, 5)
         if tensorprod:
-            from ..topology.ipoints import multi_index_tensorprod
             return multi_index_tensorprod(mi, (3,))
         return mi
 

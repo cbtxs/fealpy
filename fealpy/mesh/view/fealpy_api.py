@@ -261,13 +261,13 @@ class FEALPyMesh(Mesh):
         return sign
 
     def cell_to_ipoint(self, p: int, index: Index | None = None) -> Tensor:
-        from ..topology.ipoints import to_ipoint
+        from ..ipoints import to_ipoint
         view = self.entity_view(-1)
         result = to_ipoint(self, view.schema.name, p)
         return result if index is None else result[index]
 
     def face_to_ipoint(self, p: int, index: Index | None = None) -> Tensor:
-        from ..topology.ipoints import to_ipoint
+        from ..ipoints import to_ipoint
         view = self.entity_view(-2)
         result = to_ipoint(self, view.schema.name, p)
         return result if index is None else result[index]
@@ -288,7 +288,7 @@ class FEALPyMesh(Mesh):
         Returns:
             Tensor: A tensor of shape (num_ip, GD) containing the interpolation points.
         """
-        from ..topology.ipoints import ipoints
+        from ..ipoints import ipoints
         if entity is None:
             entity_iter = range(self.top_dimension()+1)
         elif not isinstance(entity, Iterable) or isinstance(entity, str):

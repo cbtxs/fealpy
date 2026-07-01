@@ -1,17 +1,13 @@
-from typing import TYPE_CHECKING
 
-from ...backend import bm
-from ...backend import Index, Tensor
-from ..topology.ipoints import MultiIndex as _MI
-from .entity_schema import (
+from ....backend import bm
+from ....backend import Index, Tensor
+from ...ipoints import MultiIndex as _MI, multi_index_tensorprod
+from .base import (
     EntityContext,
     ShapedEntitySchema,
     _require_bcs_tuple,
     _require_order_tuple,
 )
-
-if TYPE_CHECKING:
-    from ...quadrature import Quadrature
 
 __all__ = ["HexahedronSchema"]
 
@@ -181,7 +177,6 @@ class HexahedronSchema(ShapedEntitySchema):
         multi_index2 = bm.broadcast_to(iz[:, None, None, :], shape).reshape(-1, 2)
         mi = bm.concat([multi_index0, multi_index1, multi_index2], axis=-1)
         if tensorprod:
-            from ..topology.ipoints import multi_index_tensorprod
             mi = multi_index_tensorprod(mi, (2, 4))
             return mi[:, [0, 1, 3, 2, 4, 5, 7, 6]]
         return mi

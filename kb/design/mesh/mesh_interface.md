@@ -13,29 +13,32 @@
 
 ### 1.1 一般实体视图 EntityView
 
-| 函数                     | 功能                   |
-| ---------------------- | -------------------- |
-| `barycentric`          | 装饰器，把笛卡尔坐标函数变为重心坐标函数 |
-| `barycenter`           | 计算单元重心               |
-| `bc_to_point`          | 重心坐标转换为笛卡尔坐标         |
-| `boundary`             | 获得边界信息               |
-| `error`                | 计算两个函数之间的误差          |
-| `geo_dimension`        | 几何维数                 |
-| `global_permutations`  | 子实体局部朝向到全局朝向的顶点置换矩阵  |
-| `grad_shape_function`  | 计算形函数的梯度             |
-| (*property*) `indices` | 单元顶点的全局编号            |
-| `integral`             | 计算函数积分               |
-| `jacobi_matrix`        | 雅可比矩阵                |
-| `measure`              | 计算单元测度               |
-| `multi_index_matrix`   | 获取多重指标，0-轴广播形式/张量积形式 |
-| `normal`               | 计算单元法向               |
-| `num_multi_index`      | 计算多重指标数量             |
-| `quadrature_formula`   | 获取积分公式               |
-| `shape_function`       | 计算形函数值               |
-| `size`                 | 获取实体数量               |
-| `tangent`              | 计算单元切向               |
-| `to`                   | 获取到另一实体的拓扑关系         |
-| `top_dimension`        | 获取拓扑维数               |
+> [!ERROR] 非细分领域
+> 一般实体视图不为网格细分领域算法开放接口，这些算法应实现为外部函数，或者自定义计算视图。
+
+| 函数                    | 功能                   |
+| --------------------- | -------------------- |
+| `barycentric`         | 装饰器，把笛卡尔坐标函数变为重心坐标函数 |
+| `barycenter`          | 计算单元重心               |
+| `bc_to_point`         | 重心坐标转换为笛卡尔坐标         |
+| `boundary`            | 获得边界信息               |
+| `error`               | 计算两个函数之间的误差          |
+| `geo_dimension`       | 几何维数                 |
+| `global_permutations` | 子实体局部朝向到全局朝向的顶点置换矩阵  |
+| `grad_shape_function` | 计算形函数的梯度             |
+| `indices`             | 属性，单元顶点的全局编号         |
+| `integral`            | 计算函数积分               |
+| `jacobi_matrix`       | 雅可比矩阵                |
+| `measure`             | 计算单元测度               |
+| `multi_index_matrix`  | 获取多重指标，0-轴广播形式/张量积形式 |
+| `normal`              | 计算单元法向               |
+| `num_multi_index`     | 计算多重指标数量             |
+| `quadrature_formula`  | 获取积分公式               |
+| `shape_function`      | 计算形函数值               |
+| `size`                | 获取实体数量               |
+| `tangent`             | 计算单元切向               |
+| `to`                  | 获取到另一实体的拓扑关系         |
+| `top_dimension`       | 获取拓扑维数               |
 
 > [!INFO] 源文件 `fealpy/mesh/view/entity_view.py`
 
@@ -46,22 +49,32 @@
 
 ### 2.1 一般网格视图 Mesh
 
-| 函数                | 功能                | 备注                                                 |
-| ----------------- | ----------------- | -------------------------------------------------- |
-| `entity_count`    | 获取指定维数实体的数量       | 参数可用 `str` 或 `int`；支持 `cell/face/edge/node` 以及负维度。 |
-| `entities`        | 获取所有指定维数实体的顶点全局编号 | `node` 返回的是位置数组，其余维数返回索引数组的迭代器。                    |
-| `entity_views`    | 获取所有指定维数实体的视图     | 返回 `EntityView` 迭代器，适合逐个实体族处理。                     |
-| `relation`        | 获取源实体到目标实体的拓扑关系   | 返回 `AdjointRelation` 迭代器，按视图对逐对生成。                 |
-| `geo_dimension`   | 获取几何维数            | 与位置张量的列数一致。                                        |
-| `top_dimension`   | 获取拓扑维数            | 没有根实体时返回 `-1`。                                     |
-| `sector`          | 获取指定名字的实体视图       | 直接按 sector 名称取视图。                                  |
-| `is_simplex_mesh` | 判断是否为单纯形网格        | 仅检查 sector 名称集合，不做几何合法性验证。                         |
-| `is_tensor_mesh`  | 判断是否为张量网格         | 仅检查 sector 名称集合，不做几何合法性验证。                         |
-| `is_elemental`    | 判断是否只有一个根实体类型     | 可选传入 `entity_name` 进一步约束根实体名称。                     |
-| `uniform_refine`  | 均匀加密网格            | 当前为占位接口，尚未实现。                                      |
-| `add_plot`        | 获取绘图接口            | 返回 `MeshPloter`。                                   |
+> [!ERROR] 非细分领域
+> 一般网格视图不为网格细分领域算法开放接口，这些算法应实现为外部函数，或者自定义计算视图。
 
-> [!INFO] 源文件 `fealpy/mesh/view/mesh_view.py`
+| 函数                | 功能            | 备注                             |
+| ----------------- | ------------- | ------------------------------ |
+| `Point`           | 获取点实体视图       | 属性                             |
+| `Segment`         | 获取线段实体视图      | 属性                             |
+| `Tri`             | 获取三角形实体视图     | 属性                             |
+| `Quad`            | 获取四边形实体视图     | 属性                             |
+| `Tet`             | 获取四面体实体视图     | 属性                             |
+| `Prism`           | 获取三棱柱实体视图     | 属性                             |
+| `Pyramid`         | 获取四棱锥实体视图     | 属性                             |
+| `Hex`             | 获取六面体实体视图     | 属性                             |
+| `Cells`           | 获取所有最高维实体的视图  | 属性                             |
+| `Faces`           | 获取所有次高维实体的视图  | 属性                             |
+| `Edges`           | 获取所有一维实体的视图   | 属性                             |
+| `Nodes`           | 获取所有零维实体的视图   | 属性                             |
+| `geo_dimension`   | 获取几何维数        | 与位置张量的列数一致。                    |
+| `top_dimension`   | 获取拓扑维数        | 没有根实体时返回 `-1`。                 |
+| `is_simplex_mesh` | 判断是否为单纯形网格    | 仅检查 sector 名称集合，不做几何合法性验证。     |
+| `is_tensor_mesh`  | 判断是否为张量网格     | 仅检查 sector 名称集合，不做几何合法性验证。     |
+| `is_elemental`    | 判断是否只有一个根实体类型 | 可选传入 `entity_name` 进一步约束根实体名称。 |
+| `uniform_refine`  | 均匀加密网格        | 当前为占位接口，尚未实现。                  |
+| `add_plot`        | 获取绘图接口        | 返回 `MeshPloter`。               |
+
+> [!INFO] 源文件 `fealpy/mesh/view/mesh.py`
 
 ### 2.2 面向旧模块的兼容性视图 FEALPyMesh
 

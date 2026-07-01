@@ -1,17 +1,18 @@
 
-from typing import Any
 from  dataclasses import dataclass, field
+from typing import Any
 
 from ...backend import Tensor
 from .relation import Relation
 
-__all__ = ["EntitySector", "MeshBlock"]
+__all__ = ["EntityContext", "EntitySector", "MeshBlock"]
 
 
 @dataclass(slots=True)
 class EntitySector:
     schema_name: str
     indices: Tensor
+    indptr: Tensor | None = None
     metadata: dict = field(default_factory=dict)
 
     @property
@@ -38,3 +39,9 @@ class MeshBlock:
 
     def has_sector(self, name: str, /) -> bool:
         return name in self.sectors
+
+
+@dataclass(slots=True, frozen=True)
+class EntityContext:
+    block: MeshBlock
+    sector: EntitySector

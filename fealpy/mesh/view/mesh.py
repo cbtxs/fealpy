@@ -124,6 +124,7 @@ class Mesh:
     ## Other getters
 
     def geo_dimension(self) -> int:
+        """Get the geometric dimension of the mesh."""
         return int(self.block.positions.shape[1])
 
     def fealpy_api(self):
@@ -132,6 +133,7 @@ class Mesh:
         return FEALPyMesh(self.block)
 
     def top_dimension(self) -> int:
+        """Get the topological dimension of the mesh."""
         if not self.block.root_entity_names:
             return -1
         return max(self.block.sectors[name].schema.top_dim

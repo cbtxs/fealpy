@@ -1,18 +1,18 @@
-from ...backend import bm
-from ...backend import Index, Tensor
-from .entity_schema import (
+
+from ....backend import bm
+from ....backend import Index, Tensor
+from .base import (
     EntityContext,
     ShapedEntitySchema,
     _require_bcs_tuple,
     _require_order_tuple,
 )
 
-from ...quadrature import Quadrature
 
 __all__ = ["PointSchema", "PointQuadrature"]
 
 
-class PointQuadrature(Quadrature):
+class PointQuadrature:
     def __init__(self, *, dtype=None):
         dtype = bm.float64 if dtype is None else dtype
         self.quadpts = (bm.asarray([[1.0]], dtype=dtype),)
@@ -116,7 +116,7 @@ class PointSchema(ShapedEntitySchema):
         return bm.broadcast_to(grad[:, None, :, :], (point.shape[0], nq, 1, dim))
 
     @classmethod
-    def quadrature_formula(cls, q: int, qtype: str | None = "legendre", device=None) -> "Quadrature":
+    def quadrature_formula(cls, q: int, qtype: str | None = "legendre", device=None):
         if qtype not in (None, "legendre"):
             raise ValueError(f"unsupported point quadrature type: {qtype!r}")
         if q < 1:
@@ -147,6 +147,6 @@ class PointSchema(ShapedEntitySchema):
 
         mi = bm.asarray([[p]], dtype=bm.int32)
         if tensorprod:
-            from ..topology.ipoints import multi_index_tensorprod
+            from ...ipoints import multi_index_tensorprod
             return multi_index_tensorprod(mi)
         return mi
