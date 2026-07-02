@@ -61,7 +61,7 @@ def _build_point_view():
     block = MeshBlock(positions=positions)
     block.add_sector(point_sector, root=True)
     mesh = Mesh(block)
-    return mesh, mesh.entity_view_by_name("point")
+    return mesh, mesh.Entity_by_name("point")
 
 
 class TestPointSchema:

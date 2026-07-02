@@ -27,7 +27,7 @@ class DistMeshResult(NamedTuple):
     comm: MeshComm
 
 
-def _build_masks_by_block(
+def _build_masks_by_sector(
     storage: MeshBlock,
     root_name: str,
     root_masks: Sequence[Tensor],
@@ -36,14 +36,14 @@ def _build_masks_by_block(
     block_dims = {name: storage.get_sector(name).schema.top_dim for name in storage.sectors}
     root_dim = block_dims[root_name]
 
-    masks_by_block: dict[str, list[Tensor]] = {
+    masks_by_sector: dict[str, list[Tensor]] = {
         name: [
             bm.full((storage.get_sector(name).indices.shape[0],), False, dtype=bm.bool)
             for _ in range(num_parts)
         ]
         for name in storage.sectors
     }
-    masks_by_block[root_name] = [bm.asarray(mask) for mask in root_masks]
+    masks_by_sector[root_name] = [bm.asarray(mask) for mask in root_masks]
 
     outgoing_relations: dict[str, list[tuple[str, Relation]]] = defaultdict(list)
     for (src_name, tgt_name), relation in storage.relations.items():
@@ -62,7 +62,7 @@ def _build_masks_by_block(
                 if src_dim != dim:
                     continue
 
-                src_mask = masks_by_block[src_name][pid]
+                src_mask = masks_by_sector[src_name][pid]
                 if not bool(bm.any(src_mask)):
                     continue
 
@@ -71,14 +71,14 @@ def _build_masks_by_block(
                     if int(selected_tgt.shape[0]) == 0:
                         continue
 
-                    masks_by_block[tgt_name][pid][selected_tgt] = True  # type: ignore[index]
+                    masks_by_sector[tgt_name][pid][selected_tgt] = True  # type: ignore[index]
 
-    return masks_by_block
+    return masks_by_sector
 
 
 def _build_local_storage(
     storage: MeshBlock,
-    masks_by_block: Mapping[str, Sequence[Tensor]],
+    masks_by_sector: Mapping[str, Sequence[Tensor]],
     part_id: int,
 ) -> MeshBlock:
     root_names = list(storage.root_entity_names)
@@ -90,7 +90,7 @@ def _build_local_storage(
     selected_indices_by_block: dict[str, Tensor] = {}
 
     for name, block in storage.sectors.items():
-        block_mask = bm.asarray(masks_by_block[name][part_id])
+        block_mask = bm.asarray(masks_by_sector[name][part_id])
         block_map = _make_local_index(block.indices.shape[0], block_mask, nonlocal_value=-1)
         block_maps[name] = block_map
         selected_indices_by_block[name] = bm.asarray(block.indices[block_mask])
@@ -104,7 +104,7 @@ def _build_local_storage(
         if block_dims[src_name] <= block_dims[tgt_name]:
             continue
 
-        src_mask = bm.asarray(masks_by_block[src_name][part_id])
+        src_mask = bm.asarray(masks_by_sector[src_name][part_id])
         local_tgt_indices = bm.asarray(block_maps[tgt_name][relation.tgt_indices[src_mask]])
         if bool(bm.any(local_tgt_indices < 0)):  # type: ignore[arg-type]
             raise ValueError(
@@ -204,15 +204,15 @@ def distribute_mesh(
             if int(cell_mask.shape[0]) != int(expected_num_cells):
                 raise ValueError("root: Cell mask shape does not match root entity count.")
 
-        masks_by_block = _build_masks_by_block(mesh.block, root_name, cell_masks)
+        masks_by_sector = _build_masks_by_sector(mesh.block, root_name, cell_masks)
         local_storage_list = [
-            _build_local_storage(mesh.block, masks_by_block, pid)
+            _build_local_storage(mesh.block, masks_by_sector, pid)
             for pid in range(comm.Get_size())
         ]
 
         gdata = {
             "root_name": root_name,
-            "masks_by_block": masks_by_block,
+            "masks_by_sector": masks_by_sector,
         }
 
     gdata = comm.bcast(gdata, root)
@@ -220,7 +220,7 @@ def distribute_mesh(
     pmesh = Mesh(lstorage)
 
     entities_comm: dict[str, _de.EntityMPI] = {}
-    for name, masks in gdata["masks_by_block"].items():
+    for name, masks in gdata["masks_by_sector"].items():
         entities_comm[name] = _de.dist_from_masks(masks, comm=comm)
 
     return DistMeshResult(

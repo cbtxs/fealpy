@@ -73,7 +73,7 @@ class TestPyramidMesh:
         """
         Verify volume, vertex-average barycenter, normal shape, and tangent shape.
         """
-        pyramid = _build_pyramid_mesh(data).entity_view_by_name("pyramid")
+        pyramid = _build_pyramid_mesh(data).Entity_by_name("pyramid")
 
         _assert_allclose(
             pyramid.measure(),
@@ -112,7 +112,7 @@ class TestPyramidMesh:
         """
         Verify collapsed-coordinate geometry shape functions and physical mapping.
         """
-        pyramid = _build_pyramid_mesh(data).entity_view_by_name("pyramid")
+        pyramid = _build_pyramid_mesh(data).Entity_by_name("pyramid")
         bcs = _pyramid_bcs(0.25, 0.75, 0.5)
 
         phi = PyramidSchema.geometry_shape_function(bcs)
@@ -143,7 +143,7 @@ class TestPyramidMesh:
         """
         Verify vertex interpolation and collapsed apex layer.
         """
-        pyramid = _build_pyramid_mesh(data).entity_view_by_name("pyramid")
+        pyramid = _build_pyramid_mesh(data).Entity_by_name("pyramid")
 
         reference_vertices = [
             (0.0, 0.0, 0.0),
@@ -180,7 +180,7 @@ class TestPyramidMesh:
         """
         Verify reference derivatives, Jacobian, and chain-rule gradient transform.
         """
-        pyramid = _build_pyramid_mesh(data).entity_view_by_name("pyramid")
+        pyramid = _build_pyramid_mesh(data).Entity_by_name("pyramid")
         bcs = _pyramid_bcs(0.5, 0.5, 0.5)
 
         gphi = PyramidSchema.geometry_grad_shape_function(bcs)
@@ -255,7 +255,7 @@ class TestPyramidMesh:
         """
         Verify transform_grad against the explicit inverse-Jacobian formula.
         """
-        pyramid = _build_pyramid_mesh(data).entity_view_by_name("pyramid")
+        pyramid = _build_pyramid_mesh(data).Entity_by_name("pyramid")
         bcs = _pyramid_bcs(0.2, 0.7, 0.4)
         ref_grad = bm.asarray(
             [[[1.0, 2.0, -0.5],
@@ -281,7 +281,7 @@ class TestPyramidMesh:
         """
         Verify collapsed tensor-product quadrature recovers the physical volume.
         """
-        pyramid = _build_pyramid_mesh(data).entity_view_by_name("pyramid")
+        pyramid = _build_pyramid_mesh(data).Entity_by_name("pyramid")
         for q in (1, 2):
             qf = PyramidSchema.quadrature_formula(q)
             bcs, ws = qf.get_quadrature_points_and_weights()

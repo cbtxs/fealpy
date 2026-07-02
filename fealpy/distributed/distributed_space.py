@@ -55,9 +55,9 @@ def distribute_space(
 
     pmesh, mcomm = distributed_mesh
     root_entity = mcomm.entities[mcomm.root_entity_name]
-    face_entity_name = "tri" if "tri" in mcomm.entities else "edge"
+    face_entity_name = "tri" if "tri" in mcomm.entities else "segment"
     face_entity = mcomm.entities[face_entity_name]
-    edge_entity = mcomm.entities["edge"]
+    edge_entity = mcomm.entities["segment"]
     all_cell_global_indices = comm.gather(root_entity._global_indices, root=root)
     all_face_global_indices = comm.gather(face_entity._global_indices, root=root)
     all_edge_global_indices = comm.gather(edge_entity._global_indices, root=root)

@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 from typing import Any, NamedTuple
 
 from ..backend import bm, Tensor
-from ..mesh import Mesh, MeshBlock, EntitySector, TopologyBuilder
+from ..mesh import Mesh, MeshBlock, EntitySector
 
 
 class BoxCache(NamedTuple):
@@ -45,10 +45,7 @@ class Box1d:
         node, _ = self.initialize()
 
         block = MeshBlock(positions=node)
-        TopologyBuilder.construct(block)
-        mesh = Mesh(block)
-
-        return mesh
+        return Mesh(block).construct()
 
     def segmentize(self) -> Mesh:
         """Create a segmented mesh of the box."""
@@ -56,10 +53,7 @@ class Box1d:
 
         block = MeshBlock(positions=node)
         block.add_sector(EntitySector("segment", cell), root=True)
-        TopologyBuilder.construct(block)
-        mesh = Mesh(block)
-
-        return mesh
+        return Mesh(block).construct()
 
 
 @dataclass(slots=True)
@@ -120,10 +114,7 @@ class Box2d:
         node, _ = self.initialize()
 
         block = MeshBlock(positions=node)
-        TopologyBuilder.construct(block)
-        mesh = Mesh(block)
-
-        return mesh
+        return Mesh(block).construct()
 
     def triangulate(self) -> Mesh:
         """Create a triangulated mesh of the box."""
@@ -136,10 +127,7 @@ class Box2d:
 
         block = MeshBlock(positions=node)
         block.add_sector(EntitySector("tri", cell), root=True)
-        TopologyBuilder.construct(block)
-        mesh = Mesh(block)
-
-        return mesh
+        return Mesh(block).construct()
 
     def quadrangulate(self) -> Mesh:
         """Create a quadrilateral mesh of the box."""
@@ -148,10 +136,7 @@ class Box2d:
 
         block = MeshBlock(positions=node)
         block.add_sector(EntitySector("quad", cell), root=True)
-        TopologyBuilder.construct(block)
-        mesh = Mesh(block)
-
-        return mesh
+        return Mesh(block).construct()
 
 
 @dataclass(slots=True)
@@ -225,10 +210,7 @@ class Box3d:
         node, _ = self.initialize()
 
         block = MeshBlock(positions=node)
-        TopologyBuilder.construct(block)
-        mesh = Mesh(block)
-
-        return mesh
+        return Mesh(block).construct()
 
     def tetrahedralize(self) -> Mesh:
         """Create a tetrahedral mesh of the box."""
@@ -245,10 +227,7 @@ class Box3d:
 
         block = MeshBlock(positions=node)
         block.add_sector(EntitySector("tet", cell), root=True)
-        TopologyBuilder.construct(block)
-        mesh = Mesh(block)
-
-        return mesh
+        return Mesh(block).construct()
 
     def prismatize(self) -> Mesh:
         """Create a prismatic mesh of the box."""
@@ -261,10 +240,7 @@ class Box3d:
 
         block = MeshBlock(positions=node)
         block.add_sector(EntitySector("prism", cell), root=True)
-        TopologyBuilder.construct(block)
-        mesh = Mesh(block)
-
-        return mesh
+        return Mesh(block).construct()
 
     def hexahedralize(self) -> Mesh:
         """Create a hexahedral mesh of the box."""
@@ -273,7 +249,4 @@ class Box3d:
 
         block = MeshBlock(positions=node)
         block.add_sector(EntitySector("hex", cell), root=True)
-        TopologyBuilder.construct(block)
-        mesh = Mesh(block)
-
-        return mesh
+        return Mesh(block).construct()

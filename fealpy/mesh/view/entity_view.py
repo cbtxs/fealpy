@@ -229,9 +229,11 @@ class EntityView:
             raise ValueError(f"Unsupported variable type: {variables}")
 
     def size(self) -> int:
+        """Number of entities."""
         return self.schema.size(self.context())
 
     def tangent(self, *, index: Index | None = None) -> Tensor:
+        """Compute the tangent vectors of the entity."""
         return self.schema.tangent(self.context(), index)
 
     def to(self, target: str | EntityView, /) -> Relation:
@@ -243,4 +245,5 @@ class EntityView:
         return self.schema.relation(self.context(), tgt)
 
     def top_dimension(self) -> int:
+        """Get the topological dimension of the entity."""
         return self.schema.top_dim

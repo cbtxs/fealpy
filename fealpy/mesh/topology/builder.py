@@ -1,4 +1,10 @@
 
+__all__ = [
+    "TopologyBuilder",
+    "TopRelationConnector",
+    "TopRelationInferer",
+]
+
 from collections.abc import Iterable, Iterator
 from typing import NamedTuple, TYPE_CHECKING
 
@@ -183,12 +189,19 @@ class TopologyBuilder:
         storage: MeshBlock,
         src_name: str | None = None,
         exclude: list[str] | None = None,
-    ) -> None:
+    ):
         """Construct one layer of lower-dimensional blocks and relations.
+        This is an in-place operation that modifies the ``storage`` object.
 
-        If ``src_name`` is given, the construction starts from that block only;
-        otherwise all root blocks are used as sources. ``exclude`` skips selected
-        lower-dimensional shape names, such as ``["node"]``.
+        Parameters:
+            storage (MeshBlock): The mesh storage object to modify.
+            src_name (str, optional): The name of the source block to start from.
+                If None, all root blocks are used. Default is None.
+            exclude (list[str], optional): A list of lower-dimensional shape names
+                to exclude from construction. Default is None.
+
+        Returns:
+            list[EntitySector]: A list of newly constructed lower-dimensional sectors.
         """
         excluded = set() if exclude is None else set(exclude)
         if src_name is None:
@@ -196,7 +209,7 @@ class TopologyBuilder:
         else:
             current_blocks = [storage.get_sector(src_name)]
 
-        cls._construct_from_blocks(storage, current_blocks, excluded)
+        return cls._construct_from_blocks(storage, current_blocks, excluded)
 
     @classmethod
     def construct_nested_relations(
@@ -221,7 +234,74 @@ class TopologyBuilder:
             current_blocks = cls._construct_from_blocks(storage, current_blocks, excluded)
 
 
-class TopologyInferer:
+class TopRelationConnector:
+    @classmethod
+    def _new_to_existing(
+        cls,
+        existing: Tensor,
+        new: Tensor,
+        tgt_name: str,
+    ) -> Tensor:
+        merged, (existing_to_merged, new_to_merged) = _unique_unordered_rows_across(existing, new)
+        if len(merged) != len(existing) or bool(
+            bm.any(existing_to_merged != bm.arange(
+                len(existing),
+                dtype=existing_to_merged.dtype,
+                device=existing_to_merged.device,
+            ))
+        ):
+            raise ValueError(
+                f"connecting to {tgt_name!r} requires target entities that are not in the existing sector"
+            )
+        return new_to_merged
+
+    @classmethod
+    def connect(
+        cls,
+        storage: MeshBlock,
+        src_name: str,
+        tgt_name: str,
+    ) -> Relation:
+        """Connect src -> tgt mapping for existing tgt sector.
+        This is an in-place operation that modifies the ``storage`` object.
+
+        A temporary tgt layer is built from src only. The temporary tgt entities
+        are matched back to the existing tgt sector, then the temporary relation
+        is remapped into the storage numbering.
+
+        Parameters:
+            storage (MeshBlock): The mesh storage object to modify.
+            src_name (str): The name of the source block.
+            tgt_name (str): The name of the target block.
+
+        Returns:
+            Relation: The constructed relation from src to tgt.
+        """
+        if tgt_name not in storage.sectors:
+            raise ValueError(f"target sector {tgt_name!r} does not exist")
+
+        source = storage.get_sector(src_name)
+        if tgt_name not in source.schema.OFace:
+            raise ValueError(f"{tgt_name!r} is not an OFace entry of {src_name!r}")
+        local_entities = source.schema.OFace[tgt_name]
+        construct_result = next(TopologyBuilder.construct_lower_dims(
+            [source.indices],
+            [{tgt_name: local_entities}],
+        ))
+        new_tgt = construct_result.face
+        src_to_new_tgt = construct_result.cell_to_face[0]
+        new_to_existing = cls._new_to_existing(
+            storage.get_sector(tgt_name).indices,
+            new_tgt,
+            tgt_name,
+        )
+        src_to_tgt = new_to_existing[src_to_new_tgt]
+        relation = Relation(src_name=src_name, tgt_name=tgt_name, tgt_indices=src_to_tgt)
+        storage.relations[(src_name, tgt_name)] = relation
+        return relation
+
+
+class TopRelationInferer:
     _pattern_select_cache: dict[tuple[str, str, int], Tensor] = {}
 
     @staticmethod

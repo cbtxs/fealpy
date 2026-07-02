@@ -180,11 +180,11 @@ class MeshPloter:
 
     def _draw_surface(self, axes: Axes, node: NDArray, sector, kwargs) -> list[Collection]:
         collections: list[Collection] = []
-        view = self.mesh.entity_view_by_name(sector.schema_name)
+        view = self.mesh.Entity_by_name(sector.schema_name)
         surface_dim = sector.schema.top_dim - 1
 
         for _, face_sector in self._sectors_by_dim(surface_dim):
-            face_view = self.mesh.entity_view_by_name(face_sector.schema_name)
+            face_view = self.mesh.Entity_by_name(face_sector.schema_name)
             relation = view.to(face_view).tgt_indices
             face_index = np.unique(np.asarray(relation).reshape(-1))
             face_index = face_index[np.asarray(face_view.boundary().mask)[face_index]]
@@ -264,16 +264,16 @@ class EntityFinder(MeshPloter):
 
         if isinstance(etype_or_node, str):
             if etype_or_node in _ENTITY_NAMES:
-                bc = np.asarray(self.mesh.entity_view_by_name(etype_or_node).barycenter(index=kwargs['index']))
+                bc = np.asarray(self.mesh.Entity_by_name(etype_or_node).barycenter(index=kwargs['index']))
             else:
                 bcs = [np.asarray(view.barycenter(index=kwargs['index']))
-                       for view in self.mesh.entity_view_by_topdim(etype_or_node)]
+                       for view in self.mesh.Entity_by_topdim(etype_or_node)]
                 if not bcs:
                     raise ValueError(f"No entity found for {etype_or_node!r}.")
                 bc = np.concatenate(bcs, axis=0) if len(bcs) > 1 else bcs[0]
         elif isinstance(etype_or_node, int):
             bcs = [np.asarray(view.barycenter(index=kwargs['index']))
-                   for view in self.mesh.entity_view_by_topdim(etype_or_node)]
+                   for view in self.mesh.Entity_by_topdim(etype_or_node)]
             if not bcs:
                 raise ValueError(f"No entity found for dimension {etype_or_node!r}.")
             bc = np.concatenate(bcs, axis=0) if len(bcs) > 1 else bcs[0]

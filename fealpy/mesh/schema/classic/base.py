@@ -1,5 +1,5 @@
 
-from typing import Any, Callable, ClassVar, Concatenate, Literal, overload
+from typing import Any, Callable, Concatenate, Literal, overload
 
 from ....backend import bm, Tensor, Index
 from ...storage import EntityContext, Relation
@@ -36,28 +36,29 @@ class ShapedEntitySchema(EntitySchema):
         src_name = ctx.sector.schema_name
         relation = ctx.block.relations.get((src_name, tgt_name))
 
-        if relation is None:
-            from ...topology.builder import TopologyInferer
+        from ..registry import SCHEMA_REGISTRY
+        tgt_schema = SCHEMA_REGISTRY[tgt_name]
+
+        if relation is None and ((tgt_name, src_name) in ctx.block.relations):
+            relation = ctx.block.relations[(tgt_name, src_name)].inverse()
+            ctx.block.relations[(src_name, tgt_name)] = relation
+            return relation
+
+        if relation is None and (cls.top_dim > tgt_schema.top_dim):
+            from ...topology import TopRelationConnector
             try:
-                TopologyInferer.infer(ctx.block, src_name, tgt_name)
+                TopRelationConnector.connect(ctx.block, src_name, tgt_name)
                 relation = ctx.block.relations.get((src_name, tgt_name))
             except ValueError:
                 pass
 
         if relation is None:
-            from ...topology.builder import TopologyBuilder
-            from ..registry import SCHEMA_REGISTRY
-            tgt_schema = SCHEMA_REGISTRY[tgt_name]
-
-            if cls.top_dim > tgt_schema.top_dim:
-                TopologyBuilder.construct(ctx.block, src_name)
-            elif cls.top_dim < tgt_schema.top_dim:
-                TopologyBuilder.construct(ctx.block, tgt_name)
-            else:
-                raise ValueError(f"Cannot construct relation from {src_name!r} "
-                                 f"to {tgt_name!r} with the same topological dimension")
-
-            relation = ctx.block.relations.get((src_name, tgt_name))
+            from ...topology import TopRelationInferer
+            try:
+                TopRelationInferer.infer(ctx.block, src_name, tgt_name)
+                relation = ctx.block.relations.get((src_name, tgt_name))
+            except ValueError:
+                pass
 
         if relation is None:
             raise ValueError(f"relation from {src_name!r} to {tgt_name!r} not found")

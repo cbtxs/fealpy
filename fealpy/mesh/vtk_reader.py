@@ -242,7 +242,7 @@ def read_mesh_from_vtu(
         cell_indices_by_schema[schema_name] = cell_indices
 
     if not block.has_sector("point"):
-        point_indices = bm.arange(positions.shape[0], dtype=np.int64)
+        point_indices = bm.arange(positions.shape[0], dtype=np.int64).reshape((-1, 1))
         block.add_sector(EntitySector("point", point_indices), root=not root_names)
 
     for name, values in _iter_data_arrays(grid.GetPointData(), vnp):
