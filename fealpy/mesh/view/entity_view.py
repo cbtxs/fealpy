@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any, Concatenate, final, Literal, ParamSpec, TYPE_CHECKING
 
 from ...backend import bm, Tensor, Index
+from ..schema import registry as _Reg
 from ..schema.entity_schema import EntityContext, EntitySchema
 
 if TYPE_CHECKING:
@@ -236,13 +237,31 @@ class EntityView:
         """Compute the tangent vectors of the entity."""
         return self.schema.tangent(self.context(), index)
 
-    def to(self, target: str | EntityView, /) -> Relation:
+    def to(self, target: int | str | EntityView, idx: int = 0, /) -> Relation:
         """Compute the relation between this entity and the target entity."""
         if isinstance(target, EntityView):
             tgt = target.schema.name
         else:
-            tgt = target
+            mesh_top_dim = max(self.block.sectors[name].schema.top_dim for name in self.block.sectors.keys())
+            tgt = _Reg.schema_name_single_parser(target, idx, mesh_top_dim, self.block.sectors.keys())
         return self.schema.relation(self.context(), tgt)
+
+    def to_ipoint(self, order: int, index: Index | None = None) -> Tensor:
+        """Compute the mapping from this entity to the global interpolation points of the mesh.
+
+        Parameters:
+            order (int): The order of the interpolation points.
+            index (Index, optional): The index of the entities.
+
+        Returns:
+            Tensor: a tensor of shape (num_entity, num_ip), where
+            num_entity is the number of entities and num_ip is the number of
+            interpolation points per entity.
+        """
+        from ..ipoints import to_ipoint
+        from .mesh import Mesh
+        mapping = to_ipoint(Mesh(self.block), self.schema.name, order)
+        return mapping if index is None else mapping[index]
 
     def top_dimension(self) -> int:
         """Get the topological dimension of the entity."""

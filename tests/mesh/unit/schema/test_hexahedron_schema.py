@@ -62,7 +62,7 @@ def _build_single_hex_view():
     block = MeshBlock(positions=positions)
     block.add_sector(EntitySector("hex", hex_cell), root=True)
     mesh = Mesh(block)
-    return mesh, mesh.Entity_by_name("hex")
+    return mesh, mesh.Entity("hex")
 
 
 def _build_rectangular_hex_view():
@@ -84,7 +84,7 @@ def _build_rectangular_hex_view():
     block = MeshBlock(positions=positions)
     block.add_sector(EntitySector("hex", hex_cell), root=True)
     mesh = Mesh(block)
-    return mesh, mesh.Entity_by_name("hex")
+    return mesh, mesh.Entity("hex")
 
 
 class TestHexahedronSchema:

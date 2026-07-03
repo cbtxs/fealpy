@@ -152,11 +152,11 @@ def to_ipoint(mesh: "Mesh", name: str, order: int) -> Tensor: # [num_entities, n
     collected = []
     dim_cursor = 0
     ip_cursor = 0
-    tgt_entity = mesh.Entity_by_name(name)
+    tgt_entity = mesh.Entity(name)
     shutdown = False
 
     while True:
-        for subentity in mesh.Entity_by_topdim(dim_cursor):
+        for subentity in mesh.Entities(dim_cursor):
             ### (1) Get ip mapping from sub-entity to the global
             num_sub_entity = subentity.size()
             num_internal_ip = subentity.num_multi_index(order, internal=True)
@@ -246,7 +246,7 @@ def ipoints(mesh: "Mesh", order: int | tuple[int, ...], names: Iterable[str]) ->
     device = mesh.block.positions.device
 
     collected = []
-    for subentity in [mesh.Entity_by_name(entity) for entity in names]:
+    for subentity in [mesh.Entity(entity) for entity in names]:
         mi = subentity.schema.multi_index(order, internal=True)
         mi = bm.device_put(mi, device)
         if mi.shape[0] == 0:

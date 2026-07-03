@@ -74,7 +74,7 @@ def _build_segment_view():
     block = MeshBlock(positions=positions)
     block.add_sector(EntitySector("segment", edge), root=True)
     mesh = Mesh(block)
-    return mesh, mesh.Entity_by_name("segment")
+    return mesh, mesh.Entity("segment")
 
 
 
@@ -95,7 +95,7 @@ def _build_3d_segment_view():
     block = MeshBlock(positions=positions)
     block.add_sector(EntitySector("segment", edge), root=True)
     mesh = Mesh(block)
-    return mesh, mesh.Entity_by_name("segment")
+    return mesh, mesh.Entity("segment")
 
 
 def _build_degenerate_segment_view():
@@ -110,7 +110,7 @@ def _build_degenerate_segment_view():
     block = MeshBlock(positions=positions)
     block.add_sector(EntitySector("segment", edge), root=True)
     mesh = Mesh(block)
-    return mesh, mesh.Entity_by_name("segment")
+    return mesh, mesh.Entity("segment")
 
 def _build_two_segment_view():
     positions = bm.asarray(
@@ -126,7 +126,7 @@ def _build_two_segment_view():
     block = MeshBlock(positions=positions)
     block.add_sector(EntitySector("segment", edge), root=True)
     mesh = Mesh(block)
-    return mesh, mesh.Entity_by_name("segment")
+    return mesh, mesh.Entity("segment")
 
 
 class TestSegmentSchema:
