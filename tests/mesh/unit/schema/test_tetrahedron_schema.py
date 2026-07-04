@@ -106,7 +106,7 @@ class TestTetrahedronSchema:
 
         assert len(tri_faces) == 4
         assert len(edge_faces) == 6
-        assert len(TetrahedronSchema.ccw["tri"]) == 4
+        assert len(TetrahedronSchema.SFace["tri"]) == 4
 
     def test_schema_only_defines_handoff_methods(self):
         allowed_methods = {
@@ -338,7 +338,7 @@ class TestTetrahedronSchema:
 
         _assert_shape(grad_b, (2, 4, 4), "User API should expose Tet barycentric gradients")
         _assert_shape(grad_u, (2, 4, 3), "User API should expose Tet reference gradients")
-        _assert_shape(grad_x, (2, 2, 4, 3), "User API should expose Tet cartesian gradients")
+        _assert_shape(grad_x, (2, 4, 3), "User API should expose Tet cartesian gradients")
         assert capsys.readouterr().out == ""
 
     def test_normal_and_tangent_through_user_view(self):

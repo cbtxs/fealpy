@@ -11,7 +11,7 @@ if str(ROOT) not in sys.path:
 from fealpy.backend import backend_manager as bm
 from fealpy.mesh.schema import SegmentSchema
 from fealpy.mesh.storage import EntitySector, MeshBlock
-from fealpy.mesh.topology.ipoints import multi_index_sort
+from fealpy.mesh.ipoints import multi_index_sort
 from fealpy.mesh.view import Mesh
 
 

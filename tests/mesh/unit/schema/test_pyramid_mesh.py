@@ -1,7 +1,7 @@
 import pytest
 
 from fealpy.backend import backend_manager as bm
-from fealpy.mesh.schema.pyramid import PyramidSchema
+from fealpy.mesh.schema import PyramidSchema
 from fealpy.mesh.storage import EntitySector, MeshBlock
 from fealpy.mesh.view.mesh import Mesh
 
