@@ -283,7 +283,7 @@ class HexahedronSchema(ShapedEntitySchema):
         return bm.zeros((cell.shape[0], 0, 3), dtype=ctx.block.positions.dtype)
 
     @classmethod
-    def quadrature_formula(cls, q: int, qtype: str | None = "legendre", device=None) -> "Quadrature":
+    def quadrature_formula(cls, q: int, qtype: str | None = "legendre", device=None):
         if qtype not in (None, "legendre"):
             raise ValueError(f"unsupported hexahedron quadrature type: {qtype!r}")
         from fealpy.quadrature import GaussLegendreQuadrature, TensorProductQuadrature
