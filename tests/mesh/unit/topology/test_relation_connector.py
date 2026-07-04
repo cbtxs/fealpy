@@ -2,7 +2,7 @@ import numpy as np
 
 from fealpy.backend import backend_manager as bm
 from fealpy.mesh.storage import MeshBlock, EntitySector
-from fealpy.mesh.topology.builder import TopologyBuilder, TopologyRelationConnector
+from fealpy.mesh.topology.builder import TopologyBuilder, TopRelationConnector
 
 
 def to_numpy(value):
@@ -30,7 +30,7 @@ def test_topology_relation_connector_connects_existing_lower_sector():
     old_point = block.get_sector("point").indices.copy()
     block.relations.pop(("segment", "point"), None)
 
-    relation = TopologyRelationConnector.connect(block, "segment", "point")
+    relation = TopRelationConnector.connect(block, "segment", "point")
 
     np.testing.assert_array_equal(
         to_numpy(relation.tgt_indices),
