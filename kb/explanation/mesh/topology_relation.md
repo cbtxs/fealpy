@@ -6,7 +6,8 @@
 
 ## 一、拓扑关系对象
 
-> [!INFO] 代码文件 `fealpy\mesh\storage\relation.py`
+> [!NOTE]
+> 代码文件 `fealpy\mesh\storage\relation.py`
 
 拓扑关系接口总是返回拓扑关系对象 `Relation`，该对象具有以下属性：
 
@@ -48,7 +49,7 @@ relation.as_csr()
 inv_relation = relation.inverse()
 ```
 
-> [!INFO] 逆映射的布局变化
+> [!IMPORTANT]
 > 经 `inverse` 逆向以后的拓扑关系总是异质性布局的。
 
 ## 二、使用拓扑关系接口
@@ -79,8 +80,8 @@ cell = mesh.Entity("cell")
 cell2edge = cell.to(edge).as_array()
 ```
 
-> [!INFO] 惰性计算
-> 除了构造网格时产生的拓扑关系，其它拓扑关系会在第一次访问时被自动推导出来。
+> [!NOTE]
+> 惰性计算：除了构造网格时产生的拓扑关系，其它拓扑关系会在第一次访问时被自动推导出来。
 
 ## 三、拓扑计算器
 
@@ -100,8 +101,8 @@ cell2edge = cell.to(edge).as_array()
 4. 最后查找中间维数实体，尝试用推导的方式计算；
 5. 如果以上都不行，抛出 `ValueError`。
 
-> [!WARNING] 不完备
+> [!Caution]
 > 以上逻辑并未探索所有可行的计算路径。
 
-> [!WARNING] 语义限制
+> [!WARNING]
 > `to` 只能对已存在的实体计算拓扑关系，理论上不应自动构造实体。

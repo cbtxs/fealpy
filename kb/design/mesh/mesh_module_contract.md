@@ -45,7 +45,7 @@ mesh/
 	mesh_base.py              # 提供 SimplexMesh 等类
 ```
 
-> [!INFO] 基本骨架
+> [!NOTE]
 > 形成 Mesh 模块核心骨架的，是 `schema/`、`storage/` 和 `view/`。
 
 ## 二、算法的分类与实现
