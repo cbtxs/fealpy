@@ -136,13 +136,15 @@ class Mesh:
         TopologyBuilder.construct(self.block, exclude=exclude)
         return self
 
-    def uniform_refine(self, times: int = 1) -> None:
+    def uniform_refine(self, times: int = 1, **kwargs):
         """Uniformly refine the mesh a given number of times.
 
         Parameters:
             times: Number of times to refine the mesh. Default is 1.
+            **kwargs: Additional arguments for the refinement process.
         """
-        raise NotImplementedError("Uniform refinement is not implemented yet.")
+        from ..uniform_refine import uniform_refine
+        return uniform_refine(self.block, times=times, **kwargs)
 
     # Plot
 
