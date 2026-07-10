@@ -385,9 +385,16 @@ class FEALPyMesh(Mesh):
                 Default is 0.
 
         Returns:
-            object: COO-format relation from faces to adjacent cells.
+            Tensor: a 4-column integer tensor whose rows are:
+                - The left/front cell index of the face;
+                - The right/back cell index of the face;
+                - The local index of the face in the left/front cell;
+                - The local index of the face in the right/back cell.
         """
-        return self.Entity("face", src_id).to("cell", dst_id).as_coo()
+        rel = self.Entity("face", src_id).to("cell", dst_id)
+        data = rel.unique
+        lidx = rel.local_index
+        return bm.stack([data.first, data.last, lidx.floc, lidx.lloc], axis=1)
 
     def boundary_cell_flag(self) -> Tensor:
         """Return a boolean mask marking boundary cells."""
