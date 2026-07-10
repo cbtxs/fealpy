@@ -54,7 +54,6 @@ def _merge_relation(
     if right_rel is not None:
         tgt_indices_right = right_rel.tgt_indices + tgt_offset
         src_indices_right = None if right_rel.src_indices is None else right_rel.src_indices + src_offset
-        local_right = right_rel.local_index
 
     if left_rel is None:
         assert right_rel is not None
@@ -63,7 +62,6 @@ def _merge_relation(
             tgt_name=tgt_name,
             tgt_indices=tgt_indices_right,
             src_indices=src_indices_right,
-            local_index=local_right,
         )
 
     if right_rel is None:
@@ -72,7 +70,6 @@ def _merge_relation(
             tgt_name=tgt_name,
             tgt_indices=left_rel.tgt_indices,
             src_indices=left_rel.src_indices,
-            local_index=left_rel.local_index,
         )
 
     tgt_indices = bm.concat([left_rel.tgt_indices, tgt_indices_right], axis=0)
@@ -86,21 +83,11 @@ def _merge_relation(
             f"incompatible relation src_indices for key {key!r}: one side is None and the other is not"
         )
 
-    if left_rel.local_index is None and local_right is None:
-        local_index = None
-    elif left_rel.local_index is not None and local_right is not None:
-        local_index = bm.concat([left_rel.local_index, local_right], axis=0)
-    else:
-        raise ValueError(
-            f"incompatible relation local_index for key {key!r}: one side is None and the other is not"
-        )
-
     return Relation(
         src_name=src_name,
         tgt_name=tgt_name,
         tgt_indices=tgt_indices,
         src_indices=src_indices,
-        local_index=local_index,
     )
 
 

@@ -76,16 +76,35 @@ def test_quadrilateral_schema_measure_3d_and_index():
     assert QuadrilateralSchema.geo_dimension(ctx) == 3
 
 
-def test_quadrilateral_schema_multi_index_and_quadrature():
-    # Test index/quadrature helpers: multi_index/multi_index_sort/num_multi_index/quadrature_formula.
+def test_quadrilateral_schema_multi_index():
+    # Test index helpers: multi_index/multi_index_sort/num_multi_index.
     mi = np.asarray(QuadrilateralSchema.multi_index((2,)))
     rect_mi = np.asarray(QuadrilateralSchema.multi_index((1, 2)))
 
-    np.testing.assert_array_equal(mi, np.array([[0, 0], [0, 1], [0, 2], [1, 0], [1, 1], [1, 2], [2, 0], [2, 1], [2, 2]]))
-    np.testing.assert_array_equal(rect_mi, np.array([[0, 0], [0, 1], [0, 2], [1, 0], [1, 1], [1, 2]]))
+    np.testing.assert_array_equal(mi, np.array([
+        [4, 0, 0, 0],
+        [2, 2, 0, 0],
+        [0, 4, 0, 0],
+        [2, 0, 2, 0],
+        [1, 1, 1, 1],
+        [0, 2, 0, 2],
+        [0, 0, 4, 0],
+        [0, 0, 2, 2],
+        [0, 0, 0, 4],
+    ], dtype=np.int32))
+    np.testing.assert_array_equal(rect_mi, np.array([
+        [2, 0, 0, 0],
+        [0, 2, 0, 0],
+        [1, 0, 1, 0],
+        [0, 1, 0, 1],
+        [0, 0, 2, 0],
+        [0, 0, 0, 2],
+    ], dtype=np.int32))
     assert QuadrilateralSchema.num_multi_index((2,)) == 9
     assert QuadrilateralSchema.num_multi_index((1, 2)) == 6
 
+
+def test_quadrilateral_schema_quadrature_formula_shape():
     qf = QuadrilateralSchema.quadrature_formula(2)
     bcs, ws = qf.get_quadrature_points_and_weights()
 
@@ -93,7 +112,7 @@ def test_quadrilateral_schema_multi_index_and_quadrature():
     assert len(bcs) == 2
     assert bcs[0].shape == (2, 2)
     assert bcs[1].shape == (2, 2)
-    assert ws.shape == (2, 2)
+    assert ws.shape == (4, )
 
 
 def test_quadrilateral_schema_quadrature_formula_2d():
@@ -106,5 +125,5 @@ def test_quadrilateral_schema_quadrature_formula_2d():
     assert len(bcs) == 2
     assert bcs[0].shape == (2, 2)
     assert bcs[1].shape == (2, 2)
-    assert ws.shape == (2, 2)
+    assert ws.shape == (4, )
     np.testing.assert_allclose(point.shape, np.array([1, 4, 2]))

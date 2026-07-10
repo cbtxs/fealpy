@@ -297,20 +297,20 @@ class FEALPyMesh(Mesh):
         """
         return self.Entity(iptype).num_multi_index(p)
 
-    def multi_index_matrix(self, p: int | tuple[int, ...], name_or_topdim: int | str = "cell") -> Tensor:
+    def multi_index_matrix(self, p: int | tuple[int, ...], etype: int | str = "cell") -> Tensor:
         """Return the local multi-index matrix for an entity type.
 
         Parameters:
             p (int | tuple[int, ...]): Polynomial degree or tensor-product
                 degrees.
-            name_or_topdim (int | str, optional): Entity selector.  Default is
+            etype (int | str, optional): Entity selector.  Default is
                 ``"cell"``.
 
         Returns:
             Tensor: Integer tensor whose rows are multi-indices of local basis
             or interpolation points.
         """
-        sec = self.Entity(name_or_topdim)
+        sec = self.Entity(etype)
         return sec.multi_index_matrix(p)
 
     def quadrature_formula(self, q: int, name_or_topdim: str | int = "cell", qtype: str = "legendre"):

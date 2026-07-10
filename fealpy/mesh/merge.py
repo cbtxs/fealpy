@@ -172,31 +172,17 @@ def _remap_relation(
         representative_old_src = entity_representatives_np[src_name]
 
         tgt_indices_out_np = tgt_indices_new[representative_old_src]
-        # When multiple old source entities collapse to one new entity, keep the
-        # representative source relation row for deterministic output.
-
-        local_index_out = None
-        if relation.local_index is not None:
-            local_index_old = np.asarray(relation.local_index)
-            local_index_out_np = local_index_old[representative_old_src]
-            local_index_out = bm.asarray(local_index_out_np)
-
         return Relation(
             src_name=src_name,
             tgt_name=tgt_name,
             tgt_indices=bm.asarray(tgt_indices_out_np),
             src_indices=None,
-            local_index=local_index_out,
         )
 
     src_indices_old = np.asarray(relation.src_indices)
     src_indices_new = src_old_to_new[src_indices_old]
-    local_index_old = None if relation.local_index is None else np.asarray(relation.local_index)
 
     key_cols = [np.reshape(src_indices_new, (-1, 1)), np.reshape(tgt_indices_new, (len(tgt_indices_new), -1))]
-    if local_index_old is not None:
-        key_cols.append(np.reshape(local_index_old, (len(local_index_old), -1)))
-
     key_rows = np.concatenate(key_cols, axis=1)
     _, keep = np.unique(key_rows, axis=0, return_index=True)
     keep.sort()
@@ -206,7 +192,6 @@ def _remap_relation(
         tgt_name=tgt_name,
         tgt_indices=bm.asarray(tgt_indices_new[keep]),
         src_indices=bm.asarray(src_indices_new[keep], dtype=bm.int64),
-        local_index=None if local_index_old is None else bm.asarray(local_index_old[keep]),
     )
 
 

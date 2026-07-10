@@ -21,8 +21,6 @@ class Relation:
     The indices to the source entities. This is `None` for homogeneous relations
     (e.g., edges) and a 1D array for heterogeneous relations (e.g., node-to-face).
     """
-    local_index: Tensor | None = None
-
     def as_array(self) -> Tensor:
         if self.src_indices is None:
             return self.tgt_indices
@@ -61,5 +59,4 @@ class Relation:
             tgt_name=self.src_name,
             src_indices=tgt,
             tgt_indices=src,
-            local_index=self.local_index
         )

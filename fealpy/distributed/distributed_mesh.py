@@ -111,16 +111,11 @@ def _build_local_storage(
                 f"partition {part_id}: found non-local targets in relation {key!r}"
             )
 
-        local_local_index = None
-        if relation.local_index is not None:
-            local_local_index = bm.asarray(relation.local_index[src_mask])
-
         local_relations[key] = Relation(
             src_name=src_name,
             tgt_name=tgt_name,
             tgt_indices=local_tgt_indices,
             src_indices=None,
-            local_index=local_local_index,
         )
 
     position_mask = bm.full((len(storage.positions),), False, dtype=bm.bool)

@@ -1,10 +1,10 @@
 import numpy as np
 from fealpy.backend import backend_manager as bm
-from fealpy.mesh.schema.triangle import TriangleSchema
+from fealpy.mesh.schema import TriangleSchema
 from fealpy.mesh.schema.entity_schema import EntityContext
 from fealpy.mesh.storage import MeshBlock, EntitySector
 from fealpy.mesh.topology.builder import TopologyBuilder
-from fealpy.mesh.topology.ipoints import MultiIndex as _MI
+from fealpy.mesh.ipoints import MultiIndex as _MI
 from fealpy.quadrature.triangle import TriangleQuadrature
 
 
@@ -108,11 +108,11 @@ def test_triangle_schema_normal_3d():
 def test_triangle_schema_multi_index():
     order = (2,)
     mi = to_numpy(TriangleSchema.multi_index(order))
-    expected = to_numpy(_MI.multi_index_matrix(order, 3))
+    expected = to_numpy(_MI.multi_index_matrix(order[0], 3))
     np.testing.assert_array_equal(mi, expected)
 
     inner = to_numpy(TriangleSchema.multi_index(order, internal=True))
-    expected_inner = to_numpy(_MI.multi_index_inner(order, 3))
+    expected_inner = to_numpy(_MI.multi_index_inner(order[0], 3))
     np.testing.assert_array_equal(inner, expected_inner)
 
     assert TriangleSchema.num_multi_index(order) == expected.shape[0]

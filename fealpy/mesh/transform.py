@@ -61,7 +61,6 @@ def piola_transform_covariant(
 
     if is_square_jacobi_matrix(J):
         J_inv_T = bm.linalg.inv(J).mT
-        print(J_inv_T.shape, value.shape)
         return bm.einsum("...xj, ...j -> ...x", J_inv_T, value)
     else:
         G = bm.einsum("...xi, ...xj -> ...ij", J, J)

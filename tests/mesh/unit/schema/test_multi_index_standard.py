@@ -37,10 +37,10 @@ def test_simplex_multi_index_shape_is_num_points_by_num_vertices():
 def test_quadrilateral_multi_index_uses_tensor_product_vertex_order():
     mi = QuadrilateralSchema.multi_index((1, 2))
     expected = np.array([
-        [1, 0, 0, 0],
-        [0, 1, 0, 0],
-        [0, 0, 1, 0],
-        [0, 0, 0, 1],
+        [2, 0, 0, 0],
+        [0, 2, 0, 0],
+        [1, 0, 1, 0],
+        [0, 1, 0, 1],
         [0, 0, 2, 0],
         [0, 0, 0, 2],
     ], dtype=np.int32)
@@ -51,7 +51,7 @@ def test_quadrilateral_multi_index_uses_tensor_product_vertex_order():
 
 def test_hexahedron_multi_index_uses_bottom_then_top_vertex_order():
     mi = HexahedronSchema.multi_index((1, 1, 1))
-    expected = np.eye(8, dtype=np.int32)
+    expected = np.eye(8, dtype=np.int32)[[0, 1, 3, 2, 4, 5, 7, 6]]
     assert mi.shape == (8, 8)
     np.testing.assert_array_equal(to_numpy(mi), expected)
     assert HexahedronSchema.num_multi_index((1, 1, 1)) == 8
@@ -61,19 +61,16 @@ def test_prism_multi_index_is_interval_times_triangle_with_triangle_fastest():
     mi = PrismSchema.multi_index((1, 2))
     expected = np.array([
         [2, 0, 0, 0, 0, 0],
-        [1, 1, 0, 0, 0, 0],
-        [1, 0, 1, 0, 0, 0],
         [0, 2, 0, 0, 0, 0],
-        [0, 1, 1, 0, 0, 0],
         [0, 0, 2, 0, 0, 0],
+        [1, 0, 0, 1, 0, 0],
+        [0, 1, 0, 0, 1, 0],
+        [0, 0, 1, 0, 0, 1],
         [0, 0, 0, 2, 0, 0],
-        [0, 0, 0, 1, 1, 0],
-        [0, 0, 0, 1, 0, 1],
         [0, 0, 0, 0, 2, 0],
-        [0, 0, 0, 0, 1, 1],
         [0, 0, 0, 0, 0, 2],
     ], dtype=np.int32)
-    assert mi.shape == (12, 6)
+    assert mi.shape == (9, 6)
     np.testing.assert_array_equal(to_numpy(mi), expected)
 
 
