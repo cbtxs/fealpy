@@ -129,11 +129,15 @@ class Relation:
             lloc = bm.full((count,), width - 1, dtype=bm.int32, device=self.tgt_indices.device)
             return LocalIndexResult(floc=floc, lloc=lloc)
 
-        num = self.src_indices.shape[0]
-        idx = bm.arange(num, dtype=bm.int32, device=self.src_indices.device)
-        before = idx[:, None] >= idx[None, :]
-        same_tgt = self.tgt_indices[:, None] == self.tgt_indices[None, :]
-        loc = bm.sum(bm.astype(bm.logical_and(before, same_tgt), bm.int32), axis=1) - 1
+        order = bm.argsort(self.tgt_indices)
+        tgt = self.tgt_indices[order]
+        idx = bm.arange(tgt.shape[0], dtype=bm.int32, device=tgt.device)
+        TRUE = bm.ones((1,), dtype=bm.bool, device=tgt.device)
+        diff = bm.concat([TRUE, tgt[1:] != tgt[:-1]])
+        group = bm.cumsum(bm.astype(diff, bm.int32), axis=0) - 1
+        group_start = idx[diff]
+        loc = idx - group_start[group]
+        loc = loc[bm.argsort(order)]
 
         arg, diff0, diff1 = self._fl_mask
         loc = loc[arg]
