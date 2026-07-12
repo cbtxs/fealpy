@@ -66,29 +66,57 @@ class TriangleSchema(ShapedEntitySchema):
         return bm.simplex_shape_function(bcs[0], p[0], mi)
 
     @classmethod
-    def grad_shape_function(
+    def grad_shape_function_barycentric(
+        cls,
+        bcs: tuple[Tensor, ...],
+        p: tuple[int, ...]
+    ) -> Tensor:
+        bcs = _require_bcs_tuple(bcs, "triangle grad_shape_function_barycentric", 1)
+        p = _require_order_tuple(p, "triangle grad_shape_function_barycentric", 1)
+        if bcs[0].shape[-1] != 3:
+            raise ValueError(
+                "triangle grad_shape_function_barycentric expects "
+                f"last dimension 3, got {bcs[0].shape[-1]}"
+            )
+
+        mi = cls.multi_index(p)
+        return bm.simplex_grad_shape_function(bcs[0], p[0], mi)
+
+    @classmethod
+    def grad_shape_function_reference(
+        cls,
+        bcs: tuple[Tensor, ...],
+        p: tuple[int, ...]
+    ) -> Tensor:
+        bcs = _require_bcs_tuple(bcs, "triangle grad_shape_function_reference", 1)
+        p = _require_order_tuple(p, "triangle grad_shape_function_reference", 1)
+
+        Dlambda = bm.array(
+            [
+                [-1.0, -1.0],
+                [1.0, 0.0],
+                [0.0, 1.0],
+            ],
+            dtype=bcs[0].dtype,
+            device=bm.get_device(bcs[0]),
+        )
+        grad_bary = cls.grad_shape_function_barycentric(bcs, p)
+        return bm.einsum("...ij,jk->...ik", grad_bary, Dlambda)
+
+    @classmethod
+    def jacobi_matrix(
         cls,
         ctx: EntityContext,
         bcs: tuple[Tensor, ...],
-        p: tuple[int, ...],
-        *,
-        index: Index | None = None,
-        variables: str = "u",
-        mi=None,
+        index: Index | None,
     ) -> Tensor:
-        bcs = _require_bcs_tuple(bcs, "triangle grad_shape_function", 1)
-        p = _require_order_tuple(p, "triangle grad_shape_function", 1)
-        if bcs[0].shape[-1] != 3:
-            raise ValueError(f"triangle grad_shape_function expects last dimension 3, got {bcs[0].shape[-1]}")
-        mi = cls.multi_index(p) if mi is None else mi
-        ref = bm.simplex_grad_shape_function(bcs[0], p[0], mi)
-        if variables == "u":
-            return ref
-        if variables == "x":
-            Dlambda = cls.grad_lambda(ctx, index, ref=False)
-            grad = bm.einsum("...ij, kjm -> k...im", ref, Dlambda)
-            return grad
-        raise ValueError(f"Unsupported variables: {variables!r}")
+        bcs = _require_bcs_tuple(bcs, "triangle jacobi_matrix", 1)
+        tri = ctx.sector.indices if index is None else ctx.sector.indices[index]
+        if len(tri.shape) == 1:
+            tri = bm.reshape(tri, (1, -1))
+
+        gphi = cls.grad_shape_function_reference(bcs, p=(1,))
+        return bm.einsum("cim,qin->cqmn", ctx.block.positions[tri], gphi)
 
     @classmethod
     def bc_to_point(cls, ctx: EntityContext, bcs: tuple[Tensor, ...], index: Index | None) -> Tensor:

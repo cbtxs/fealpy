@@ -17,7 +17,7 @@ class HexahedronSchema(ShapedEntitySchema):
     top_dim = 3
     OFace = {
         "quad": [
-            [0, 2, 3, 1], [4, 5, 7, 6],
+            [0, 1, 3, 2], [4, 5, 7, 6],
             [0, 4, 6, 2], [1, 3, 7, 5],
             [0, 1, 5, 4], [3, 2, 6, 7],
         ],
@@ -61,10 +61,11 @@ class HexahedronSchema(ShapedEntitySchema):
         cell = ctx.sector.indices if index is None else ctx.sector.indices[index]
         if len(cell.shape) == 1:
             cell = bm.reshape(cell, (1, -1))
-        points = ctx.block.positions[cell][:, [0, 4, 2, 6, 1, 5, 3, 7], :]
+        points = ctx.block.positions[cell]
         points = bm.reshape(points, (-1, 2, 2, 2, cls.geo_dimension(ctx)))
         u, v, w = bcs
-        return bm.einsum("ia,jb,kc,nabce->nijke", u, v, w, points)
+        NC = cell.shape[0]
+        return bm.einsum("ia,jb,kc,ncbae->nkjie", u, v, w, points).reshape(NC, -1, 3)
 
     @classmethod
     def shape_function(
@@ -177,8 +178,7 @@ class HexahedronSchema(ShapedEntitySchema):
         multi_index2 = bm.broadcast_to(iz[:, None, None, :], shape).reshape(-1, 2)
         mi = bm.concat([multi_index0, multi_index1, multi_index2], axis=-1)
         if tensorprod:
-            mi = multi_index_tensorprod(mi, (2, 4))
-            return mi[:, [0, 1, 3, 2, 4, 5, 7, 6]]
+            return multi_index_tensorprod(mi, (2, 4))
         return mi
 
     @classmethod
@@ -256,20 +256,18 @@ class HexahedronSchema(ShapedEntitySchema):
         cell = ctx.sector.indices if index is None else ctx.sector.indices[index]
         if len(cell.shape) == 1:
             cell = bm.reshape(cell, (1, -1))
-        points = ctx.block.positions[cell][:, [0, 4, 2, 6, 1, 5, 3, 7], :]
+        points = ctx.block.positions[cell]
         points = bm.reshape(points, (-1, 2, 2, 2, 3))
         du = bm.broadcast_to(bm.asarray([-1.0, 1.0], dtype=ctx.block.positions.dtype)[None, :], u.shape)
         dv = bm.broadcast_to(bm.asarray([-1.0, 1.0], dtype=ctx.block.positions.dtype)[None, :], v.shape)
         dw = bm.broadcast_to(bm.asarray([-1.0, 1.0], dtype=ctx.block.positions.dtype)[None, :], w.shape)
 
-        ju = bm.einsum("ia,jb,kc,nabce->nijke", du, v, w, points)
-        jv = bm.einsum("ia,jb,kc,nabce->nijke", u, dv, w, points)
-        jw = bm.einsum("ia,jb,kc,nabce->nijke", u, v, dw, points)
+        ju = bm.einsum("ia,jb,kc,ncbae->nijke", du, v, w, points)
+        jv = bm.einsum("ia,jb,kc,ncbae->nijke", u, dv, w, points)
+        jw = bm.einsum("ia,jb,kc,ncbae->nijke", u, v, dw, points)
         jac = bm.stack([ju, jv, jw], axis=-1)
         det = bm.abs(bm.linalg.det(jac))
-        n = bcs[0].shape[0]
-        det = bm.reshape(det, (-1, n, n, n))
-        weight = bm.reshape(ws, (n, n, n))
+        weight = bm.reshape(ws, (2, 2, 2))
         return bm.einsum("ijk,nijk->n", weight, det)
 
     @classmethod
