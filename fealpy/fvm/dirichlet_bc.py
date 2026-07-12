@@ -1,103 +1,182 @@
+"""Finite-volume Dirichlet boundary-condition algebra."""
+
 from fealpy.backend import backend_manager as bm
 from fealpy.sparse import spdiags
 
-from .vector_decomposition import VectorDecomposition
+from .fvm_geometry import FVMGeometry, boundary_face_flag
+
 
 class DirichletBC:
-    """
-    A class to handle Dirichlet boundary conditions for PDEs on a mesh.
+    """Apply prescribed boundary values to FVM matrices and RHS vectors.
 
-    This class provides methods to apply Dirichlet boundary conditions to different terms 
-    in a PDE system, including diffusion, threshold-based boundary selection, and 
-    divergence terms. It modifies the system matrix and right-hand side vector to 
-    incorporate boundary conditions accurately in finite element or finite volume methods.
-
-    Attributes:
-        mesh (object): The computational mesh (e.g., QuadrangleMesh) used for discretization.
-        gd (callable): Function providing Dirichlet boundary values at given points.
-        threshold (callable, optional): Function to select specific boundary cells based on 
-            their coordinates or other criteria.
+    The class contains term-specific helpers because a Dirichlet value enters a
+    finite-volume diffusion operator, convection boundary flux, and divergence
+    block in different algebraic forms.  It only applies already-defined PDE
+    boundary data to assembled algebraic systems; engineering boundary mapping
+    and SIMPLE/PISO iteration rules live outside this class.
     """
 
-    def __init__(self, mesh, gd, threshold=None):
-        """
-        Initialize the DirichletBC class with mesh and boundary condition data.
+    def __init__(self, mesh, gd, threshold=None, geometry=None, component=None):
+        """Store boundary value data for later algebraic application.
 
         Args:
-            mesh (object): The computational mesh for the PDE domain.
-            gd (callable): Function that returns Dirichlet boundary values at given points.
-            threshold (callable, optional): Function to identify specific boundary cells.
+            mesh: Computational mesh for the control-volume domain.
+            gd: Callable returning prescribed values at physical points.
+            threshold: Optional selector for applying values on part of the boundary.
+            geometry: Optional reusable FVM geometry.  When omitted, the class
+                constructs one for standalone Poisson/tests/debug calls.
+            component: Optional component index for applying a vector boundary
+                function to a scalar component system.
         """
         self.mesh = mesh
         self.gd = gd
         self.threshold = threshold
+        self.geometry = geometry
+        self.component = component
 
-    def ThresholdApply(self, A, f, uh=None):
-        """
-        Apply Dirichlet boundary conditions to selected boundary cells based on a threshold.
-
-        This method modifies the system matrix `A` and right-hand side vector `f` by applying 
-        Dirichlet boundary conditions to cells selected by the threshold function. It supports 
-        selective boundary condition application based on coordinate criteria.
-
-        Args:
-            A (sparse matrix): System matrix to be modified.
-            f (ndarray): Right-hand side vector to be modified.
-            uh (ndarray, optional): Solution vector to store boundary values. If None, initialized as zeros.
-
-        Returns:
-            tuple: (A, f)
-                - A (sparse matrix): Modified system matrix with boundary conditions applied.
-                - f (ndarray): Modified right-hand side vector with boundary contributions.
-
-        Raises:
-            ValueError: If threshold is not a callable function.
-        """
-        total_bd_idx = self.mesh.boundary_cell_index()
-        points = self.mesh.entity_barycenter('cell')
+    def system_components(self, b, A=None):
+        """Return the number of component-major fields represented by ``b``."""
         NC = self.mesh.number_of_cells()
-        bd_node = points[total_bd_idx]
-        if callable(self.threshold):
-            try:
-                # Try applying condition to x-coordinate only
-                x = bd_node[:, 0]
-                bd_idx = self.threshold(x)
-                bd_idx = bm.array(bd_idx, dtype=bm.bool)
-                if not bm.any(bd_idx):  # Check if bd_idx is all False
-                    y = bd_node[:, 1]
-                    bd_idx = self.threshold(y)
-                    bd_idx = bm.array(bd_idx, dtype=bm.bool)
-            except Exception:
-                # Fall back to applying condition to full node coordinates
-                bd_idx = self.threshold(bd_node)
-                bd_idx = bm.array(bd_idx, dtype=bm.bool)
-        else:
-            raise ValueError("self.threshold must be a callable (e.g., lambda x: (x==0.5)|(x==2.5) or a function).")
-        index = total_bd_idx[bd_idx]
-        bdFlag_u = bm.zeros(NC)
-        bdFlag_u[index] = 1
-        D0 = spdiags(1 - bdFlag_u, 0, A.shape[0], A.shape[0])  # Keeps interior equations
-        D1 = spdiags(bdFlag_u, 0, A.shape[0], A.shape[0])      # Identity on boundary nodes
-        # Apply boundary conditions to the matrix
-        if uh is None:
-            # Initialize uh as a zero vector if not provided
-            if hasattr(A, 'values_context'):
-                uh = bm.zeros(A.shape[0], **A.values_context())
+        if A is not None and (A.shape[0] != A.shape[1] or A.shape[0] != b.shape[0]):
+            raise ValueError("DirichletBC expects a square matrix matching the RHS size.")
+        if b.shape[0] == NC:
+            return 1
+        if b.shape[0] % NC == 0:
+            return b.shape[0] // NC
+        raise ValueError("RHS size must be NC or an integer multiple of NC.")
+
+    def matrix_components(self, A):
+        """Return the number of component-major fields represented by ``A``."""
+        NC = self.mesh.number_of_cells()
+        if A.shape[0] != A.shape[1]:
+            raise ValueError("DirichletBC expects a square matrix.")
+        if A.shape[0] == NC:
+            return 1
+        if A.shape[0] % NC == 0:
+            return A.shape[0] // NC
+        raise ValueError("matrix size must be NC or an integer multiple of NC.")
+
+    def boundary_values(self, points, components: int):
+        """Return boundary values compatible with the algebraic system shape."""
+        value = bm.array(self.gd(points))
+        if self.component is not None:
+            if components != 1:
+                raise ValueError("component can only be used with scalar component systems.")
+            if value.ndim == 1:
+                if self.component != 0:
+                    raise ValueError("scalar boundary data only has component 0.")
+                return value
+            if value.ndim == 2:
+                if self.component < 0 or self.component >= value.shape[1]:
+                    raise ValueError(
+                        f"component {self.component} is out of bounds for boundary data "
+                        f"with {value.shape[1]} components."
+                    )
+                return value[:, self.component]
+            raise ValueError(f"Unsupported boundary value shape {value.shape}.")
+
+        if components == 1:
+            if value.ndim == 1:
+                return value
+            if value.ndim == 2 and value.shape[1] == 1:
+                return value[:, 0]
+            raise ValueError(
+                "scalar Dirichlet system received vector boundary data; "
+                "pass component=<index> or a scalar boundary function."
+            )
+
+        if value.ndim != 2 or value.shape[1] != components:
+            raise ValueError(
+                "vector Dirichlet system expects boundary data with shape "
+                f"(N, {components}), got {value.shape}."
+            )
+        return value
+
+    def diffusion_boundary_data(self, coef=1.0, threshold=None, dtype=None):
+        """Return owner cells, implicit coefficients, and points for Dirichlet faces."""
+        threshold = self.threshold if threshold is None else threshold
+        geometry = self.geometry if self.geometry is not None else FVMGeometry(self.mesh)
+        boundary_faces = bm.nonzero(geometry.is_boundary)[0]
+        _, mag_E_f, _ = geometry.over_relaxed_decomposition()
+        boundary_integrator = (
+            mag_E_f[boundary_faces] / geometry.mag_d_f[boundary_faces]
+        )
+        boundary_points = geometry.face_center[boundary_faces]
+        if not isinstance(coef, (int, float)):
+            coef = bm.array(coef)
+            if coef.shape == ():
+                pass
+            elif coef.ndim == 1 and coef.shape[0] == self.mesh.number_of_faces():
+                coef = coef[boundary_faces]
             else:
-                uh = bm.zeros(A.shape[0], dtype=A.dtype)
-        uh = bm.set_at(uh, index, self.gd(points[index]))
-        f = f - A @ uh
-        f = bm.set_at(f, index, uh[index])
-        A = D0.matmul(A.matmul(D0)) + D1
-        return A, f
+                raise ValueError("coef must be scalar or face-wise.")
+        boundary_integrator = coef * boundary_integrator
+        if threshold is not None:
+            boundary_flag = boundary_face_flag(boundary_points, threshold)
+            boundary_faces = boundary_faces[boundary_flag]
+            boundary_integrator = boundary_integrator[boundary_flag]
+            boundary_points = boundary_points[boundary_flag]
+        if dtype is not None:
+            boundary_integrator = bm.array(boundary_integrator, dtype=dtype)
+        return geometry.owner[boundary_faces], boundary_integrator, boundary_points
 
-    def DiffusionApply(self, A, b, coef=1.0):
-        """
-        Apply Dirichlet boundary conditions to the diffusion term.
+    def apply_diffusion_matrix(self, A, coef=1.0, threshold=None):
+        """Add the implicit Dirichlet diffusion diagonal to ``A``."""
+        NC = self.mesh.number_of_cells()
+        components = self.matrix_components(A)
+        dtype = getattr(getattr(A, "values", None), "dtype", None)
+        boundary_owner, boundary_integrator, _ = self.diffusion_boundary_data(
+            coef=coef,
+            threshold=threshold,
+            dtype=dtype,
+        )
+        boundary_diagonal = bm.zeros(NC, dtype=boundary_integrator.dtype)
+        boundary_diagonal = bm.index_add(
+            boundary_diagonal,
+            boundary_owner,
+            boundary_integrator,
+            axis=0,
+        )
+        if components > 1:
+            boundary_diagonal = bm.tile(boundary_diagonal, (components,))
+        return A + spdiags(
+            boundary_diagonal,
+            0,
+            A.shape[0],
+            A.shape[1],
+            index_dtype=A.itype,
+        )
 
-        This method modifies the system matrix `A` and right-hand side vector `b` to 
-        incorporate Dirichlet boundary conditions for the diffusion term, using boundary 
-        edge contributions and vector/scalar field handling.
+    def apply_diffusion_rhs(self, b, coef=1.0, threshold=None):
+        """Add the explicit Dirichlet diffusion RHS contribution to ``b``."""
+        NC = self.mesh.number_of_cells()
+        components = self.system_components(b)
+        boundary_owner, boundary_integrator, boundary_points = self.diffusion_boundary_data(
+            coef=coef,
+            threshold=threshold,
+            dtype=b.dtype,
+        )
+        boundary_value = self.boundary_values(boundary_points, components)
+        if components == 1:
+            boundary_rhs = boundary_integrator * boundary_value
+            boundary_rhs = bm.array(boundary_rhs, dtype=b.dtype)
+            return bm.index_add(b, boundary_owner, boundary_rhs, axis=0)
+
+        boundary_rhs = boundary_integrator[:, None] * boundary_value
+        boundary_rhs = bm.swapaxes(boundary_rhs, 0, 1).flatten()
+        boundary_rhs = bm.array(boundary_rhs, dtype=b.dtype)
+        indices = bm.concat(
+            [boundary_owner + component * NC for component in range(components)]
+        )
+        return bm.index_add(b, indices, boundary_rhs, axis=0)
+
+    def apply_diffusion(self, A, b, coef=1.0, threshold=None):
+        """Add boundary-face Dirichlet contribution for diffusion operators.
+
+        For a boundary face, the prescribed value contributes an implicit
+        owner-cell diagonal term and a matching RHS term.  This is the standard
+        FVM face-flux form for Dirichlet data, and it supports scalar and
+        component-wise vector fields.
 
         Args:
             A (sparse matrix): System matrix to be modified.
@@ -108,87 +187,56 @@ class DirichletBC:
                 - A (sparse matrix): Modified system matrix with boundary conditions applied.
                 - b (ndarray): Modified right-hand side vector with boundary contributions.
         """
-        bd_edge = self.mesh.boundary_face_index()
-        e2c = self.mesh.edge_to_cell()
+        self.system_components(b, A)
+        return (
+            self.apply_diffusion_matrix(A, coef=coef, threshold=threshold),
+            self.apply_diffusion_rhs(b, coef=coef, threshold=threshold),
+        )
+
+    def apply_convection(self, b, coef, threshold=None):
+        """
+        Apply Dirichlet boundary values to a finite-volume convection RHS.
+
+        The interior convection operator only assembles owner-neighbour face
+        contributions. On boundary faces the prescribed value contributes the
+        known flux ``-(coef_f · S_f) g_D`` to the owner cell RHS.
+        """
+        if coef is None:
+            return b
+
+        threshold = self.threshold if threshold is None else threshold
+        geometry = self.geometry if self.geometry is not None else FVMGeometry(self.mesh)
+        boundary_faces = bm.nonzero(geometry.is_boundary)[0]
         NC = self.mesh.number_of_cells()
-        _, d = VectorDecomposition(self.mesh).centroid_vector_calculation()
-        Ef_abs = VectorDecomposition(self.mesh).Sor()
-        bd_integrator = Ef_abs[bd_edge] / d[bd_edge]
-        bde2c = e2c[bd_edge, 0]
-        edge_middle_point = self.mesh.entity_barycenter('edge')
-        bdedgepoint = edge_middle_point[bd_edge]
-        # Scalar field: bd_u shape (NE,), 2D vector field: (NE, 2), 3D vector field: (NE, 3)
-        bd_u = self.gd(bdedgepoint)[..., None]
-        bdIdx = bm.zeros(NC)
-        bm.add_at(bdIdx, bde2c, bd_integrator)
-        # Determine field dimension (scalar, 2D, or 3D) based on bd_u's second axis
-        D = bd_u.shape[1]
-        bdIdx = bm.tile(bdIdx, D)
-        A_0 = spdiags(bdIdx, 0, A.shape[0], A.shape[1])
-        A = A + coef * A_0
-        if D == 1:
-            bd_correct = (bd_integrator[:, None] * bd_u).reshape(-1)
-            bm.add_at(b, bde2c, coef * bd_correct)
+        components = self.system_components(b)
+        Sf = geometry.S_f[boundary_faces]
+        boundary_points = geometry.face_center[boundary_faces]
+        coef = bm.array(coef)
+        if coef.ndim == 1 and coef.shape[0] == self.mesh.number_of_faces():
+            flux = coef[boundary_faces]
+        elif coef.ndim == 2 and coef.shape[0] == self.mesh.number_of_faces():
+            flux = bm.einsum("ij,ij->i", coef[boundary_faces], Sf)
         else:
-            # Remove the extra axis from bd_u for computation
-            bd_u = bm.squeeze(bd_u, axis=-1)
-            bd_correct = bd_integrator[:, None] * bd_u
-            bd_correct = bm.transpose(bd_correct).flatten()
-            new_arr = bde2c + NC
-            bde2c = bm.concat([bde2c, new_arr])
-            bm.add_at(b, bde2c, coef * bd_correct)
-        return A, b
+            raise ValueError("coef must be a face-wise scalar flux or vector face field.")
 
-    def DivApply(self, b):
-        """
-        Apply Dirichlet boundary conditions to the divergence term.
+        if threshold is not None:
+            boundary_flag = boundary_face_flag(boundary_points, threshold)
+            boundary_faces = boundary_faces[boundary_flag]
+            boundary_points = boundary_points[boundary_flag]
+            flux = flux[boundary_flag]
 
-        This method modifies the right-hand side vector `b` to account for Dirichlet boundary 
-        conditions in the divergence term, incorporating boundary face contributions and 
-        vector field normals.
+        boundary_owner = geometry.owner[boundary_faces]
+        boundary_value = self.boundary_values(boundary_points, components)
 
-        Args:
-            b (ndarray): Right-hand side vector to be modified.
+        if components == 1:
+            boundary_rhs = bm.array(flux * boundary_value, dtype=b.dtype)
+            b = bm.index_add(b, boundary_owner, boundary_rhs, axis=0, alpha=-1)
+            return b
 
-        Returns:
-            ndarray: Modified right-hand side vector with boundary contributions.
-        """
-        NC = self.mesh.number_of_cells()
-        n = self.mesh.face_unit_normal()
-        facemeasure = self.mesh.entity_measure('face')
-        bd_edge = self.mesh.boundary_face_index()
-        edge_middle_point = self.mesh.entity_barycenter('edge')
-        e2c = self.mesh.edge_to_cell()
-        bdedgepoint = edge_middle_point[bd_edge]
-        bdSf = (facemeasure[:, None] * n)[bd_edge]  # (bdNE, 2)
-        bde2c = e2c[bd_edge, 0]
-        # 2D vector field: bd_u shape (bdNE, 2), 3D vector field: (bdNE, 3)
-        bd_u = self.gd(bdedgepoint)
-        bd_correct = bd_u * bdSf
-        bd_correct = bm.transpose(bd_correct).flatten()
-        new_arr = bde2c + NC
-        bde2c = bm.concat([bde2c, new_arr])
-        bm.add_at(b, bde2c, -bd_correct)
-        return b
-    
-    def ConvectionApplyX(self,b):
-        Sf = self.mesh.edge_normal()
-        bdedge = self.mesh.boundary_face_index()
-        epoints = self.mesh.entity_barycenter('face')[bdedge, :]
-        bdu = self.gd(epoints)
-        bdflux1 = bm.einsum('ij,i->i', Sf[bdedge, :], bdu)
-        e2c = self.mesh.edge_to_cell()
-        bde2c = e2c[bdedge, 0]
-        bm.add_at(b, bde2c, -bdflux1)
-        return b
-    
-    def ConvectionApplyY(self,b):
-        Sf = self.mesh.edge_normal()
-        bdedge = self.mesh.boundary_face_index()
-        epoints = self.mesh.entity_barycenter('face')[bdedge, :]
-        bdv = self.gd(epoints)
-        bdflux2 = bm.einsum('ij,i->i', Sf[bdedge, :], bdv)
-        e2c = self.mesh.edge_to_cell()
-        bde2c = e2c[bdedge, 0]
-        bm.add_at(b, bde2c, -bdflux2)
+        boundary_rhs = -flux[:, None] * boundary_value
+        boundary_rhs = bm.array(boundary_rhs, dtype=b.dtype)
+        indices = bm.concat(
+            [boundary_owner + component * NC for component in range(components)]
+        )
+        b = bm.index_add(b, indices, bm.swapaxes(boundary_rhs, 0, 1).flatten(), axis=0)
         return b

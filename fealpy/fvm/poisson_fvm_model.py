@@ -14,7 +14,10 @@ from ..fvm import (
     ScalarSourceIntegrator,
     ScalarCrossDiffusionIntegrator,
     DirichletBC,
+    FVMGeometry,
     GradientReconstruct,
+    cell_average_l2_error,
+    reconstruct_face_gradient,
 )
 
 
@@ -46,6 +49,9 @@ class PoissonFVMModel(ComputationalModel):
         self.set_pde(options["pde"])
         self.set_mesh(options["nx"], options["ny"])
         self.set_space(options["space_degree"])
+        self.error_quadrature_order = int(options.get("error_quadrature_order", 4))
+        self.nonorthogonal_correction_method = options.get("nonorthogonal_correction_method", "bounded_over_relaxed")
+        self.nonorthogonal_limit_coeff = options.get("nonorthogonal_limit_coeff", 0.5)
 
     def __str__(self) -> str:
         """Return a summary of the model configuration."""
@@ -65,11 +71,21 @@ class PoissonFVMModel(ComputationalModel):
         self.logger.info(self.pde)
 
     def set_mesh(self, nx: int = 10, ny: int = 10) -> None:
-        self.mesh = self.pde.init_mesh['uniform_tri'](nx=nx, ny=ny)
+        mesh_type = self.options.get("mesh_type", "uniform_tri")
+        init_mesh = self.pde.init_mesh[mesh_type]
+        try:
+            self.mesh = init_mesh(nx=nx, ny=ny)
+        except TypeError as exc:
+            unexpected_size_args = "nx" in str(exc) or "ny" in str(exc)
+            if not unexpected_size_args:
+                raise
+            self.mesh = init_mesh()
 
     def set_space(self, degree: int = 0) -> None:
         self.p = degree
         self.space = ScaledMonomialSpace2d(self.mesh, self.p)
+        self.gradient = GradientReconstruct(self.mesh)
+        self.fvm_geometry = FVMGeometry(self.mesh)
     
     def assemble_base_system(self) -> tuple:
         """
@@ -86,7 +102,7 @@ class PoissonFVMModel(ComputationalModel):
         lform.add_integrator(ScalarSourceIntegrator(self.pde.source, q=2))
         f = lform.assembly()
         dbc = DirichletBC(self.mesh, self.pde.dirichlet)
-        A, f = dbc.DiffusionApply(A, f)
+        A, f = dbc.apply_diffusion(A, f)
         return A, f
 
     def compute_cross_diffusion(self, uh) -> TensorLike:
@@ -100,11 +116,18 @@ class PoissonFVMModel(ComputationalModel):
             ndarray: Right-hand side vector from cross-diffusion.
         """
         lform = LinearForm(self.space)
-        # grad_u = GradientReconstruct(self.mesh).AverageGradientreDirichlet(uh,self.pde.dirichlet)  # (NC, 2)
-        grad_u = GradientReconstruct(self.mesh).LSQ(uh)
-        grad_f = GradientReconstruct(self.mesh).reconstruct(grad_u)  # (NE, 2)
-        # grad_f = GradientReconstruct(self.mesh).reconstruct2(uh,grad_u)  # (NE, 2)
-        lform.add_integrator(ScalarCrossDiffusionIntegrator(uh, grad_f, coef=1))
+        grad_u = self.gradient.cell_gradient(uh)
+        grad_f = reconstruct_face_gradient(self.mesh, grad_u)
+        lform.add_integrator(
+            ScalarCrossDiffusionIntegrator(
+                uh,
+                grad_f,
+                coef=1,
+                geometry=self.fvm_geometry,
+                correction_method=self.nonorthogonal_correction_method,
+                limit_coeff=self.nonorthogonal_limit_coeff,
+            )
+        )
         return lform.assembly()
 
     def solve(self, max_iter=1, tol=1e-7) -> TensorLike:
@@ -143,9 +166,12 @@ class PoissonFVMModel(ComputationalModel):
         Returns:
             float: The L2 norm of the error.
         """
-        cell_center = self.mesh.entity_barycenter('cell')
-        self.uI = self.pde.solution(cell_center)
-        self.error = bm.sqrt(bm.sum(self.mesh.entity_measure('cell') * (self.uI - self.uh)**2))
+        self.error, self.uI = cell_average_l2_error(
+            self.mesh,
+            self.pde.solution,
+            self.uh,
+            q=self.error_quadrature_order,
+        )
         # l0error = bm.max(bm.abs(self.uI - self.uh))
         # self.logger.info(f"L0 error = {l0error}")
         return self.error
@@ -181,4 +207,3 @@ class PoissonFVMModel(ComputationalModel):
         # ax3.set_zlabel("Error")
         plt.tight_layout()
         plt.show()
-
