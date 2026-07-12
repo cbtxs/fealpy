@@ -1,5 +1,6 @@
+
+from dataclasses import dataclass
 from functools import cached_property
-from typing import NamedTuple
 
 from ...backend import bm
 from ...backend import Tensor
@@ -8,7 +9,8 @@ from ..storage import MeshBlock
 __all__ = ["BoundaryInfo", "BoundaryInferencer"]
 
 
-class BoundaryInfo(NamedTuple):
+@dataclass(frozen=True)
+class BoundaryInfo:
     mask: Tensor
 
     @cached_property

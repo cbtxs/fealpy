@@ -5,7 +5,6 @@ from typing import Literal
 from ...backend import bm
 from ...backend import Tensor, Index
 from ..schema import registry as _Reg
-from ..topology.boundary import BoundaryInfo
 from .mesh import Mesh
 
 __all__ = ["FEALPyMesh"]
@@ -65,18 +64,6 @@ class FEALPyMesh(Mesh):
         face_sec = self.Entities(-2)[0]
         data = cell_sec.schema.local_entity(face_sec.schema.name)
         return bm.asarray(data, dtype=self.itype, device=self.device)
-
-    def _boundary_info_by_top_dim(self, top_dim: int) -> BoundaryInfo:
-        """Return boundary information for the first entity sector of a dimension.
-
-        Parameters:
-            top_dim (int): Topological dimension of the requested entities.
-
-        Returns:
-            BoundaryInfo: Boundary indices, mask, and optional adjacency counts.
-        """
-        block = self.Entities(top_dim)[0]
-        return block.boundary()
 
     # Meta
 
@@ -398,35 +385,35 @@ class FEALPyMesh(Mesh):
 
     def boundary_cell_flag(self) -> Tensor:
         """Return a boolean mask marking boundary cells."""
-        return self._boundary_info_by_top_dim(self.top_dimension()).mask
+        return self.Entity(-1).boundary().mask
 
     def boundary_face_flag(self) -> Tensor:
         """Return a boolean mask marking boundary faces."""
-        return self._boundary_info_by_top_dim(self.top_dimension() - 1).mask
+        return self.Entity(-2).boundary().mask
 
     def boundary_edge_flag(self) -> Tensor:
         """Return a boolean mask marking boundary edges."""
-        return self._boundary_info_by_top_dim(1).mask
+        return self.Entity(1).boundary().mask
 
     def boundary_node_flag(self) -> Tensor:
         """Return a boolean mask marking boundary nodes."""
-        return self._boundary_info_by_top_dim(0).mask
+        return self.Entity(0).boundary().mask
 
     def boundary_cell_index(self) -> Tensor:
         """Return global indices of boundary cells."""
-        return self._boundary_info_by_top_dim(self.top_dimension()).index
+        return self.Entity(-1).boundary().index
 
     def boundary_face_index(self) -> Tensor:
         """Return global indices of boundary faces."""
-        return self._boundary_info_by_top_dim(self.top_dimension() - 1).index
+        return self.Entity(-2).boundary().index
 
     def boundary_edge_index(self) -> Tensor:
         """Return global indices of boundary edges."""
-        return self._boundary_info_by_top_dim(1).index
+        return self.Entity(1).boundary().index
 
     def boundary_node_index(self) -> Tensor:
         """Return global indices of boundary nodes."""
-        return self._boundary_info_by_top_dim(0).index
+        return self.Entity(0).boundary().index
 
     def cell_to_edge_sign(self) -> Tensor: # TODO: remove implementation here
         """Return orientation signs of local cell edges.

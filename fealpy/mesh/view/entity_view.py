@@ -110,10 +110,9 @@ class EntityView:
         """Infer boundary information for this entity sector.
 
         Returns:
-            BoundaryInfo: Named tuple with ``index`` containing boundary entity
-            indices, ``mask`` containing a boolean mask of shape ``(NE,)``, and
-            ``count`` containing adjacency counts when the boundary rule uses
-            adjacent top-dimensional entities.
+            BoundaryInfo:
+            - mask: Boolean tensor indicating which entities are on the boundary.
+            - index: Integer tensor of boundary entity indices.
         """
         return self.schema.boundary(self.context())
 

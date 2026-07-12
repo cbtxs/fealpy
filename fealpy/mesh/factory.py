@@ -16,10 +16,6 @@ __all__ = [
     'PyramidMesh',
     'HexahedronMesh',
     'PolygonMesh',
-    'UniformMesh',
-    'UniformMesh1d',
-    'UniformMesh2d',
-    'UniformMesh3d',
     'LagrangeTriangleMesh',
     'LagrangeQuadrangleMesh',
 ]
@@ -155,22 +151,6 @@ class HexahedronMesh(_MeshFactoryNewMixin):
 
 class PolygonMesh(metaclass=MeshFactory):
     schema = "poly"
-
-
-class UniformMesh(metaclass=MeshFactory):
-    schema = "uniform"
-
-
-class UniformMesh1d(UniformMesh):
-    pass
-
-
-class UniformMesh2d(UniformMesh):
-    pass
-
-
-class UniformMesh3d(UniformMesh):
-    pass
 
 
 class LagrangeTriangleMesh(metaclass=MeshFactory):

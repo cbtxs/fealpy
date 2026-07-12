@@ -10,5 +10,7 @@ from .vtk_reader import read_mesh_from_vtu
 
 from .factory import *
 
+from .uniform_mesh import *
+
 # legacy imports
 from .mesh_base import *
