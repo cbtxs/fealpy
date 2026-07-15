@@ -1,41 +1,35 @@
 """Owner-oriented finite-volume face geometry."""
 
-from inspect import signature
-
+from dataclasses import dataclass
 from fealpy.backend import backend_manager as bm
 from fealpy.typing import Index, TensorLike, _S
+
+
+@dataclass(frozen=True)
+class DiffusionFaceDecomposition:
+    """Geometry shared by all terms of one non-orthogonal diffusion scheme.
+
+    ``E_f`` is parallel to the owner-neighbour vector and supplies the
+    implicit two-point contribution.  ``T_f = S_f - E_f`` supplies the
+    explicit cross-diffusion contribution.  ``orthogonal_factor`` is the
+    geometry-only coefficient ``|E_f| / |d_f|``.
+    """
+
+    E_f: TensorLike
+    mag_E_f: TensorLike
+    T_f: TensorLike
+    orthogonal_factor: TensorLike
 
 
 def boundary_face_flag(points, threshold):
     """Evaluate a boundary-face threshold on face centers.
 
-    ``lambda x`` receives x coordinates, ``lambda y`` receives y coordinates,
-    ``lambda z`` receives z coordinates, and other one-argument callables such
-    as ``lambda p`` receive the full point array.
+    The selector always receives the complete ``(N, GD)`` face-center array.
     """
     if not callable(threshold):
         raise ValueError("threshold must be a callable boundary face selector.")
 
-    argument = points
-    try:
-        params = list(signature(threshold).parameters.values())
-    except (TypeError, ValueError):
-        params = ()
-    positional = [
-        p for p in params
-        if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
-    ]
-    if len(positional) == 1:
-        axis = {"x": 0, "y": 1, "z": 2}.get(positional[0].name)
-        if axis is not None:
-            if axis >= points.shape[1]:
-                raise ValueError(
-                    f"threshold requests coordinate axis {axis}, "
-                    f"but boundary face centers have dimension {points.shape[1]}."
-                )
-            argument = points[:, axis]
-
-    flag = bm.array(threshold(argument), dtype=bm.bool)
+    flag = bm.array(threshold(points), dtype=bm.bool)
     if flag.shape == (points.shape[0],):
         return flag
     raise ValueError(
@@ -73,6 +67,7 @@ class FVMGeometry:
     def __init__(self, mesh, *, index: Index = _S) -> None:
         self.mesh = mesh
         self.index = index
+        self._diffusion_decomposition_cache = {}
 
         required = ("geo_dimension", "entity_barycenter", "entity_measure", "number_of_cells")
         missing = [name for name in required if not hasattr(mesh, name)]
@@ -90,10 +85,15 @@ class FVMGeometry:
             face_to_cell = mesh.edge_to_cell(index=index)
         if face_to_cell.ndim == 1:
             face_to_cell = face_to_cell[None, :]
-        face_to_cell = face_to_cell[:, :2]
-        self.face_to_cell = face_to_cell
-        self.owner = face_to_cell[:, 0]
-        self.neighbour = face_to_cell[:, 1]
+        self.owner_local_face = (
+            face_to_cell[:, 2] if face_to_cell.shape[1] >= 4 else None
+        )
+        self.neighbour_local_face = (
+            face_to_cell[:, 3] if face_to_cell.shape[1] >= 4 else None
+        )
+        self.face_to_cell = face_to_cell[:, :2]
+        self.owner = self.face_to_cell[:, 0]
+        self.neighbour = self.face_to_cell[:, 1]
         self.is_internal = self.owner != self.neighbour
         self.is_boundary = ~self.is_internal
 
@@ -137,44 +137,57 @@ class FVMGeometry:
         if bm.any(self.boundary_normal_distance <= 0.0):
             raise ValueError("boundary face has zero owner-normal distance.")
 
-    def over_relaxed_decomposition(self):
-        """Return ``(E_f, |E_f|, T_f)`` from over-relaxed decomposition.
+    def diffusion_face_decomposition(
+        self,
+        method: str = "over_relaxed",
+        *,
+        eps: float = 0.05,
+    ) -> DiffusionFaceDecomposition:
+        """Return the cached face decomposition for one diffusion variant.
 
-        The decomposition is
-
-            E_f = (S_f · S_f) / (d_f · S_f) d_f,
-            T_f = S_f - E_f.
-
-        It is kept outside ``__init__`` because it is a numerical
-        decomposition strategy, not primitive mesh geometry.
+        The returned object is the single geometry source for the implicit
+        two-point term, explicit cross-diffusion term, and boundary closure.
+        Field-dependent cross-flux limiting is deliberately not a geometry
+        decomposition and is configured by the cross-diffusion operator.
         """
-        S_dot_S = bm.einsum("ij,ij->i", self.S_f, self.S_f)
-        d_dot_S = bm.einsum("ij,ij->i", self.d_f, self.S_f)
-        if bm.any(d_dot_S <= 0.0):
-            raise ValueError("over-relaxed decomposition has invalid d_f dot S_f.")
-        E_f = (S_dot_S / d_dot_S)[:, None] * self.d_f
-        mag_E_f = bm.linalg.norm(E_f, axis=1)
-        T_f = self.S_f - E_f
-        return E_f, mag_E_f, T_f
-
-    def bounded_over_relaxed_decomposition(self, eps: float = 0.05):
-        """Return bounded over-relaxed ``(E_f, |E_f|, T_f)``.
-
-        The bounded form uses
-
-            E_f = |S_f| / max(n_f · d_f, eps |d_f|) d_f,
-            T_f = S_f - E_f.
-
-        It is a non-orthogonal diffusion strategy, not primitive mesh geometry.
-        """
+        supported = {
+            "over_relaxed",
+            "bounded_over_relaxed",
+            "uncorrected",
+        }
+        if method not in supported:
+            raise ValueError(f"unknown diffusion method: {method!r}")
         if eps <= 0.0:
             raise ValueError("eps must be positive.")
-        projection = bm.einsum("ij,ij->i", self.n_f, self.d_f)
-        denominator = bm.maximum(projection, eps * self.mag_d_f)
-        E_f = (self.mag_S_f / denominator)[:, None] * self.d_f
+
+        key = (method, float(eps))
+        cached = self._diffusion_decomposition_cache.get(key)
+        if cached is not None:
+            return cached
+
+        if method == "bounded_over_relaxed":
+            projection = bm.einsum("ij,ij->i", self.n_f, self.d_f)
+            denominator = bm.maximum(projection, eps * self.mag_d_f)
+            E_f = (self.mag_S_f / denominator)[:, None] * self.d_f
+        else:
+            S_dot_S = bm.einsum("ij,ij->i", self.S_f, self.S_f)
+            d_dot_S = bm.einsum("ij,ij->i", self.d_f, self.S_f)
+            if bm.any(d_dot_S <= 0.0):
+                raise ValueError(
+                    "over-relaxed decomposition has invalid d_f dot S_f."
+                )
+            E_f = (S_dot_S / d_dot_S)[:, None] * self.d_f
+
         mag_E_f = bm.linalg.norm(E_f, axis=1)
         T_f = self.S_f - E_f
-        return E_f, mag_E_f, T_f
+        decomposition = DiffusionFaceDecomposition(
+            E_f=E_f,
+            mag_E_f=mag_E_f,
+            T_f=T_f,
+            orthogonal_factor=mag_E_f / self.mag_d_f,
+        )
+        self._diffusion_decomposition_cache[key] = decomposition
+        return decomposition
 
     def normal_distance(self, faces: Index = _S):
         """Return the projection of ``d_f`` onto the owner-oriented unit normal."""
@@ -257,3 +270,37 @@ def face_interpolation_owner_weight(
 
     weight = 0.5 * bm.ones_like(geometry.mag_S_f)
     return bm.where(geometry.is_internal, weight, 1.0)
+
+
+def interpolate_cell_to_face(
+    cell_values: TensorLike,
+    *,
+    geometry: FVMGeometry,
+    method: str = "linear",
+) -> TensorLike:
+    """Interpolate cell values to faces with the shared geometric weights.
+
+    The first axis of ``cell_values`` is the control-volume axis.  Additional
+    axes are preserved, so the same operation applies to scalar, vector, and
+    tensor fields.  Boundary faces use their owner value.
+    """
+    cell_values = bm.array(cell_values)
+    if cell_values.ndim == 0:
+        raise ValueError("cell_values must have a control-volume axis.")
+    if cell_values.shape[0] != geometry.mesh.number_of_cells():
+        raise ValueError(
+            f"cell_values has {cell_values.shape[0]} cells, expected "
+            f"{geometry.mesh.number_of_cells()}."
+        )
+
+    owner_weight = face_interpolation_owner_weight(
+        geometry.mesh,
+        method=method,
+        geometry=geometry,
+    )
+    weight_shape = (owner_weight.shape[0],) + (1,) * (cell_values.ndim - 1)
+    owner_weight = bm.reshape(owner_weight, weight_shape)
+    return (
+        owner_weight * cell_values[geometry.owner]
+        + (1.0 - owner_weight) * cell_values[geometry.neighbour]
+    )

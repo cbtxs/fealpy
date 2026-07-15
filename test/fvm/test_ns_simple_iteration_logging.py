@@ -1,8 +1,8 @@
 from fealpy.fvm.simple_residual import (
-    simple_iteration_log_message,
-    simple_pressure_update_step,
+    simple_iteration_residual,
     simple_tolerances,
 )
+from fealpy.fvm.solver_diagnostics import simple_iteration_log_message
 
 
 def test_simple_iteration_log_message_reports_required_iteration_data():
@@ -10,6 +10,7 @@ def test_simple_iteration_log_message_reports_required_iteration_data():
         simple_iteration=7,
         nonorthogonal_iterations=3,
         pressure_criterion=1.2e-4,
+        momentum_residual=3.4e-5,
         mass_residual=2.3e-3,
         pressure_correction=0.42,
     )
@@ -18,14 +19,15 @@ def test_simple_iteration_log_message_reports_required_iteration_data():
     assert "nonorthogonal iterations: 3" in message
     assert "pressure criterion: 1.20e-04" in message
     assert "pressure relax" not in message
+    assert "momentum residual: 3.40e-05" in message
     assert "mass residual: 2.30e-03" in message
     assert "pressure correction L2: 4.20e-01" in message
 
 
-def test_simple_residual_builds_default_tolerances():
+def test_simple_residual_builds_fixed_point_tolerances():
     assert simple_tolerances(1.0e-5, None, None) == (
         1.0e-5,
-        1.0e-4,
+        1.0e-5,
     )
     assert simple_tolerances(1.0e-5, 2.0e-6, 3.0e-6) == (
         2.0e-6,
@@ -41,20 +43,23 @@ def test_simple_iteration_mass_uses_pressure_corrected_face_velocity(monkeypatch
     raw_uf = object()
     corrected_uf = object()
 
-    def fake_mass_residual(mesh, uf, geometry=None):
-        return 2.0 if uf is raw_uf else 1.0e-8
+    def fake_mass_metrics(mesh, uf, geometry=None):
+        return {
+            "relative_l1": 2.0 if uf is raw_uf else 1.0e-8,
+            "relative_l2": 2.0 if uf is raw_uf else 1.0e-8,
+            "divergence_l2": 4.0 if uf is raw_uf else 3.0e-8,
+            "absolute_linf": 3.0 if uf is raw_uf else 2.0e-8,
+        }
 
-    monkeypatch.setattr(simple_residual, "collocated_mass_residual", fake_mass_residual)
+    monkeypatch.setattr(simple_residual, "collocated_mass_metrics", fake_mass_metrics)
     monkeypatch.setattr(simple_residual, "cell_l2_norm", lambda mesh, value: 0.0)
     monkeypatch.setattr(simple_residual, "relative_l2_update", lambda mesh, update, p: 0.0)
 
-    _, residual = simple_pressure_update_step(
-        [],
+    residual = simple_iteration_residual(
         None,
         raw_uf,
         bm.ones(1),
         bm.zeros(1),
-        pressure_relax=0.3,
         nonorthogonal_iterations=1,
         momentum_nonorthogonal_iterations=1,
         stopping_face_velocity=corrected_uf,
@@ -62,6 +67,7 @@ def test_simple_iteration_mass_uses_pressure_corrected_face_velocity(monkeypatch
     )
 
     assert residual["mass"] == 1.0e-8
+    assert residual["mass_imbalance_linf"] == 2.0e-8
     assert residual["mass_before_pressure_correction"] == 2.0
     assert "pressure_update" not in residual
     assert "pressure_relax" not in residual
@@ -78,21 +84,24 @@ def test_simple_iteration_mass_skips_raw_face_velocity_by_default(monkeypatch):
     raw_uf = object()
     corrected_uf = object()
 
-    def fake_mass_residual(mesh, uf, geometry=None):
+    def fake_mass_metrics(mesh, uf, geometry=None):
         calls.append(uf)
-        return 1.0e-8
+        return {
+            "relative_l1": 1.0e-8,
+            "relative_l2": 1.0e-8,
+            "divergence_l2": 3.0e-8,
+            "absolute_linf": 2.0e-8,
+        }
 
-    monkeypatch.setattr(simple_residual, "collocated_mass_residual", fake_mass_residual)
+    monkeypatch.setattr(simple_residual, "collocated_mass_metrics", fake_mass_metrics)
     monkeypatch.setattr(simple_residual, "cell_l2_norm", lambda mesh, value: 0.0)
     monkeypatch.setattr(simple_residual, "relative_l2_update", lambda mesh, update, p: 0.0)
 
-    _, residual = simple_pressure_update_step(
-        [],
+    residual = simple_iteration_residual(
         None,
         raw_uf,
         bm.ones(1),
         bm.zeros(1),
-        pressure_relax=0.3,
         nonorthogonal_iterations=1,
         momentum_nonorthogonal_iterations=1,
         stopping_face_velocity=corrected_uf,
@@ -100,6 +109,7 @@ def test_simple_iteration_mass_skips_raw_face_velocity_by_default(monkeypatch):
 
     assert calls == [corrected_uf]
     assert residual["mass"] == 1.0e-8
+    assert residual["mass_imbalance_linf"] == 2.0e-8
     assert "mass_before_pressure_correction" not in residual
 
 
@@ -110,19 +120,22 @@ def test_simple_iteration_pressure_criterion_uses_pressure_correction_l2(monkeyp
     bm.set_backend("numpy")
     monkeypatch.setattr(
         simple_residual,
-        "collocated_mass_residual",
-        lambda mesh, uf, geometry=None: 0.0,
+        "collocated_mass_metrics",
+            lambda mesh, uf, geometry=None: {
+                "relative_l1": 0.0,
+                "relative_l2": 0.0,
+                "divergence_l2": 0.0,
+                "absolute_linf": 0.0,
+        },
     )
     monkeypatch.setattr(simple_residual, "cell_l2_norm", lambda mesh, value: 2.5)
     monkeypatch.setattr(simple_residual, "relative_l2_update", lambda mesh, update, p: 1.0e-8)
 
-    _, residual = simple_pressure_update_step(
-        [],
+    residual = simple_iteration_residual(
         None,
         object(),
         bm.ones(1),
         bm.zeros(1),
-        pressure_relax=0.3,
         nonorthogonal_iterations=1,
         momentum_nonorthogonal_iterations=1,
         stopping_face_velocity=object(),
@@ -140,19 +153,22 @@ def test_simple_iteration_can_record_relative_pressure_correction(monkeypatch):
     bm.set_backend("numpy")
     monkeypatch.setattr(
         simple_residual,
-        "collocated_mass_residual",
-        lambda mesh, uf, geometry=None: 0.0,
+        "collocated_mass_metrics",
+            lambda mesh, uf, geometry=None: {
+                "relative_l1": 0.0,
+                "relative_l2": 0.0,
+                "divergence_l2": 0.0,
+                "absolute_linf": 0.0,
+        },
     )
     monkeypatch.setattr(simple_residual, "cell_l2_norm", lambda mesh, value: 2.5)
     monkeypatch.setattr(simple_residual, "relative_l2_update", lambda mesh, update, p: 1.0e-8)
 
-    _, residual = simple_pressure_update_step(
-        [],
+    residual = simple_iteration_residual(
         None,
         object(),
         bm.ones(1),
         bm.zeros(1),
-        pressure_relax=0.3,
         nonorthogonal_iterations=1,
         momentum_nonorthogonal_iterations=1,
         stopping_face_velocity=object(),

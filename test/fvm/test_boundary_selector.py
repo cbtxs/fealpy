@@ -4,7 +4,16 @@ import pytest
 from fealpy.backend import backend_manager as bm
 
 
-def test_boundary_face_flag_supports_axis_and_point_thresholds():
+def test_incompressible_pde_protocols_define_canonical_boundary_data():
+    from fealpy.model.navier_stokes import NavierStokesPDEDataProtocol
+    from fealpy.model.stokes import StokesPDEDataProtocol
+
+    for protocol in (StokesPDEDataProtocol, NavierStokesPDEDataProtocol):
+        assert callable(protocol.dirichlet_velocity)
+        assert callable(protocol.dirichlet_pressure)
+
+
+def test_boundary_face_flag_always_passes_full_point_array():
     from fealpy.fvm.fvm_geometry import boundary_face_flag
 
     points = bm.array(
@@ -16,14 +25,16 @@ def test_boundary_face_flag_supports_axis_and_point_thresholds():
         dtype=bm.float64,
     )
 
-    np.testing.assert_array_equal(
-        np.asarray(boundary_face_flag(points, lambda x: x < 0.75)),
-        np.array([True, True, False]),
-    )
-    np.testing.assert_array_equal(
-        np.asarray(boundary_face_flag(points, lambda p: p[:, 1] > 0.5)),
-        np.array([False, False, True]),
-    )
+    seen = {}
+
+    def selector(x):
+        seen["ndim"] = x.ndim
+        return x < 0.75 if x.ndim == 1 else x[:, 0] < 0.75
+
+    flag = boundary_face_flag(points, selector)
+
+    assert seen["ndim"] == 2
+    np.testing.assert_array_equal(np.asarray(flag), [True, True, False])
 
 
 def test_boundary_face_flag_rejects_wrong_shape():
@@ -34,23 +45,23 @@ def test_boundary_face_flag_rejects_wrong_shape():
         boundary_face_flag(points, lambda p: bm.array([True, False]))
 
 
-def test_rhie_chow_pressure_dirichlet_uses_public_boundary_selector():
+def test_rhie_chow_dirichlet_pressure_uses_public_boundary_selector():
     from fealpy.fvm.collocated_face_velocity_reconstruct import RhieChowInterpolation
     from fealpy.mesh import TriangleMesh
 
     bm.set_backend("numpy")
     mesh = TriangleMesh.from_box([0.0, 1.0, 0.0, 1.0], nx=2, ny=2)
 
-    def pressure_dirichlet(points):
+    def dirichlet_pressure(points):
         return points[:, 0] + points[:, 1]
 
     rhie_chow = RhieChowInterpolation(
         mesh,
-        pressure_dirichlet=pressure_dirichlet,
-        pressure_dirichlet_threshold=lambda p: bm.ones(p.shape[0], dtype=bm.bool),
+        dirichlet_pressure=dirichlet_pressure,
+        dirichlet_pressure_threshold=lambda p: bm.ones(p.shape[0], dtype=bm.bool),
     )
     pressure = bm.zeros(mesh.number_of_cells(), dtype=bm.float64)
-    gradient_difference = rhie_chow.GradientDifference(pressure)
+    gradient_difference = rhie_chow.pressure_gradient_difference(pressure)
 
     assert gradient_difference.shape == (
         mesh.number_of_faces(),

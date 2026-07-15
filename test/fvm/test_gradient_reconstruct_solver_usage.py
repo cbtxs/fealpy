@@ -154,28 +154,6 @@ def test_convection_integrator_default_skips_quadrature_fetch(monkeypatch):
     assert local.shape == (mesh.number_of_faces(), 2, 2)
 
 
-def test_convection_integrator_fast_method_is_compatible_alias():
-    mesh = _skew_two_cell_mesh()
-    scalar_space = ScaledMonomialSpace2d(mesh, 0)
-    vector_space = TensorFunctionSpace(scalar_space, shape=(2, -1))
-    face_velocity = np.tile(np.array([[0.7, -0.2]]), (mesh.number_of_faces(), 1))
-
-    default = BilinearForm(vector_space).add_integrator(
-        ConvectionIntegrator(q=2, coef=face_velocity, interpolation="linear")
-    ).assembly()
-    fast = BilinearForm(vector_space).add_integrator(
-        ConvectionIntegrator(
-            q=2,
-            coef=face_velocity,
-            interpolation="linear",
-            method="fast",
-        )
-    ).assembly()
-    diff = fast.to_scipy() - default.to_scipy()
-
-    np.testing.assert_allclose(diff.data, 0.0, atol=1.0e-13)
-
-
 def test_convection_matrix_assembler_matches_bilinear_form_vector_matrix():
     mesh = _skew_two_cell_mesh()
     scalar_space = ScaledMonomialSpace2d(mesh, 0)
@@ -215,13 +193,15 @@ def test_rhie_chow_can_use_openfoam_linear_velocity_interpolation():
     )
     weight = _openfoam_owner_weight(mesh, internal_face)
     velocity = np.array([[1.0, -2.0], [4.0, 3.0]])
-    flat_velocity = velocity.flatten(order="F")
-    ap = np.ones(2 * mesh.number_of_cells())
+    face_response = np.ones(mesh.number_of_faces())
 
     uf, _ = RhieChowInterpolation(
         mesh,
         velocity_interpolation="linear",
-    ).cell_velocity_to_face(flat_velocity, ap)
+    ).cell_velocity_to_face(
+        velocity,
+        face_response_coefficient=face_response,
+    )
 
     owner, neighbour = face_to_cell[internal_face]
     expected = weight * velocity[owner] + (1.0 - weight) * velocity[neighbour]
@@ -293,7 +273,9 @@ def test_rhie_chow_gradient_difference_vanishes_for_linear_internal_pressure():
     face_to_cell = model.mesh.edge_to_cell()[:, :2]
     is_internal = np.asarray(face_to_cell[:, 0] != face_to_cell[:, 1])
 
-    grad_diff = np.asarray(RhieChowInterpolation(model.mesh).GradientDifference(pressure))
+    grad_diff = np.asarray(
+        RhieChowInterpolation(model.mesh).pressure_gradient_difference(pressure)
+    )
 
     assert np.max(np.abs(grad_diff[is_internal])) < 1.0e-12
 
@@ -307,7 +289,7 @@ def test_rhie_chow_interpolation_accepts_precomputed_pressure_gradient(monkeypat
         "pbar_log": False,
     })
     pressure = np.zeros(model.NC)
-    velocity = np.zeros(model.GD * model.NC)
+    velocity = np.zeros((model.NC, model.GD))
     a_p = np.ones(model.GD * model.NC)
     pressure_gradient = np.zeros((model.NC, model.GD))
     rhie_chow = RhieChowInterpolation(model.mesh)
@@ -318,7 +300,7 @@ def test_rhie_chow_interpolation_accepts_precomputed_pressure_gradient(monkeypat
 
     rhie_chow.gradient_reconstruct = ForbiddenGradient()
 
-    face_velocity = rhie_chow.Interpolation(
+    face_velocity = rhie_chow.reconstruct(
         velocity,
         a_p,
         pressure,
@@ -343,8 +325,8 @@ def test_cross_diffusion_gradient_path_is_exact_for_linear_velocity():
     gradient = GradientReconstruct(
         model.mesh,
         method="green_gauss",
-        gd=linear_velocity,
-        bc_type="dirichlet",
+        boundary_value=linear_velocity,
+        boundary_type="dirichlet",
     )
     cell_grad = np.asarray(
         gradient.cell_gradient(velocity)
@@ -363,6 +345,7 @@ def _boundary_all_cross_diffusion(model, velocity):
     lform.add_integrator(
         ScalarCrossDiffusionIntegrator(
             grad_f=grad_f,
+            method="bounded_over_relaxed",
             boundary_policy="all",
         )
     )
@@ -375,7 +358,7 @@ def _cell_velocity_for_model(model, points):
     return model.pde.velocity(points)
 
 
-def test_momentum_nonorthogonal_rhs_keeps_boundary_correction_for_current_bc_layer():
+def test_momentum_nonorthogonal_rhs_keeps_boundary_correction():
     cases = [
         (NSFVMSimpleModel, {"pde": 6, "nx": 4, "ny": 4, "space_degree": 0}),
         (

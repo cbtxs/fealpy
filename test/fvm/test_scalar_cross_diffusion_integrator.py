@@ -153,7 +153,7 @@ def test_integrator_assembly_delegates_face_flux_construction(monkeypatch):
     )
 
 
-def test_default_cross_diffusion_matches_bounded_over_relaxed_scatter():
+def test_default_cross_diffusion_matches_over_relaxed_scatter():
     mesh, space = _box_space(nx=2, ny=1)
     grad_f = np.stack(
         [
@@ -163,11 +163,10 @@ def test_default_cross_diffusion_matches_bounded_over_relaxed_scatter():
         axis=1,
     )
     coef = np.linspace(0.8, 1.4, mesh.number_of_edges())
-    edge_to_cell = np.asarray(mesh.edge_to_cell()[:, :2])
-    is_internal = edge_to_cell[:, 0] != edge_to_cell[:, 1]
-    correction = np.asarray(FVMGeometry(mesh).bounded_over_relaxed_decomposition()[2])
+    correction = np.asarray(
+        FVMGeometry(mesh).diffusion_face_decomposition("over_relaxed").T_f
+    )
     face_flux = coef * np.einsum("ij,ij->i", correction, grad_f)
-    face_flux[~is_internal] = 0.0
 
     rhs = LinearForm(space).add_integrator(
         ScalarCrossDiffusionIntegrator(np.zeros(mesh.number_of_cells()), grad_f, coef=coef)
@@ -262,21 +261,26 @@ def test_cross_diffusion_rhs_assembler_matches_linear_form_limited():
             uh,
             grad_f,
             geometry=geometry,
-            correction_method="limited",
+            method="bounded_over_relaxed",
+            cross_flux_limiter="orthogonal_flux_ratio",
             limit_coeff=0.5,
         )
     ).assembly()
-    fast = CrossDiffusionRHSAssembler(space, geometry=geometry).assembly(
+    fast = CrossDiffusionRHSAssembler(
+        space,
+        geometry=geometry,
+        method="bounded_over_relaxed",
+        cross_flux_limiter="orthogonal_flux_ratio",
+    ).assembly(
         uh=uh,
         grad_f=grad_f,
-        correction_method="limited",
         limit_coeff=0.5,
     )
 
     np.testing.assert_allclose(np.asarray(fast), np.asarray(reference), rtol=1.0e-13, atol=1.0e-13)
 
 
-def test_default_cross_diffusion_reuses_fvm_geometry_bounded_decomposition(monkeypatch):
+def test_explicit_bounded_cross_diffusion_reuses_fvm_geometry_decomposition(monkeypatch):
     mesh, space = _box_space(nx=2, ny=1)
     grad_f = np.stack(
         [
@@ -286,27 +290,34 @@ def test_default_cross_diffusion_reuses_fvm_geometry_bounded_decomposition(monke
         axis=1,
     )
     calls = []
-    original_decomposition = FVMGeometry.bounded_over_relaxed_decomposition
+    original_decomposition = FVMGeometry.diffusion_face_decomposition
 
-    def counted_decomposition(self, *, eps=0.05):
-        calls.append(eps)
-        return original_decomposition(self, eps=eps)
+    def counted_decomposition(self, method="over_relaxed", *, eps=0.05):
+        calls.append((method, eps))
+        return original_decomposition(self, method, eps=eps)
 
     monkeypatch.setattr(
         FVMGeometry,
-        "bounded_over_relaxed_decomposition",
+        "diffusion_face_decomposition",
         counted_decomposition,
     )
 
     rhs = LinearForm(space).add_integrator(
-        ScalarCrossDiffusionIntegrator(np.zeros(mesh.number_of_cells()), grad_f)
+        ScalarCrossDiffusionIntegrator(
+            np.zeros(mesh.number_of_cells()),
+            grad_f,
+            method="bounded_over_relaxed",
+            boundary_policy="zero",
+        )
     ).assembly()
 
-    _, _, T_f = original_decomposition(FVMGeometry(mesh), eps=0.05)
+    T_f = original_decomposition(
+        FVMGeometry(mesh), "bounded_over_relaxed", eps=0.05
+    ).T_f
     face_flux = np.einsum("ij,ij->i", np.asarray(T_f), grad_f)
     face_flux[np.asarray(FVMGeometry(mesh).is_boundary)] = 0.0
 
-    assert calls == [0.05]
+    assert calls == [("bounded_over_relaxed", 0.05)]
     np.testing.assert_allclose(
         np.asarray(rhs),
         _expected_scalar_scatter(mesh, face_flux),
@@ -328,8 +339,11 @@ def test_bounded_over_relaxed_orthogonal_coefficient_is_stabilized():
     mesh, _ = _box_space(nx=2, ny=1)
     eps = 0.05
     geometry = FVMGeometry(mesh)
-    _, mag_E_f, _ = geometry.bounded_over_relaxed_decomposition(eps=eps)
-    coefficient = np.asarray(mag_E_f) / np.asarray(geometry.mag_d_f)
+    coefficient = np.asarray(
+        geometry.diffusion_face_decomposition(
+            "bounded_over_relaxed", eps=eps
+        ).orthogonal_factor
+    )
     denominator = np.asarray(geometry.mag_S_f) / coefficient
     projected = np.einsum(
         "ij,ij->i",
@@ -369,14 +383,18 @@ def test_bounded_over_relaxed_Tf_is_stabilized_on_bad_internal_face():
     normal = np.asarray(geometry.n_f)
     face_area = np.asarray(geometry.mag_S_f)
     ratio = np.einsum("ij,ij->i", normal, delta) / np.linalg.norm(delta, axis=1)
-    T_f = np.asarray(geometry.bounded_over_relaxed_decomposition(eps=eps)[2])
+    T_f = np.asarray(
+        geometry.diffusion_face_decomposition(
+            "bounded_over_relaxed", eps=eps
+        ).T_f
+    )
     stabilized_ratio = np.linalg.norm(T_f, axis=1) / face_area
 
     assert np.any(ratio[is_internal] <= eps)
     assert np.max(stabilized_ratio[is_internal]) <= 1.0 + 1.0 / eps
 
 
-def test_orthogonal_correction_method_returns_zero_rhs():
+def test_uncorrected_method_returns_zero_rhs():
     mesh, space = _box_space(nx=2, ny=1)
     grad_f = np.ones((mesh.number_of_edges(), mesh.geo_dimension()))
 
@@ -384,7 +402,7 @@ def test_orthogonal_correction_method_returns_zero_rhs():
         ScalarCrossDiffusionIntegrator(
             np.zeros(mesh.number_of_cells()),
             grad_f,
-            correction_method="orthogonal",
+            method="uncorrected",
         )
     ).assembly()
 
@@ -404,7 +422,8 @@ def test_limited_correction_with_zero_limit_coeff_returns_zero_internal_rhs():
             np.array([0.0, 1.0]),
             grad_f,
             geometry=geometry,
-            correction_method="limited",
+            method="bounded_over_relaxed",
+            cross_flux_limiter="orthogonal_flux_ratio",
             limit_coeff=0.0,
         )
     ).assembly()
@@ -420,12 +439,12 @@ def test_limited_correction_matches_manual_limiter_on_bad_internal_face():
     uh = np.array([0.0, 1.0])
     grad_f = np.zeros((mesh.number_of_edges(), mesh.geo_dimension()))
     grad_f[is_internal, 0] = 100.0
-    _, mag_E_f, correction_vector = geometry.bounded_over_relaxed_decomposition(
-        eps=0.05
+    decomposition = geometry.diffusion_face_decomposition(
+        "bounded_over_relaxed", eps=0.05
     )
-    correction_vector = np.asarray(correction_vector)
+    correction_vector = np.asarray(decomposition.T_f)
     full_flux = np.einsum("ij,ij->i", correction_vector, grad_f)
-    orthogonal_coeff = np.asarray(mag_E_f) / np.asarray(geometry.mag_d_f)
+    orthogonal_coeff = np.asarray(decomposition.orthogonal_factor)
     owner = edge_to_cell[:, 0]
     neighbour = edge_to_cell[:, 1]
     orthogonal_flux = np.zeros(mesh.number_of_edges())
@@ -447,7 +466,8 @@ def test_limited_correction_matches_manual_limiter_on_bad_internal_face():
             uh,
             grad_f,
             geometry=geometry,
-            correction_method="limited",
+            method="bounded_over_relaxed",
+            cross_flux_limiter="orthogonal_flux_ratio",
             limit_coeff=limit_coeff,
         )
     ).assembly()
@@ -495,7 +515,7 @@ def test_correction_vector_matches_equivalent_face_flux_correction():
     )
 
 
-def test_default_correction_method_matches_explicit_bounded_over_relaxed():
+def test_default_method_matches_explicit_over_relaxed():
     mesh, space = _box_space(nx=2, ny=1)
     grad_f = np.stack(
         [
@@ -513,7 +533,7 @@ def test_default_correction_method_matches_explicit_bounded_over_relaxed():
             np.zeros(mesh.number_of_cells()),
             grad_f,
             geometry=FVMGeometry(mesh),
-            correction_method="bounded_over_relaxed",
+            method="over_relaxed",
         )
     ).assembly()
 
@@ -525,7 +545,37 @@ def test_default_correction_method_matches_explicit_bounded_over_relaxed():
     )
 
 
-def test_bounded_over_relaxed_zeros_boundary_correction_by_default():
+@pytest.mark.parametrize("method", ["over_relaxed", "bounded_over_relaxed"])
+def test_cross_diffusion_method_selects_matching_Tf(method):
+    mesh, space = _bad_two_triangle_space()
+    geometry = FVMGeometry(mesh)
+    grad_f = np.ones((mesh.number_of_faces(), mesh.geo_dimension()))
+    T_f = np.asarray(geometry.diffusion_face_decomposition(method).T_f)
+    expected_flux = np.einsum("fd,fd->f", T_f, grad_f)
+
+    rhs = LinearForm(space).add_integrator(
+        ScalarCrossDiffusionIntegrator(
+            grad_f=grad_f,
+            geometry=geometry,
+            method=method,
+            boundary_policy="all",
+        )
+    ).assembly()
+
+    np.testing.assert_allclose(
+        np.asarray(rhs),
+        _expected_scalar_scatter(mesh, expected_flux),
+        rtol=1.0e-13,
+        atol=1.0e-13,
+    )
+
+
+def test_cross_diffusion_rejects_unknown_method():
+    with pytest.raises(ValueError, match="unknown diffusion method"):
+        ScalarCrossDiffusionIntegrator(method="misspelled")
+
+
+def test_bounded_over_relaxed_boundary_policy_zero_masks_boundary_flux():
     mesh, space = _box_space(nx=1, ny=1)
     geometry = FVMGeometry(mesh)
     edge_to_cell = np.asarray(mesh.edge_to_cell()[:, :2])
@@ -537,7 +587,9 @@ def test_bounded_over_relaxed_zeros_boundary_correction_by_default():
         ],
         axis=1,
     )
-    correction_vector = np.asarray(geometry.bounded_over_relaxed_decomposition()[2])
+    correction_vector = np.asarray(
+        geometry.diffusion_face_decomposition("bounded_over_relaxed").T_f
+    )
     full_flux = np.einsum("ij,ij->i", correction_vector, grad_f)
     expected_flux = full_flux.copy()
     expected_flux[~is_internal] = 0.0
@@ -550,7 +602,8 @@ def test_bounded_over_relaxed_zeros_boundary_correction_by_default():
             np.zeros(mesh.number_of_cells()),
             grad_f,
             geometry=geometry,
-            correction_method="bounded_over_relaxed",
+            method="bounded_over_relaxed",
+            boundary_policy="zero",
         )
     ).assembly()
 
@@ -574,7 +627,9 @@ def test_bounded_over_relaxed_boundary_policy_all_keeps_raw_boundary_flux():
     )
     face_flux = np.einsum(
         "ij,ij->i",
-        np.asarray(geometry.bounded_over_relaxed_decomposition()[2]),
+        np.asarray(
+            geometry.diffusion_face_decomposition("bounded_over_relaxed").T_f
+        ),
         grad_f,
     )
     expected = _expected_scalar_scatter(mesh, face_flux)
@@ -584,7 +639,7 @@ def test_bounded_over_relaxed_boundary_policy_all_keeps_raw_boundary_flux():
             np.zeros(mesh.number_of_cells()),
             grad_f,
             geometry=geometry,
-            correction_method="bounded_over_relaxed",
+            method="bounded_over_relaxed",
             boundary_policy="all",
         )
     ).assembly()
@@ -597,28 +652,17 @@ def test_bounded_over_relaxed_boundary_policy_all_keeps_raw_boundary_flux():
     )
 
 
-def test_legacy_correction_method_is_not_supported():
-    mesh, space = _box_space(nx=1, ny=1)
-    grad_f = np.ones((mesh.number_of_edges(), mesh.geo_dimension()))
-
-    with pytest.raises(ValueError, match="Unsupported correction_method"):
-        LinearForm(space).add_integrator(
-            ScalarCrossDiffusionIntegrator(
-                np.zeros(mesh.number_of_cells()),
-                grad_f,
-                correction_method="legacy",
-            )
-        ).assembly()
-
-
 def _assert_finite_geometry_quantities(mesh):
     geometry = FVMGeometry(mesh)
-    _, mag_E_f, T_f = geometry.bounded_over_relaxed_decomposition()
+    decomposition = geometry.diffusion_face_decomposition(
+        "bounded_over_relaxed"
+    )
+    T_f = decomposition.T_f
     assert np.asarray(T_f).shape == (
         mesh.number_of_edges(),
         mesh.geo_dimension(),
     )
-    assert np.all(np.isfinite(np.asarray(mag_E_f) / np.asarray(geometry.mag_d_f)))
+    assert np.all(np.isfinite(np.asarray(decomposition.orthogonal_factor)))
     assert np.all(np.isfinite(np.asarray(T_f)))
 
 

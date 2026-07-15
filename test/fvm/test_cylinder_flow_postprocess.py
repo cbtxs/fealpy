@@ -37,20 +37,23 @@ def test_zero_cylinder_fields_have_zero_force_coefficients():
             return bm.ones(points.shape[0], dtype=bm.bool)
 
     class FakeMesh:
-        def boundary_face_index(self):
-            return bm.array([0, 1], dtype=bm.int64)
+        def geo_dimension(self):
+            return 2
 
-        def entity_barycenter(self, entity):
+        def number_of_cells(self):
+            return 2
+
+        def entity_barycenter(self, entity, index=None):
             if entity == "face":
                 return bm.array([[0.0, 0.0], [1.0, 0.0]])
             if entity == "cell":
                 return bm.array([[0.0, 0.5], [1.0, 0.5]])
             raise KeyError(entity)
 
-        def edge_to_cell(self):
+        def face_to_cell(self, index=None):
             return bm.array([[0, 0], [1, 1]], dtype=bm.int64)
 
-        def edge_normal(self):
+        def edge_normal(self, index=None):
             return bm.array([[0.0, -1.0], [0.0, -1.0]])
 
         def entity_measure(self, entity):
@@ -63,8 +66,7 @@ def test_zero_cylinder_fields_have_zero_force_coefficients():
     result = cylinder_force_coefficients(
         FakeMesh(),
         FakeCase(),
-        uh=bm.zeros(2),
-        vh=bm.zeros(2),
+        velocity=bm.zeros((2, 2)),
         pressure=bm.zeros(2),
         velocity_gradient=None,
     )
@@ -89,20 +91,23 @@ def test_cylinder_viscous_force_uses_wall_normal_sn_grad_by_default():
             return bm.ones(points.shape[0], dtype=bm.bool)
 
     class FakeMesh:
-        def boundary_face_index(self):
-            return bm.array([0], dtype=bm.int64)
+        def geo_dimension(self):
+            return 2
 
-        def entity_barycenter(self, entity):
+        def number_of_cells(self):
+            return 1
+
+        def entity_barycenter(self, entity, index=None):
             if entity == "face":
                 return bm.array([[1.0, 0.0]])
             if entity == "cell":
                 return bm.array([[0.0, 0.0]])
             raise KeyError(entity)
 
-        def edge_to_cell(self):
+        def face_to_cell(self, index=None):
             return bm.array([[0, 0]], dtype=bm.int64)
 
-        def edge_normal(self):
+        def edge_normal(self, index=None):
             return bm.array([[2.0, 0.0]])
 
         def entity_measure(self, entity):
@@ -115,8 +120,7 @@ def test_cylinder_viscous_force_uses_wall_normal_sn_grad_by_default():
     result = cylinder_force_coefficients(
         FakeMesh(),
         FakeCase(),
-        uh=bm.array([2.0]),
-        vh=bm.array([0.0]),
+        velocity=bm.array([[2.0, 0.0]]),
         pressure=bm.zeros(1),
     )
 

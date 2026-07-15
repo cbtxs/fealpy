@@ -84,7 +84,7 @@ def run_simple_cylinder(args):
         tol=args.tol,
         relax=args.relax,
         tol_mass=args.tol_mass,
-        tol_pressure_correction=args.tol_pressure_correction,
+        tol_momentum=args.tol_momentum,
     )
 
     output_dir = (
@@ -114,6 +114,8 @@ def run_simple_cylinder(args):
             "wake_mesh_size": args.wake_mesh_size,
             "max_iter": args.max_iter,
             "tol": args.tol,
+            "tol_momentum": args.tol_momentum,
+            "tol_mass": args.tol_mass,
             "relax": args.relax,
             "engineering_boundary_conditions": args.engineering_boundary_conditions,
             "pressure_gradient_method": args.pressure_gradient_method,
@@ -191,7 +193,7 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max_iter", default=1000, type=int)
     parser.add_argument("--tol", default=1.0e-6, type=float)
     parser.add_argument("--tol_mass", default=None, type=float)
-    parser.add_argument("--tol_pressure_correction", default=None, type=float)
+    parser.add_argument("--tol_momentum", default=None, type=float)
     parser.add_argument("--relax", default=0.03, type=float)
     parser.add_argument(
         "--engineering_boundary_conditions",

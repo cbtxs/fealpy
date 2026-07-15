@@ -1,13 +1,10 @@
 """Manufactured-case adapter for the collocated SIMPLE Stokes solve."""
 
-from typing import Tuple
-
-from fealpy.backend import backend_manager as bm
 from fealpy.model import ComputationalModel, PDEModelManager
 
 from .collocated_simple_solver import CollocatedSimpleSolver
 from .cell_average_error import cell_average_l2_error
-from .engineering_boundary_conditions import BoundaryConditionData
+from .engineering_boundary_conditions import PDEBoundaryConditions
 from .solver_controls import SimpleSolverControls, positive_scalar
 
 
@@ -32,10 +29,14 @@ class StokesFVMSimpleModel(ComputationalModel, CollocatedSimpleSolver):
             diffusion_coef=self.mu,
             convection_coef=0.0,
             source=self.pde.source,
-            boundary_conditions=BoundaryConditionData(
-                self.pde.dirichlet_velocity
-            ).to_pde_boundary(mesh),
-            controls=self._simple_controls_from_options(options),
+            boundary_conditions=PDEBoundaryConditions(
+                mesh,
+                dirichlet_velocity=self.pde.dirichlet_velocity,
+            ),
+            controls=SimpleSolverControls.from_mapping({
+                "rhie_chow_velocity_scheme": "second_order_reconstructed",
+                **options,
+            }),
             linear_solver=options.get("linear_solver"),
             linear_solver_config=options.get("linear_solver_config"),
             logger=self.logger,
@@ -44,26 +45,13 @@ class StokesFVMSimpleModel(ComputationalModel, CollocatedSimpleSolver):
         )
 
     def _validate_options(self) -> None:
-        allowed = {
+        allowed = set(SimpleSolverControls.option_names()) | {
             "pde",
             "mesh_type",
             "mesh_refine",
             "nx",
             "ny",
             "mu",
-            "space_degree",
-            "pressure_gradient_method",
-            "velocity_gradient_method",
-            "rhie_chow_pressure_gradient_method",
-            "face_interpolation_method",
-            "momentum_face_interpolation",
-            "pressure_response_interpolation",
-            "rhie_chow_velocity_interpolation",
-            "momentum_equation_relaxation",
-            "momentum_nonorthogonal_max_iter",
-            "momentum_nonorthogonal_tol",
-            "pressure_nonorthogonal_max_iter",
-            "pressure_nonorthogonal_tol",
             "error_quadrature_order",
             "linear_solver",
             "linear_solver_config",
@@ -122,63 +110,21 @@ class StokesFVMSimpleModel(ComputationalModel, CollocatedSimpleSolver):
                 return positive_scalar(getattr(self.pde, name), "mu")
         return 1.0
 
-    @staticmethod
-    def _simple_controls_from_options(options):
-        return SimpleSolverControls(
-            space_degree=options.get("space_degree", 0),
-            pressure_gradient_method=options.get(
-                "pressure_gradient_method", "layered_lsq"
-            ),
-            velocity_gradient_method=options.get(
-                "velocity_gradient_method", "layered_lsq"
-            ),
-            rhie_chow_pressure_gradient_method=options.get(
-                "rhie_chow_pressure_gradient_method", "layered_lsq"
-            ),
-            face_interpolation_method=options.get("face_interpolation_method", "average"),
-            momentum_face_interpolation=options.get("momentum_face_interpolation"),
-            pressure_response_interpolation=options.get(
-                "pressure_response_interpolation"
-            ),
-            rhie_chow_velocity_interpolation=options.get(
-                "rhie_chow_velocity_interpolation"
-            ),
-            momentum_equation_relaxation=options.get(
-                "momentum_equation_relaxation", 0.7
-            ),
-            momentum_nonorthogonal_max_iter=options.get(
-                "momentum_nonorthogonal_max_iter", 10
-            ),
-            momentum_nonorthogonal_tol=options.get(
-                "momentum_nonorthogonal_tol", 1.0e-4
-            ),
-            pressure_nonorthogonal_max_iter=options.get(
-                "pressure_nonorthogonal_max_iter", 10
-            ),
-            pressure_nonorthogonal_tol=options.get(
-                "pressure_nonorthogonal_tol", 1.0e-5
-            ),
-        )
-
-    def compute_error(self) -> Tuple[float, float, float]:
+    def compute_error(self) -> tuple[float, ...]:
         """Compute errors against exact control-volume averages."""
-        velocity_error, velocity_average = cell_average_l2_error(
+        velocity_error, self.exact_velocity = cell_average_l2_error(
             self.mesh,
             self.pde.velocity,
             self.velocity,
             q=self.error_quadrature_order,
         )
-        perror, self.pI = cell_average_l2_error(
+        pressure_error, self.exact_pressure = cell_average_l2_error(
             self.mesh,
             self.pde.pressure,
-            self.ph,
+            self.pressure,
             q=self.error_quadrature_order,
         )
-        self.uI = velocity_average[:, 0]
-        self.vI = velocity_average[:, 1] if self.GD > 1 else bm.zeros_like(self.uI)
-        if self.GD > 2:
-            self.wI = velocity_average[:, 2]
-        return tuple(velocity_error[i] for i in range(self.GD)) + (perror,)
+        return tuple(velocity_error[i] for i in range(self.GD)) + (pressure_error,)
 
     def plot(self) -> None:
         """Plot numerical and exact solution errors for u, v, and p."""
@@ -189,9 +135,9 @@ class StokesFVMSimpleModel(ComputationalModel, CollocatedSimpleSolver):
 
         fig = plt.figure(figsize=(15, 10))
         titles = [
-            ("Error u", self.uh - self.uI),
-            ("Error v", self.vh - self.vI),
-            ("Error p", self.ph - self.pI),
+            ("Error u", self.velocity[:, 0] - self.exact_velocity[:, 0]),
+            ("Error v", self.velocity[:, 1] - self.exact_velocity[:, 1]),
+            ("Error p", self.pressure - self.exact_pressure),
         ]
         for i, (title, data) in enumerate(titles):
             ax = fig.add_subplot(2, 3, i + 1, projection="3d")

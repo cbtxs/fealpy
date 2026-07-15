@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from fealpy.backend import backend_manager as bm
 from fealpy.fvm import FVMGeometry, NSFVMPISOModel
@@ -17,25 +18,14 @@ def _model_options(nx=2, ny=2, nt=1):
     }
 
 
-def test_divergence_from_flux_reuses_fvm_geometry_scatter(monkeypatch):
+def test_divergence_from_flux_matches_owner_oriented_geometry_scatter():
     bm.set_backend("numpy")
     model = NSFVMPISOModel(_model_options())
     phi = bm.linspace(0.2, 1.4, model.mesh.number_of_faces())
     expected = FVMGeometry(model.mesh).scatter_face_flux_to_cells(phi)
 
-    calls = []
-    original_scatter = FVMGeometry.scatter_face_flux_to_cells
-
-    def counted_scatter(self, face_flux):
-        calls.append(np.asarray(face_flux).copy())
-        return original_scatter(self, face_flux)
-
-    monkeypatch.setattr(FVMGeometry, "scatter_face_flux_to_cells", counted_scatter)
-
     divergence = model.divergence_from_flux(phi)
 
-    assert len(calls) == 1
-    np.testing.assert_allclose(calls[0], np.asarray(phi), rtol=1.0e-13, atol=1.0e-13)
     np.testing.assert_allclose(
         np.asarray(divergence),
         np.asarray(expected),
@@ -44,26 +34,9 @@ def test_divergence_from_flux_reuses_fvm_geometry_scatter(monkeypatch):
     )
 
 
-def test_momentum_nonorthogonal_rhs_uses_fast_rhs_assembler(monkeypatch):
-    import fealpy.fvm.collocated_ns_components as ns_components
-
-    bm.set_backend("numpy")
-    model = NSFVMPISOModel(_model_options())
-    velocity = bm.zeros((model.NC, model.GD), dtype=bm.float64)
-
-    class ForbiddenLinearForm:
-        def __init__(self, *args, **kwargs):
-            raise AssertionError("momentum_nonorthogonal_rhs should use fast RHS assembler")
-
-    monkeypatch.setattr(ns_components, "LinearForm", ForbiddenLinearForm)
-
-    rhs = model.momentum_nonorthogonal_rhs(velocity)
-
-    assert rhs.shape == (model.GD * model.NC,)
-
-
 def test_pressure_nonorthogonal_cross_flux_uses_explicit_interpolation(monkeypatch):
     import fealpy.fvm.collocated_ns_components as ns_components
+    from fealpy.fvm.fvm_geometry import DiffusionFaceDecomposition
 
     bm.set_backend("numpy")
     model = NSFVMPISOModel(_model_options())
@@ -78,11 +51,16 @@ def test_pressure_nonorthogonal_cross_flux_uses_explicit_interpolation(monkeypat
     monkeypatch.setattr(ns_components, "reconstruct_face_gradient", record_face_gradient)
     monkeypatch.setattr(
         model.fvm_geometry,
-        "bounded_over_relaxed_decomposition",
-        lambda: (
-            None,
-            None,
-            bm.ones((model.mesh.number_of_faces(), model.GD), dtype=model.cm.dtype),
+        "diffusion_face_decomposition",
+        lambda method="over_relaxed", eps=0.05: DiffusionFaceDecomposition(
+            E_f=model.fvm_geometry.S_f,
+            mag_E_f=model.fvm_geometry.mag_S_f,
+            T_f=bm.ones(
+                (model.mesh.number_of_faces(), model.GD), dtype=model.cm.dtype
+            ),
+            orthogonal_factor=(
+                model.fvm_geometry.mag_S_f / model.fvm_geometry.mag_d_f
+            ),
         ),
     )
 
@@ -93,6 +71,167 @@ def test_pressure_nonorthogonal_cross_flux_uses_explicit_interpolation(monkeypat
     )
 
     assert seen == ["linear"]
+
+
+def test_ns_operators_share_one_configured_diffusion_decomposition(monkeypatch):
+    bm.set_backend("numpy")
+    options = _model_options()
+    options["diffusion_method"] = "bounded_over_relaxed"
+    options["diffusion_nonorthogonal_eps"] = 0.1
+    model = NSFVMPISOModel(options)
+
+    assert model.controls.diffusion_method == "bounded_over_relaxed"
+    assert model.dirichlet_velocity_bc.nonorthogonal_eps == 0.1
+
+    calls = []
+    original_decomposition = model.fvm_geometry.diffusion_face_decomposition
+
+    def record_decomposition(method="over_relaxed", *, eps=0.05):
+        calls.append((method, eps))
+        if method != "bounded_over_relaxed":
+            raise AssertionError(
+                "configured bounded diffusion must not use another decomposition"
+            )
+        return original_decomposition(method, eps=eps)
+
+    monkeypatch.setattr(
+        model.fvm_geometry,
+        "diffusion_face_decomposition",
+        record_decomposition,
+    )
+
+    model.scalar_momentum_diffusion_matrix(1.0)
+    velocity = bm.zeros((model.NC, model.GD), dtype=model.cm.dtype)
+    model.momentum_nonorthogonal_rhs(velocity)
+    model.boundary_corrected_momentum_explicit_source(velocity)
+    response = bm.ones(model.mesh.number_of_faces(), dtype=model.cm.dtype)
+    pressure = bm.zeros(model.NC, dtype=model.cm.dtype)
+    model.pressure_diffusion_matrix(response)
+    model.pressure_orthogonal_flux(pressure, response)
+    model.pressure_nonorthogonal_cross_flux(
+        pressure,
+        response,
+        interpolation_method="average",
+    )
+    model.dirichlet_velocity_bc.diffusion_boundary_data(coef=1.0)
+
+    assert calls
+    assert set(calls) == {("bounded_over_relaxed", 0.1)}
+
+
+def test_dirichlet_pressure_full_flux_reproduces_affine_pressure():
+    bm.set_backend("numpy")
+    model = NSFVMPISOModel(_model_options())
+    geometry = model.fvm_geometry
+    gradient = bm.array([1.7, -0.8], dtype=model.cm.dtype)
+    pressure = 0.3 + bm.einsum("kd,d->k", geometry.cell_center, gradient)
+    response = bm.linspace(
+        0.7,
+        1.3,
+        model.mesh.number_of_faces(),
+        dtype=model.cm.dtype,
+    )
+    boundary_value = lambda p: 0.3 + bm.einsum("kd,d->k", p, gradient)
+    boundary_threshold = lambda p: bm.ones(p.shape[0], dtype=bm.bool)
+
+    orthogonal_flux = model.pressure_orthogonal_flux(pressure, response)
+    cross_flux = model.pressure_nonorthogonal_cross_flux(
+        pressure,
+        response,
+        interpolation_method="average",
+        pressure_gradient=bm.broadcast_to(
+            gradient[None, :], (model.NC, model.GD)
+        ),
+        boundary_threshold=boundary_threshold,
+    )
+    numerical_flux = model.add_dirichlet_pressure_flux(
+        orthogonal_flux - cross_flux,
+        pressure,
+        response,
+        boundary_value,
+        boundary_threshold,
+    )
+    exact_flux = -response * bm.einsum("fd,d->f", geometry.S_f, gradient)
+
+    np.testing.assert_allclose(
+        np.asarray(numerical_flux),
+        np.asarray(exact_flux),
+        rtol=1.0e-12,
+        atol=1.0e-12,
+    )
+
+
+def test_component_nonorthogonal_correction_accepts_converged_base_solution(
+    monkeypatch,
+):
+    from fealpy.sparse import spdiags
+
+    bm.set_backend("numpy")
+    model = NSFVMPISOModel(_model_options())
+    identity = spdiags(
+        bm.ones(model.NC), 0, model.NC, model.NC
+    )
+    rhs = bm.zeros(model.GD * model.NC)
+    velocity = bm.zeros_like(rhs)
+    monkeypatch.setattr(
+        model,
+        "momentum_nonorthogonal_rhs",
+        lambda value: bm.zeros_like(rhs),
+    )
+    monkeypatch.setattr(
+        model,
+        "solve_component_momentum_systems",
+        lambda matrices, current_rhs: (_ for _ in ()).throw(
+            AssertionError("a converged base solution needs no correction solve")
+        ),
+    )
+
+    actual = model.correct_component_momentum_nonorthogonal_diffusion(
+        [identity] * model.GD,
+        rhs,
+        velocity,
+        max_iter=2,
+        tol=1.0e-12,
+        atol=0.0,
+        iteration_attr="last_momentum_nonorthogonal_iterations",
+    )
+
+    np.testing.assert_allclose(np.asarray(actual), 0.0, atol=0.0)
+    assert model.last_momentum_nonorthogonal_iterations == 0
+    assert model.last_momentum_nonorthogonal_residual["relative"] == 0.0
+
+
+def test_component_nonorthogonal_correction_raises_at_safety_limit(monkeypatch):
+    from fealpy.sparse import spdiags
+
+    bm.set_backend("numpy")
+    model = NSFVMPISOModel(_model_options())
+    identity = spdiags(
+        bm.ones(model.NC), 0, model.NC, model.NC
+    )
+    rhs = bm.zeros(model.GD * model.NC)
+    velocity = bm.zeros_like(rhs)
+    monkeypatch.setattr(
+        model,
+        "momentum_nonorthogonal_rhs",
+        lambda value: bm.ones_like(rhs),
+    )
+    monkeypatch.setattr(
+        model,
+        "solve_component_momentum_systems",
+        lambda matrices, current_rhs: bm.zeros_like(rhs),
+    )
+
+    with pytest.raises(RuntimeError, match="momentum non-orthogonal correction"):
+        model.correct_component_momentum_nonorthogonal_diffusion(
+            [identity] * model.GD,
+            rhs,
+            velocity,
+            max_iter=1,
+            tol=1.0e-12,
+            atol=0.0,
+            iteration_attr="last_momentum_nonorthogonal_iterations",
+        )
 
 
 def test_pressure_gradient_source_accepts_precomputed_gradient(monkeypatch):
@@ -120,15 +259,15 @@ def test_component_momentum_dirichlet_rhs_applies_vector_boundary_once():
     model = NSFVMPISOModel(_model_options())
     calls = []
 
-    def velocity_dirichlet(points):
+    def dirichlet_velocity(points):
         calls.append(points.shape[0])
         return bm.zeros((points.shape[0], model.GD), dtype=model.cm.dtype)
 
-    model.velocity_dirichlet = velocity_dirichlet
-    model.velocity_dirichlet_bc = DirichletBC(
+    model.dirichlet_velocity = dirichlet_velocity
+    model.dirichlet_velocity_bc = DirichletBC(
         model.mesh,
-        velocity_dirichlet,
-        threshold=model.velocity_dirichlet_threshold,
+        dirichlet_velocity,
+        threshold=model.dirichlet_velocity_threshold,
         geometry=model.fvm_geometry,
     )
 
@@ -147,6 +286,45 @@ def test_component_momentum_dirichlet_rhs_applies_vector_boundary_once():
     )
 
     assert len(calls) == 2
+
+
+def test_component_momentum_system_exposes_spatial_and_relaxed_diagonals():
+    bm.set_backend("numpy")
+    from fealpy.fvm.collocated_ns_components import ComponentMomentumSystems
+
+    model = NSFVMPISOModel(_model_options())
+    matrix = model.scalar_momentum_diffusion_matrix(1.0)
+    rhs = bm.zeros(model.GD * model.NC, dtype=model.cm.dtype)
+    previous_velocity = bm.zeros((model.NC, model.GD), dtype=model.cm.dtype)
+
+    systems_05 = model.component_momentum_linear_systems(
+        matrix,
+        rhs,
+        previous_velocity,
+        diffusion_coef=1.0,
+        relaxation=0.5,
+    )
+    systems_09 = model.component_momentum_linear_systems(
+        matrix,
+        rhs,
+        previous_velocity,
+        diffusion_coef=1.0,
+        relaxation=0.9,
+    )
+
+    assert isinstance(systems_05, ComponentMomentumSystems)
+    np.testing.assert_allclose(
+        np.asarray(systems_05.spatial_diagonal),
+        np.asarray(systems_09.spatial_diagonal),
+    )
+    np.testing.assert_allclose(
+        np.asarray(systems_05.relaxed_diagonal),
+        np.asarray(systems_05.spatial_diagonal) / 0.5,
+    )
+    np.testing.assert_allclose(
+        np.asarray(systems_09.relaxed_diagonal),
+        np.asarray(systems_09.spatial_diagonal) / 0.9,
+    )
 
 
 def test_collocated_discretization_reuses_one_fvm_geometry_for_gradients():

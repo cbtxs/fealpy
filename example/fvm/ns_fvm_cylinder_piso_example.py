@@ -167,11 +167,11 @@ class CylinderPISOHistory:
         force = cylinder_force_coefficients(
             model.mesh,
             self.case,
-            uh=cell_velocity[:, 0],
-            vh=cell_velocity[:, 1],
+            velocity=cell_velocity,
             pressure=pressure,
             velocity_gradient=getattr(model, "velocity_gradient", None),
             viscous_method=self.viscous_method,
+            geometry=model.fvm_geometry,
         )
         probes = pressure_drop(model.mesh.entity_barycenter("cell"), pressure)
         self.force_rows.append(
@@ -190,8 +190,7 @@ class CylinderPISOHistory:
         ):
             write_solution_vtk(
                 model.mesh,
-                cell_velocity[:, 0],
-                cell_velocity[:, 1],
+                cell_velocity,
                 pressure,
                 self.output_dir / "snapshots" / f"solution_{int(step):06d}.vtu",
                 fields=self.fields,
@@ -514,8 +513,8 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument("--vtk_start_step", default=1, type=int)
     parser.add_argument("--strouhal_start_time", default=None, type=float)
     parser.add_argument("--strouhal_min_lift_amplitude", default=1.0e-3, type=float)
-    parser.add_argument("--momentum_nonorthogonal_max_iter", default=1, type=int)
-    parser.add_argument("--pressure_nonorthogonal_max_iter", default=3, type=int)
+    parser.add_argument("--momentum_nonorthogonal_max_iter", default=20, type=int)
+    parser.add_argument("--pressure_nonorthogonal_max_iter", default=20, type=int)
     parser.add_argument(
         "--pressure_gradient_method",
         default="layered_lsq",

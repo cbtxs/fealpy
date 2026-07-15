@@ -56,20 +56,6 @@ def test_fvm_linear_solver_selection_is_explicit():
     assert cuda_solver.select_solver(None) == "cupy"
 
 
-def test_fvm_linear_solver_config_has_no_equation_roles():
-    from fealpy.fvm.fvm_linear_solver import FVMLinearSolverConfig
-
-    config = FVMLinearSolverConfig()
-
-    for name in (
-        "momentum_solver",
-        "pressure_solver",
-        "pressure_gauge_solver",
-        "pressure_nullspace_solver",
-    ):
-        assert not hasattr(config, name)
-
-
 def test_fvm_linear_solver_fealpy_cpu_route_uses_spsolve(monkeypatch):
     import fealpy.fvm.fvm_linear_solver as linear_solver_module
     from fealpy.fvm.fvm_linear_solver import FVMLinearSolver

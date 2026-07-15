@@ -40,8 +40,7 @@ class ConvectionIntegrator(LinearInt, OpInt, FaceInt):
                  interpolation: str="average",
                  index: Index=_S,
                  geometry: Optional[FVMGeometry]=None,
-                 batched: bool=False,
-                 method: Optional[str]=None) -> None:
+                 batched: bool=False) -> None:
         super().__init__()
         self.coef = coef
         self.q = q
@@ -49,9 +48,6 @@ class ConvectionIntegrator(LinearInt, OpInt, FaceInt):
         self.index = index
         self.geometry = geometry
         self.batched = batched
-        if method == "fast":
-            method = None
-        self.assembly.set(method)
 
     @staticmethod
     def _validate_interpolation(interpolation: str) -> str:

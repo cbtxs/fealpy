@@ -324,9 +324,6 @@ class CylinderFlowCase:
         return result
 
     @cartesian
-    def velocity_dirichlet(self, p: TensorLike) -> TensorLike:
-        return self.dirichlet_velocity(p)
-
     @cartesian
     def velocity_0(self, p: TensorLike, t: float = 0.0) -> TensorLike:
         return bm.zeros(p.shape, dtype=p.dtype)
@@ -368,10 +365,7 @@ class CylinderFlowCase:
         return bm.abs(distance - self.radius) <= tolerance
 
     @cartesian
-    def is_obstacle_boundary(self, p: TensorLike) -> TensorLike:
-        return self.is_cylinder_boundary(p)
-
-    def engineering_boundary_conditions(self, mesh):
+    def engineering_boundary_conditions(self, mesh, pde=None):
         """Return patch-wise engineering boundary conditions for cylinder flow."""
         from .engineering_boundary_conditions import (
             BoundaryCondition,

@@ -5,8 +5,10 @@ from fealpy.backend import backend_manager as bm
 from fealpy.fvm import (
     FVMGeometry,
     face_interpolation_owner_weight,
+    interpolate_cell_to_face,
 )
 from fealpy.fvm.fvm_geometry import (
+    DiffusionFaceDecomposition,
     face_interpolation_owner_weight as geometry_face_interpolation_owner_weight,
 )
 from fealpy.mesh import QuadrangleMesh, TriangleMesh
@@ -112,7 +114,10 @@ def test_over_relaxed_decomposition_returns_Ef_magEf_and_Tf(mesh):
     geometry = FVMGeometry(mesh)
     S_f = np.asarray(geometry.S_f)
     d_f = np.asarray(geometry.d_f)
-    E_f, mag_E_f, T_f = geometry.over_relaxed_decomposition()
+    decomposition = geometry.diffusion_face_decomposition("over_relaxed")
+    E_f = decomposition.E_f
+    mag_E_f = decomposition.mag_E_f
+    T_f = decomposition.T_f
 
     expected_E_f = (
         np.einsum("ij,ij->i", S_f, S_f)
@@ -148,7 +153,12 @@ def test_over_relaxed_decomposition_returns_Ef_magEf_and_Tf(mesh):
 def test_bounded_over_relaxed_decomposition_returns_stabilized_Ef_and_Tf(mesh):
     geometry = FVMGeometry(mesh)
     eps = 0.05
-    E_f, mag_E_f, T_f = geometry.bounded_over_relaxed_decomposition(eps=eps)
+    decomposition = geometry.diffusion_face_decomposition(
+        "bounded_over_relaxed", eps=eps
+    )
+    E_f = decomposition.E_f
+    mag_E_f = decomposition.mag_E_f
+    T_f = decomposition.T_f
 
     denominator = np.maximum(
         np.einsum("ij,ij->i", np.asarray(geometry.n_f), np.asarray(geometry.d_f)),
@@ -179,12 +189,97 @@ def test_bounded_over_relaxed_decomposition_returns_stabilized_Ef_and_Tf(mesh):
 
 
 @pytest.mark.parametrize("mesh", _meshes())
+@pytest.mark.parametrize(
+    "method",
+    ["over_relaxed", "bounded_over_relaxed", "uncorrected"],
+)
+def test_diffusion_face_decomposition_is_named_complete_and_cached(mesh, method):
+    geometry = FVMGeometry(mesh)
+
+    first = geometry.diffusion_face_decomposition(method, eps=0.05)
+    second = geometry.diffusion_face_decomposition(method, eps=0.05)
+
+    assert isinstance(first, DiffusionFaceDecomposition)
+    assert first is second
+    np.testing.assert_allclose(
+        np.asarray(first.E_f + first.T_f),
+        np.asarray(geometry.S_f),
+        rtol=1.0e-13,
+        atol=1.0e-13,
+    )
+    np.testing.assert_allclose(
+        np.asarray(first.mag_E_f),
+        np.linalg.norm(np.asarray(first.E_f), axis=1),
+        rtol=1.0e-13,
+        atol=1.0e-13,
+    )
+    np.testing.assert_allclose(
+        np.asarray(first.orthogonal_factor),
+        np.asarray(first.mag_E_f) / np.asarray(geometry.mag_d_f),
+        rtol=1.0e-13,
+        atol=1.0e-13,
+    )
+    if method == "uncorrected":
+        corrected = geometry.diffusion_face_decomposition("over_relaxed")
+        np.testing.assert_allclose(
+            np.asarray(first.T_f),
+            np.asarray(corrected.T_f),
+            rtol=1.0e-13,
+            atol=1.0e-13,
+        )
+
+
+def test_diffusion_face_decomposition_cache_key_includes_eps():
+    geometry = FVMGeometry(_meshes()[1])
+
+    first = geometry.diffusion_face_decomposition(
+        "bounded_over_relaxed", eps=0.05
+    )
+    second = geometry.diffusion_face_decomposition(
+        "bounded_over_relaxed", eps=0.10
+    )
+
+    assert first is not second
+
+
+def test_diffusion_face_decomposition_rejects_unknown_method():
+    geometry = FVMGeometry(_meshes()[0])
+
+    with pytest.raises(ValueError, match="unknown diffusion method"):
+        geometry.diffusion_face_decomposition("misspelled")
+
+
+@pytest.mark.parametrize("mesh", _meshes())
 def test_linear_owner_weight_matches_exported_face_interpolation(mesh):
     geometry = FVMGeometry(mesh)
 
     np.testing.assert_allclose(
         np.asarray(geometry.linear_owner_weight()),
         np.asarray(face_interpolation_owner_weight(mesh, method="linear")),
+        rtol=1.0e-13,
+        atol=1.0e-13,
+    )
+
+
+@pytest.mark.parametrize("mesh", _meshes())
+def test_interpolate_cell_to_face_matches_geometry_owner_weights(mesh):
+    geometry = FVMGeometry(mesh)
+    values = bm.arange(mesh.number_of_cells(), dtype=bm.float64)
+    weights = geometry.linear_owner_weight()
+    expected = (
+        weights * values[geometry.owner]
+        + (1.0 - weights) * values[geometry.neighbour]
+    )
+
+    actual = interpolate_cell_to_face(
+        values,
+        geometry=geometry,
+        method="linear",
+    )
+
+    np.testing.assert_allclose(
+        np.asarray(actual),
+        np.asarray(expected),
         rtol=1.0e-13,
         atol=1.0e-13,
     )

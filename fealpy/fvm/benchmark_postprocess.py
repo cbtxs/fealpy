@@ -48,21 +48,23 @@ def write_dict_csv(path: str | Path, rows: Iterable[dict]) -> None:
 
 
 def solution_cell_fields(
-    uh: TensorLike,
-    vh: TensorLike,
+    velocity: TensorLike,
     pressure: TensorLike,
     *,
     fields: tuple[str, ...] = ("velocity", "u", "v", "pressure"),
     velocity_gradient=None,
 ) -> dict[str, TensorLike]:
     """Build selected cell fields for VTU output."""
-    velocity = bm.stack([uh, vh], axis=-1)
+    if velocity.ndim != 2 or velocity.shape[1] < 2:
+        raise ValueError("velocity must have shape (NC, GD) with GD >= 2.")
+    u = velocity[:, 0]
+    v = velocity[:, 1]
     available = {
         "velocity": velocity,
-        "u": uh,
-        "v": vh,
+        "u": u,
+        "v": v,
         "pressure": pressure,
-        "speed": bm.sqrt(uh**2 + vh**2),
+        "speed": bm.linalg.norm(velocity, axis=1),
     }
     if "vorticity" in fields:
         if velocity_gradient is None:
@@ -74,8 +76,7 @@ def solution_cell_fields(
 
 def write_solution_vtk(
     mesh,
-    uh: TensorLike,
-    vh: TensorLike,
+    velocity: TensorLike,
     pressure: TensorLike,
     path: str | Path,
     *,
@@ -86,8 +87,7 @@ def write_solution_vtk(
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     for name, value in solution_cell_fields(
-        uh,
-        vh,
+        velocity,
         pressure,
         fields=fields,
         velocity_gradient=velocity_gradient,

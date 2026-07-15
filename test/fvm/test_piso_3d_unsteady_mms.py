@@ -43,6 +43,10 @@ def test_piso_model_accepts_3d_unsteady_mms_and_nz():
     result = model.solve()
     errors = model.compute_error()
 
-    assert len(result) == 3
+    assert len(result) == 2
+    assert result[0].shape == (model.NC, model.GD)
+    assert result[1].shape == (model.NC,)
+    assert model.face_velocity.shape == (model.mesh.number_of_faces(), model.GD)
+    assert model.face_flux.shape == (model.mesh.number_of_faces(),)
     assert len(errors) == 4
     assert all(float(error) < 10.0 for error in errors)
