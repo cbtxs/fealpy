@@ -78,7 +78,7 @@ class EntitySchema:
         return int(cls.multi_index(order, internal=internal).shape[0])
 
     @classmethod
-    def global_permutations(cls, ctx: EntityContext, tgt_name: str) -> Tensor:
+    def global_permutations(cls, ctx: EntityContext, tgt_name: str, indexing: Literal["o", "s"] = "o") -> Tensor:
         """Permutation indices from local to global."""
         raise NotImplementedError()
 

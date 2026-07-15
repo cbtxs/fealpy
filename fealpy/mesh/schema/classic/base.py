@@ -71,10 +71,10 @@ class ShapedEntitySchema(EntitySchema):
         return ctx.sector.indices.shape[0]
 
     @classmethod
-    def global_permutations(cls, ctx: EntityContext, tgt_name: str) -> Tensor:
+    def global_permutations(cls, ctx: EntityContext, tgt_name: str, indexing: Literal["o", "s"] = "o") -> Tensor:
         from ..utils import argpermute
         cell_indices = ctx.sector.indices
-        local_face = cls.local_entity(tgt_name, indexing="s")
+        local_face = cls.local_entity(tgt_name, indexing=indexing)
         face_indices = ctx.block.get_sector(tgt_name).indices
         cell_to_face = cls.relation(ctx, tgt_name).tgt_indices
         return argpermute(

@@ -192,7 +192,7 @@ class EntityView:
         """
         return self.sector.attributes.get(name)
 
-    def global_permutations(self, name_or_topdim: str | int, idx: int = 0) -> Tensor:
+    def global_permutations(self, name_or_topdim: str | int, idx: int = 0, indexing: Literal["o", "s"] = "o") -> Tensor:
         """Return local-to-global orientation permutations for sub-entities.
 
         Parameters:
@@ -211,7 +211,7 @@ class EntityView:
         tgt = _Reg.schema_name_single_parser(
             name_or_topdim, idx, self.schema.top_dim, self.schema.OFace.keys()
         )
-        return self.schema.global_permutations(self.context(), tgt)
+        return self.schema.global_permutations(self.context(), tgt, indexing=indexing)
 
     def grad_lambda(
         self,
