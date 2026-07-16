@@ -8,7 +8,7 @@ from ..backend import Tensor, dtype
 
 if TYPE_CHECKING:
     from .schema import EntitySchema
-    from .view import Mesh
+    from .view.mesh_view import MeshView
 
 
 __all__ = [
@@ -133,7 +133,7 @@ def multi_index_tensorprod(
     return reduce(kron_last_dim, reversed(mi_tuple))
 
 
-def to_ipoint(mesh: "Mesh", name: str, order: int) -> Tensor: # [num_entities, num_ip]
+def to_ipoint(mesh: "MeshView", name: str, order: int) -> Tensor: # [num_entities, num_ip]
     """Get the interpolation point indices for the given entity and order,
     in unstructured meshes.
     The interpolation point indices are ordered from lower-dimensional
@@ -226,11 +226,11 @@ def to_ipoint_permutation(schema: type["EntitySchema"], order: tuple[int, ...]) 
     return bm.argsort(natural_to_topological)
 
 
-def ipoints(mesh: "Mesh", order: int | tuple[int, ...], names: Iterable[str]) -> Tensor:
+def ipoints(mesh: "MeshView", order: int | tuple[int, ...], names: Iterable[str]) -> Tensor:
     """Get the interpolation points for the given entity and order.
 
     Parameters:
-        mesh (Mesh): The mesh object.
+        mesh (MeshView): The mesh object.
         order (int | tuple[int, ...]): The degree of interpolation.
         names (Iterable[str]): The names of the entities for which to compute
             interpolation points. For example, ["tet", "hex"].

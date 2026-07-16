@@ -6,7 +6,8 @@ from typing import Any
 
 import numpy as np
 
-from .view.mesh import Mesh, MeshBlock
+from .storage import MeshBlock
+from .view import Mesh
 
 __all__ = [
 	"SCHEMA_TO_VTK_CELL_TYPE_NAME",

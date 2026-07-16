@@ -3,7 +3,7 @@ import pytest
 from fealpy.backend import backend_manager as bm
 from fealpy.mesh.schema import PyramidSchema
 from fealpy.mesh.storage import EntitySector, MeshBlock
-from fealpy.mesh.view.mesh import Mesh
+from fealpy.mesh.view import Mesh
 
 
 PYRAMID_DATA = [

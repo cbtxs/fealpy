@@ -501,8 +501,8 @@ class EntityView:
             entity type.
         """
         from ..ipoints import to_ipoint
-        from .mesh import Mesh
-        mapping = to_ipoint(Mesh(self.block), self.schema.name, order)
+        from .mesh_view import MeshView
+        mapping = to_ipoint(MeshView(self.block), self.schema.name, order)
         return mapping if index is None else mapping[index]
 
     def top_dimension(self) -> int:

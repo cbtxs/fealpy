@@ -1,13 +1,12 @@
 
 from dataclasses import dataclass
+from functools import cached_property
 from typing import NamedTuple, overload, Self
 
 from ...backend import Tensor
 from ..schema import registry as _Reg
 from ..storage import MeshBlock
 from .entity_view import EntityView
-
-__all__ = ["Mesh"]
 
 
 class AdjointRelation(NamedTuple):
@@ -16,7 +15,7 @@ class AdjointRelation(NamedTuple):
 
 
 @dataclass
-class Mesh:
+class MeshView:
     """Provides a view of the mesh topology and geometry."""
     block: MeshBlock
 
@@ -118,8 +117,8 @@ class Mesh:
 
     def fealpy_api(self):
         """Provides a view of the mesh compatible with FEALPy's API."""
-        from .fealpy_api import FEALPyMesh
-        return FEALPyMesh(self.block)
+        from .fealpy_api import Mesh
+        return Mesh(self.block)
 
     def top_dimension(self) -> int:
         """Get the topological dimension of the mesh."""
@@ -145,11 +144,3 @@ class Mesh:
         """
         from ..uniform_refine import uniform_refine
         return uniform_refine(self.block, times=times, **kwargs)
-
-    # Plot
-
-    @property
-    def add_plot(self):
-        """Provides a plotting interface for the mesh."""
-        from ..plotting.classic import MeshPloter
-        return MeshPloter(self)

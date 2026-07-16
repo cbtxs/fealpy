@@ -3,7 +3,7 @@ from ..backend import Tensor
 
 from .storage import MeshBlock, EntitySector
 from .topology.builder import TopologyBuilder
-from .view import Mesh, FEALPyMesh
+from .view import Mesh
 
 __all__ = [
     'MeshFactory',
@@ -30,13 +30,13 @@ class MeshFactory(type):
 
 
 class _MeshFactoryNewMixin(metaclass=MeshFactory):
-    def __new__(cls, node: Tensor, cell: Tensor) -> FEALPyMesh:
+    def __new__(cls, node: Tensor, cell: Tensor) -> Mesh:
         block = MeshBlock(positions=node)
         block.add_sector(EntitySector(cls.schema, cell), root=True)
         TopologyBuilder.construct(block)
         mesh = Mesh(block)
 
-        return mesh.fealpy_api()
+        return mesh
 
 
 class IntervalMesh(_MeshFactoryNewMixin):
@@ -63,7 +63,7 @@ class TriangleMesh(_MeshFactoryNewMixin):
         """Create a triangle mesh of the box."""
         from ..mesher.box import Box2d
         box = Box2d(box, nx, ny, device=device)
-        return box.triangulate().fealpy_api()
+        return box.triangulate()
 
 
 class QuadrangleMesh(_MeshFactoryNewMixin):
@@ -82,7 +82,7 @@ class QuadrangleMesh(_MeshFactoryNewMixin):
         """Create a quadrangle mesh of the box."""
         from ..mesher.box import Box2d
         box = Box2d(box, nx, ny, device=device)
-        return box.quadrangulate().fealpy_api()
+        return box.quadrangulate()
 
 
 class TetrahedronMesh(_MeshFactoryNewMixin):
@@ -102,7 +102,7 @@ class TetrahedronMesh(_MeshFactoryNewMixin):
         """Create a tetrahedron mesh of the box."""
         from ..mesher.box import Box3d
         box = Box3d(box, nx, ny, nz, device=device)
-        return box.tetrahedralize().fealpy_api()
+        return box.tetrahedralize()
 
 
 class PrismMesh(_MeshFactoryNewMixin):
@@ -122,7 +122,7 @@ class PrismMesh(_MeshFactoryNewMixin):
         """Create a prism mesh of the box."""
         from ..mesher.box import Box3d
         box = Box3d(box, nx, ny, nz, device=device)
-        return box.prismatize().fealpy_api()
+        return box.prismatize()
 
 
 class PyramidMesh(_MeshFactoryNewMixin):
@@ -146,7 +146,7 @@ class HexahedronMesh(_MeshFactoryNewMixin):
         """Create a hexahedron mesh of the box."""
         from ..mesher.box import Box3d
         box = Box3d(box, nx, ny, nz, device=device)
-        return box.hexahedralize().fealpy_api()
+        return box.hexahedralize()
 
 
 class PolygonMesh(metaclass=MeshFactory):

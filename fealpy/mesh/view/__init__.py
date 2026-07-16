@@ -1,3 +1,3 @@
 from .entity_view import EntityView
-from .mesh import Mesh
-from .fealpy_api import FEALPyMesh
+from .mesh_view import MeshView
+from .fealpy_api import Mesh

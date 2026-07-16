@@ -10,7 +10,7 @@ from ..backend import bm, Tensor
 from .schema import SCHEMA_REGISTRY
 from .storage import EntitySector, MeshBlock
 from .topology.builder import TopologyBuilder
-from .view.mesh import Mesh
+from .view import Mesh
 from .vtk_writter import SCHEMA_TO_VTK_CELL_TYPE_NAME
 
 __all__ = [

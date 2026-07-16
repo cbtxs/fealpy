@@ -5,13 +5,13 @@ from typing import Literal
 from ...backend import bm
 from ...backend import Tensor, Index
 from ..schema import registry as _Reg
-from .mesh import Mesh
+from .mesh_view import MeshView
 
-__all__ = ["FEALPyMesh"]
+__all__ = ["Mesh"]
 
 
 @dataclass
-class FEALPyMesh(Mesh):
+class Mesh(MeshView):
     """FEALPy-compatible view of a mesh block.
 
     ``FEALPyMesh`` exposes the newer mesh storage and entity-view layer through
@@ -598,7 +598,7 @@ class FEALPyMesh(Mesh):
         """
         block = self.Entities(1)[0]
         tangent = block.tangent(index=index)[:, 0, :]
-        norm = bm.linalg.vector_norm(tangent, axis=1, keepdims=True)
+        norm = bm.linalg.vector_norm(tangent, axis=1, keepdims=True) # type: ignore
         return tangent / norm
 
     def error(
@@ -660,7 +660,7 @@ class FEALPyMesh(Mesh):
         """
         block = self.Entities(self.top_dimension() - 1)[0]
         normal = block.normal(index=index)[:, 0, :]
-        norm = bm.linalg.vector_norm(normal, axis=1, keepdims=True)
+        norm = bm.linalg.vector_norm(normal, axis=1, keepdims=True) # type: ignore
         return normal / norm
 
     def grad_lambda(
@@ -709,3 +709,11 @@ class FEALPyMesh(Mesh):
             entities.
         """
         return self.grad_lambda(index=index, TD=self.top_dimension() - 1)
+
+    # Plot
+
+    @property
+    def add_plot(self):
+        """Provides a plotting interface for the mesh."""
+        from ..plotting.classic import MeshPloter
+        return MeshPloter(self)
