@@ -220,8 +220,8 @@ def solution_summary(
     if probes is None:
         probes = pressure_drop(model.fvm_geometry.cell_center, pressure)
     return {
-        "cells": int(model.mesh.number_of_cells()),
-        "faces": int(model.mesh.number_of_faces()),
+        "cells": int(model.fvm_geometry.NC),
+        "faces": int(model.fvm_geometry.NF),
         "finite_fields": bool(
             bm.to_numpy(
                 bm.all(bm.isfinite(velocity))
@@ -313,7 +313,7 @@ def plot_cylinder_overview(model, case, output: str | Path) -> None:
 
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
-    points = _as_numpy(model.mesh.entity_barycenter("cell"))
+    points = _as_numpy(model.fvm_geometry.cell_center)
     speed = _as_numpy(bm.linalg.norm(model.velocity, axis=1))
     pressure = _as_numpy(model.pressure)
     velocity = _as_numpy(model.velocity)
@@ -378,6 +378,7 @@ def write_cylinder_outputs(
         output_dir / "solution.vtu",
         fields=fields,
         velocity_gradient=getattr(model, "velocity_gradient", None),
+        geometry=getattr(model, "fvm_geometry", None),
     )
     plot_cylinder_overview(model, case, output_dir / "flow_overview.png")
 

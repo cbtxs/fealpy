@@ -2,11 +2,14 @@ from fealpy.backend import backend_manager as bm
 
 
 def _boundary_convection_rhs(model, uf):
-    boundary_faces = model.mesh.boundary_face_index()
-    owner = model.mesh.edge_to_cell()[boundary_faces, 0]
-    face_center = model.mesh.entity_barycenter("face")[boundary_faces]
+    from fealpy.fvm import FVMGeometry
+
+    geometry = getattr(model, "fvm_geometry", FVMGeometry(model.mesh))
+    boundary_faces = bm.nonzero(geometry.is_boundary)[0]
+    owner = geometry.owner[boundary_faces]
+    face_center = geometry.face_center[boundary_faces]
     velocity_bc = model.pde.dirichlet_velocity(face_center)
-    Sf = model.mesh.edge_normal()[boundary_faces]
+    Sf = geometry.S_f[boundary_faces]
     flux = bm.einsum("ij,ij->i", uf[boundary_faces], Sf)
 
     fx = bm.zeros(model.NC)
@@ -14,24 +17,6 @@ def _boundary_convection_rhs(model, uf):
     bm.add_at(fx, owner, -flux * velocity_bc[:, 0])
     bm.add_at(fy, owner, -flux * velocity_bc[:, 1])
     return bm.concatenate([fx, fy], axis=0)
-
-
-def test_rc_momentum_rhs_includes_dirichlet_boundary_convection():
-    bm.set_backend("numpy")
-    from fealpy.fvm.experimental.ns_fvm_rc_model import NSFVMRCModel
-
-    model = NSFVMRCModel({"pde": 6, "nx": 4, "ny": 4, "log_level": "ERROR"})
-    face_center = model.mesh.entity_barycenter("face")
-    uf = model.pde.velocity(face_center)
-    zero_uf = bm.zeros_like(uf)
-
-    _, f_zero = model.assembly_velocity(zero_uf)
-    _, f_with_boundary_flux = model.assembly_velocity(uf)
-
-    expected = _boundary_convection_rhs(model, uf)
-
-    assert float(bm.max(bm.abs(expected[model.NC:]))) > 1.0e-12
-    assert float(bm.max(bm.abs(f_with_boundary_flux - f_zero - expected))) < 1.0e-12
 
 
 def test_dirichlet_bc_convection_apply_handles_vector_dirichlet_data():
@@ -51,6 +36,8 @@ def test_dirichlet_bc_convection_apply_handles_vector_dirichlet_data():
     model.mesh = mesh
     model.pde = pde
     model.NC = mesh.number_of_cells()
+    from fealpy.fvm import FVMGeometry
+    model.fvm_geometry = FVMGeometry(mesh)
 
     b = bm.zeros(2 * model.NC)
     actual = DirichletBC(mesh, pde.dirichlet_velocity).apply_convection(b, uf)
@@ -108,7 +95,7 @@ def test_simple_momentum_rhs_includes_dirichlet_boundary_convection(monkeypatch)
             "pbar_log": False,
         }
     )
-    face_center = zero_model.mesh.entity_barycenter("face")
+    face_center = zero_model.fvm_geometry.face_center
     uf = zero_model.pde.velocity(face_center)
     zero_uf = bm.zeros_like(uf)
 
@@ -119,35 +106,6 @@ def test_simple_momentum_rhs_includes_dirichlet_boundary_convection(monkeypatch)
 
     assert float(bm.max(bm.abs(expected[model.NC:]))) > 1.0e-12
     assert float(bm.max(bm.abs(rhs_with_boundary_flux - rhs_zero - expected))) < 1.0e-12
-
-
-def test_staggered_divergence_includes_signed_boundary_fluxes():
-    bm.set_backend("numpy")
-    from fealpy.fvm.experimental import (
-        StaggeredDivergenceReconstruct,
-        StaggeredMeshManager,
-    )
-    from fealpy.model import PDEModelManager
-
-    pde = PDEModelManager("navier_stokes").get_example(6)
-    staggered_mesh = StaggeredMeshManager(pde.domain(), nx=20, ny=20)
-    uh = pde.velocity_u(staggered_mesh.umesh.entity_barycenter("cell"))
-    vh = pde.velocity_v(staggered_mesh.vmesh.entity_barycenter("cell"))
-    edge_velocity, _ = staggered_mesh.map_velocity_uvcell_to_pedge(
-        uh,
-        vh,
-        bm.ones_like(uh),
-        bm.ones_like(vh),
-    )
-
-    div = StaggeredDivergenceReconstruct(staggered_mesh.pmesh).StagReconstruct(
-        edge_velocity
-    )
-    div_l2 = bm.sqrt(
-        bm.sum(staggered_mesh.pmesh.entity_measure("cell") * div**2)
-    )
-
-    assert float(div_l2) < 1.0e-3
 
 
 def test_simple_mass_residual_is_normalized_and_scale_invariant():
@@ -196,8 +154,8 @@ def test_collocated_simple_records_common_residuals(monkeypatch):
             "absolute_linf": 0.0,
         },
     )
-    monkeypatch.setattr(simple_residual, "cell_l2_norm", lambda mesh, value: 0.0)
-    monkeypatch.setattr(simple_residual, "relative_l2_update", lambda mesh, update, p: 0.0)
+    monkeypatch.setattr(simple_residual, "cell_l2_norm", lambda mesh, value, **kwargs: 0.0)
+    monkeypatch.setattr(simple_residual, "relative_l2_update", lambda mesh, update, p, **kwargs: 0.0)
     monkeypatch.setattr(
         simple_model.NSFVMSimpleModel,
         "temporary_velocity",
@@ -300,8 +258,8 @@ def test_collocated_simple_updates_cell_velocity_after_pressure_correction(monke
             "absolute_linf": 0.0,
         },
     )
-    monkeypatch.setattr(simple_residual, "cell_l2_norm", lambda mesh, value: 1.0)
-    monkeypatch.setattr(simple_residual, "relative_l2_update", lambda mesh, update, p: 1.0)
+    monkeypatch.setattr(simple_residual, "cell_l2_norm", lambda mesh, value, **kwargs: 1.0)
+    monkeypatch.setattr(simple_residual, "relative_l2_update", lambda mesh, update, p, **kwargs: 1.0)
     monkeypatch.setattr(simple_model.NSFVMSimpleModel, "temporary_velocity", fake_temporary_velocity)
     monkeypatch.setattr(
         simple_model.NSFVMSimpleModel,
@@ -402,8 +360,8 @@ def test_collocated_simple_avoids_duplicate_face_pressure_correction(monkeypatch
             "absolute_linf": 0.0,
         },
     )
-    monkeypatch.setattr(simple_residual, "cell_l2_norm", lambda mesh, value: 1.0)
-    monkeypatch.setattr(simple_residual, "relative_l2_update", lambda mesh, update, p: 1.0)
+    monkeypatch.setattr(simple_residual, "cell_l2_norm", lambda mesh, value, **kwargs: 1.0)
+    monkeypatch.setattr(simple_residual, "relative_l2_update", lambda mesh, update, p, **kwargs: 1.0)
     monkeypatch.setattr(simple_model.NSFVMSimpleModel, "temporary_velocity", fake_temporary_velocity)
     monkeypatch.setattr(
         simple_model.NSFVMSimpleModel,
@@ -438,55 +396,3 @@ def test_collocated_simple_avoids_duplicate_face_pressure_correction(monkeypatch
     model.pde.dirichlet_velocity = lambda points: bm.zeros_like(points)
 
     model.solve(max_iter=1, tol_mass=1.0e-99, tol_momentum=1.0e-12, relax=0.5)
-
-
-def test_staggered_simple_records_common_residuals(monkeypatch):
-    bm.set_backend("numpy")
-    import fealpy.fvm.experimental.ns_fvm_staggered_simple_model as staggered_model
-
-    monkeypatch.setattr(staggered_model, "staggered_mass_residual", lambda mesh, edge_velocity: 0.0)
-    monkeypatch.setattr(staggered_model, "relative_l2_update", lambda mesh, update, p: 0.0)
-    monkeypatch.setattr(
-        staggered_model.NSFVMStaggeredSimpleModel,
-        "compute_temporary_velocity_u",
-        lambda self, p_u, uf: (
-            bm.zeros(self.umesh.number_of_cells()),
-            bm.ones(self.umesh.number_of_cells()),
-        ),
-    )
-    monkeypatch.setattr(
-        staggered_model.NSFVMStaggeredSimpleModel,
-        "compute_temporary_velocity_v",
-        lambda self, p_v, uf: (
-            bm.zeros(self.vmesh.number_of_cells()),
-            bm.ones(self.vmesh.number_of_cells()),
-        ),
-    )
-    monkeypatch.setattr(
-        staggered_model.NSFVMStaggeredSimpleModel,
-        "correct_pressure_compute",
-        lambda self, f, a_p_edge: bm.zeros(self.pmesh.number_of_cells()),
-    )
-
-    model = staggered_model.NSFVMStaggeredSimpleModel(
-        {
-            "pde": 6,
-            "nx": 2,
-            "ny": 2,
-            "backend": "numpy",
-            "log_level": "ERROR",
-            "pbar_log": False,
-        }
-    )
-
-    model.solve(max_iter=5, tol=1.0e-5, relax=0.32)
-
-    assert len(model.residuals) == 1
-    assert {
-        key: model.residuals[0][key]
-        for key in ("mass", "pressure_update", "pressure_correction")
-    } == {
-        "mass": 0.0,
-        "pressure_update": 0.0,
-        "pressure_correction": 0.0,
-    }

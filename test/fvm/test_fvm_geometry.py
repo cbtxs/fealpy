@@ -11,7 +11,10 @@ from fealpy.fvm.fvm_geometry import (
     DiffusionFaceDecomposition,
     face_interpolation_owner_weight as geometry_face_interpolation_owner_weight,
 )
-from fealpy.mesh import QuadrangleMesh, TriangleMesh
+from fealpy.mesh import QuadrangleMesh, TetrahedronMesh, TriangleMesh
+from fealpy.mesh.storage import EntitySector, MeshBlock
+from fealpy.mesh.topology.builder import TopologyBuilder
+from fealpy.mesh.view import Mesh
 
 
 def _meshes():
@@ -19,15 +22,40 @@ def _meshes():
     return [
         QuadrangleMesh.from_box([0.0, 1.0, 0.0, 1.0], nx=2, ny=2),
         TriangleMesh.from_box([0.0, 1.0, 0.0, 1.0], nx=2, ny=2),
+        TetrahedronMesh.from_box(
+            [0.0, 1.0, 0.0, 1.0, 0.0, 1.0], nx=1, ny=1, nz=1
+        ),
     ]
 
 
+def _mixed_tri_quad_mesh():
+    points = np.array(
+        [
+            [0.0, 0.0],
+            [1.0, 0.0],
+            [0.0, 1.0],
+            [1.0, 1.0],
+            [2.0, 0.0],
+            [2.0, 1.0],
+        ],
+        dtype=np.float64,
+    )
+    triangles = np.array([[0, 1, 3], [0, 3, 2]], dtype=np.int32)
+    quadrilaterals = np.array([[1, 4, 3, 5]], dtype=np.int32)
+
+    block = MeshBlock(positions=points)
+    block.add_sector(EntitySector("tri", triangles), root=True)
+    block.add_sector(EntitySector("quad", quadrilaterals), root=True)
+    TopologyBuilder.construct(block)
+    return Mesh(block).fealpy_api()
+
+
 @pytest.mark.parametrize("mesh", _meshes())
-def test_geometry_vectors_are_owner_oriented_on_quad_and_tri(mesh):
+def test_geometry_vectors_are_owner_oriented_on_new_elemental_meshes(mesh):
     geometry = FVMGeometry(mesh)
-    edge_to_cell = np.asarray(mesh.edge_to_cell()[:, :2])
-    owner = edge_to_cell[:, 0]
-    neighbour = edge_to_cell[:, 1]
+    face_to_cell = np.asarray(mesh.face_to_cell()[:, :2])
+    owner = face_to_cell[:, 0]
+    neighbour = face_to_cell[:, 1]
     is_internal = owner != neighbour
 
     assert geometry.S_f.shape == (mesh.number_of_faces(), mesh.geo_dimension())
@@ -62,6 +90,84 @@ def test_geometry_vectors_are_owner_oriented_on_quad_and_tri(mesh):
         np.asarray(geometry.d_f),
     )
     assert np.all(projection > 0.0)
+
+
+def test_geometry_aggregates_cross_sector_internal_face_and_cell_data():
+    mesh = _mixed_tri_quad_mesh()
+    geometry = FVMGeometry(mesh)
+
+    assert geometry.NC == 3
+    assert geometry.NF == 8
+    np.testing.assert_allclose(np.asarray(geometry.cell_measure), [0.5, 0.5, 1.0])
+
+    shared_face = np.flatnonzero(
+        np.all(
+            np.isclose(np.asarray(geometry.face_center), [1.0, 0.5]),
+            axis=1,
+        )
+    )
+    assert shared_face.size == 1
+    face = int(shared_face[0])
+    assert bool(np.asarray(geometry.is_internal)[face])
+    assert {
+        int(np.asarray(geometry.owner)[face]),
+        int(np.asarray(geometry.neighbour)[face]),
+    } == {0, 2}
+
+    closure = np.asarray(geometry.scatter_face_flux_to_cells(geometry.S_f))
+    np.testing.assert_allclose(closure, 0.0, atol=1.0e-13)
+
+
+def test_geometry_face_subset_preserves_global_cell_numbering():
+    mesh = TriangleMesh.from_box([0.0, 1.0, 0.0, 1.0], nx=2, ny=2)
+    full = FVMGeometry(mesh)
+    selected = np.array([0, 2, mesh.number_of_faces() - 1], dtype=np.int64)
+    subset = FVMGeometry(mesh, index=selected)
+
+    np.testing.assert_array_equal(
+        np.asarray(subset.face_to_cell),
+        np.asarray(full.face_to_cell)[selected],
+    )
+    np.testing.assert_allclose(
+        np.asarray(subset.face_center),
+        np.asarray(full.face_center)[selected],
+    )
+    np.testing.assert_allclose(
+        np.asarray(subset.S_f),
+        np.asarray(full.S_f)[selected],
+    )
+
+
+def test_geometry_cell_integral_aggregates_cell_sectors_in_global_order():
+    geometry = FVMGeometry(_mixed_tri_quad_mesh())
+
+    integral = geometry.cell_integral(
+        lambda points, _: np.ones(points.shape[:-1], dtype=points.dtype),
+        q=3,
+    )
+
+    np.testing.assert_allclose(
+        np.asarray(integral),
+        np.asarray(geometry.cell_measure),
+        rtol=1.0e-13,
+        atol=1.0e-13,
+    )
+
+
+def test_geometry_face_integral_aggregates_face_sectors_in_global_order():
+    geometry = FVMGeometry(_mixed_tri_quad_mesh())
+
+    integral = geometry.face_integral(
+        lambda points, _: np.ones(points.shape[:-1], dtype=points.dtype),
+        q=3,
+    )
+
+    np.testing.assert_allclose(
+        np.asarray(integral),
+        np.asarray(geometry.face_measure),
+        rtol=1.0e-13,
+        atol=1.0e-13,
+    )
 
 
 @pytest.mark.parametrize("mesh", _meshes())

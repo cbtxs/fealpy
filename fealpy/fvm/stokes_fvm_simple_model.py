@@ -51,6 +51,7 @@ class StokesFVMSimpleModel(ComputationalModel, CollocatedSimpleSolver):
             "mesh_refine",
             "nx",
             "ny",
+            "nz",
             "mu",
             "error_quadrature_order",
             "linear_solver",
@@ -66,7 +67,7 @@ class StokesFVMSimpleModel(ComputationalModel, CollocatedSimpleSolver):
     def __str__(self) -> str:
         return (
             f"{self.__class__.__name__}:\n"
-            f"  Mesh shape: {self.mesh.number_of_cells()} cells\n"
+            f"  Mesh shape: {self.NC} cells\n"
             f"  PDE type: {type(self.pde).__name__}\n"
         )
 
@@ -89,11 +90,11 @@ class StokesFVMSimpleModel(ComputationalModel, CollocatedSimpleSolver):
         if getattr(self.pde, "supports_geometric_refine", False):
             return self.pde.init_mesh[mesh_type](mesh_refine=mesh_refine)
 
-        mesh_options = {}
-        if "nx" in options:
-            mesh_options["nx"] = int(options["nx"])
-        if "ny" in options:
-            mesh_options["ny"] = int(options["ny"])
+        mesh_options = {
+            name: int(options[name])
+            for name in ("nx", "ny", "nz")
+            if options.get(name) is not None
+        }
         mesh = self.pde.init_mesh[mesh_type](**mesh_options)
         if mesh_refine == 0:
             return mesh
@@ -117,12 +118,14 @@ class StokesFVMSimpleModel(ComputationalModel, CollocatedSimpleSolver):
             self.pde.velocity,
             self.velocity,
             q=self.error_quadrature_order,
+            geometry=self.fvm_geometry,
         )
         pressure_error, self.exact_pressure = cell_average_l2_error(
             self.mesh,
             self.pde.pressure,
             self.pressure,
             q=self.error_quadrature_order,
+            geometry=self.fvm_geometry,
         )
         return tuple(velocity_error[i] for i in range(self.GD)) + (pressure_error,)
 
@@ -130,7 +133,7 @@ class StokesFVMSimpleModel(ComputationalModel, CollocatedSimpleSolver):
         """Plot numerical and exact solution errors for u, v, and p."""
         import matplotlib.pyplot as plt
 
-        cell_centers = self.mesh.entity_barycenter("cell")
+        cell_centers = self.fvm_geometry.cell_center
         x, y = cell_centers[:, 0], cell_centers[:, 1]
 
         fig = plt.figure(figsize=(15, 10))

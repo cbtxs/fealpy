@@ -87,16 +87,22 @@ class CollocatedDiscretizationSetup:
         dirichlet_pressure=None,
         dirichlet_pressure_threshold=None,
         with_dirichlet_velocity_bc: bool = False,
+        geometry=None,
     ) -> None:
         if degree != 0:
             raise ValueError("space_degree must be 0 for cell-centred FVM.")
         self.p = degree
-        self.GD = self.mesh.geo_dimension()
+        self.fvm_geometry = (
+            geometry if geometry is not None else FVMGeometry(self.mesh)
+        )
+        self.GD = self.fvm_geometry.cell_center.shape[1]
+        self.NC = self.fvm_geometry.NC
+        self.NF = self.fvm_geometry.NF
+        self.cm = self.fvm_geometry.cell_measure
+        self.cell_center = self.fvm_geometry.cell_center
+        self.face_center = self.fvm_geometry.face_center
         self.space = ScaledMonomialSpace(self.mesh, degree)
         self.velocity_space = TensorFunctionSpace(self.space, shape=(self.GD, -1))
-        self.cell_center = self.mesh.entity_barycenter("cell")
-        self.face_center = self.mesh.entity_barycenter("face")
-        self.fvm_geometry = FVMGeometry(self.mesh)
         self.diffusion_method = diffusion_method
         self.diffusion_nonorthogonal_eps = float(diffusion_nonorthogonal_eps)
         if diffusion_method not in self.pressure_diffusion_decomposition:
@@ -1238,7 +1244,11 @@ class CollocatedMomentumEquation:
     def momentum_source_vector(self, source):
         """Assemble the shared cell-integrated momentum source vector."""
         return LinearForm(self.velocity_space).add_integrator(
-            ScalarSourceIntegrator(source, q=self.p + 2)
+            ScalarSourceIntegrator(
+                source,
+                q=self.p + 2,
+                geometry=self.fvm_geometry,
+            )
         ).assembly()
 
     def neumann_velocity_boundary_data(self):
@@ -1450,10 +1460,10 @@ class PressureGaugeMatrixAssembler:
         self.space = space
         self.mesh = getattr(space, "mesh", None)
         self.geometry = geometry if geometry is not None else FVMGeometry(self.mesh)
-        self.NC = self.mesh.number_of_cells()
+        self.NC = self.geometry.NC
         self.sparse_shape = (self.NC + 1, self.NC + 1)
         self.cell_measure = (
-            self.mesh.entity_measure("cell") if cell_measure is None else cell_measure
+            self.geometry.cell_measure if cell_measure is None else cell_measure
         )
         self.pressure_diffusion = ScalarDiffusionMatrixAssembler(
             space,

@@ -11,6 +11,7 @@ class ShiftedBoundaryGeometry:
         from fealpy.fvm.fvm_geometry import FVMGeometry
 
         real = FVMGeometry(mesh)
+        self._real = real
         is_boundary = np.asarray(real.is_boundary)
         face_center = np.asarray(real.face_center).copy()
         face_center[is_boundary, 0] += 5.0
@@ -30,6 +31,9 @@ class ShiftedBoundaryGeometry:
         self.mag_S_f = bm.linalg.norm(self.S_f, axis=1)
         self.mag_d_f = real.mag_d_f
         self._mag_E_f = 2.0 * real.mag_d_f
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
 
     def diffusion_face_decomposition(self, method="over_relaxed", *, eps=0.05):
         from fealpy.fvm.fvm_geometry import DiffusionFaceDecomposition

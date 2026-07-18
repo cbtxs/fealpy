@@ -5,6 +5,13 @@ from fealpy.backend import backend_manager as bm
 from fealpy.typing import Index, TensorLike, _S
 
 
+def _prefix_sums(sizes):
+    total = 0
+    for size in sizes:
+        total += int(size)
+        yield total
+
+
 @dataclass(frozen=True)
 class DiffusionFaceDecomposition:
     """Geometry shared by all terms of one non-orthogonal diffusion scheme.
@@ -69,53 +76,192 @@ class FVMGeometry:
         self.index = index
         self._diffusion_decomposition_cache = {}
 
-        required = ("geo_dimension", "entity_barycenter", "entity_measure", "number_of_cells")
-        missing = [name for name in required if not hasattr(mesh, name)]
-        if missing:
+        if not hasattr(mesh, "Entities"):
             raise RuntimeError(
-                "FVMGeometry requires a mesh with FVM geometry methods: "
-                + ", ".join(missing)
+                "FVMGeometry requires the Mesh/EntityView/Relation interface."
             )
-        if not hasattr(mesh, "face_to_cell") and not hasattr(mesh, "edge_to_cell"):
-            raise RuntimeError("FVMGeometry requires face_to_cell() or edge_to_cell().")
 
-        if hasattr(mesh, "face_to_cell"):
-            face_to_cell = mesh.face_to_cell(index=index)
-        else:
-            face_to_cell = mesh.edge_to_cell(index=index)
+        cell_views = mesh.Entities(-1)
+        face_views = mesh.Entities(-2)
+        if not cell_views:
+            raise ValueError("FVMGeometry requires at least one cell sector.")
+        if not face_views:
+            raise ValueError("FVMGeometry requires at least one face sector.")
+
+        cell_sizes = [view.size() for view in cell_views]
+        face_sizes = [view.size() for view in face_views]
+        self.cell_sector_offsets = tuple(
+            [0] + list(_prefix_sums(cell_sizes))
+        )
+        self.face_sector_offsets = tuple(
+            [0] + list(_prefix_sums(face_sizes))
+        )
+        self.NC = self.cell_sector_offsets[-1]
+        total_faces = self.face_sector_offsets[-1]
+        self.cell_views = tuple(cell_views)
+        self.face_views = tuple(face_views)
+        self.cell_sector_slices = tuple(
+            slice(start, end)
+            for start, end in zip(
+                self.cell_sector_offsets[:-1], self.cell_sector_offsets[1:]
+            )
+        )
+        self.face_sector_slices = tuple(
+            slice(start, end)
+            for start, end in zip(
+                self.face_sector_offsets[:-1], self.face_sector_offsets[1:]
+            )
+        )
+
+        self.cell_center = bm.concatenate(
+            [view.barycenter() for view in cell_views], axis=0
+        )
+        self.GD = self.cell_center.shape[1]
+        self.cell_measure = bm.concatenate(
+            [view.measure() for view in cell_views], axis=0
+        )
+
+        face_centers = []
+        face_measures = []
+        face_normals = []
+        for view in face_views:
+            center = view.barycenter()
+            measure = view.measure()
+            normal = view.normal()
+            if normal.ndim == 3:
+                if normal.shape[1] != 1:
+                    raise ValueError(
+                        "FVMGeometry requires one geometric normal per face."
+                    )
+                normal = normal[:, 0, :]
+            if normal.ndim != 2:
+                raise ValueError(
+                    "face normal must have shape (NF, GD) or (NF, 1, GD)."
+                )
+            normal_norm = bm.linalg.norm(normal, axis=1)
+            if bool(bm.to_numpy(bm.any(normal_norm <= 0.0))):
+                raise ValueError("face normal has zero length.")
+
+            face_centers.append(center)
+            face_measures.append(measure)
+            face_normals.append(normal / normal_norm[:, None])
+
+        full_face_center = bm.concatenate(face_centers, axis=0)
+        full_face_measure = bm.concatenate(face_measures, axis=0)
+        full_unit_normal = bm.concatenate(face_normals, axis=0)
+
+        incidence_face = []
+        incidence_cell = []
+        incidence_local_face = []
+        cell_face_counts = []
+        for cell_id, cell_view in enumerate(cell_views):
+            cell_offset = self.cell_sector_offsets[cell_id]
+            local_face_offset = 0
+            for face_id, face_view in enumerate(face_views):
+                try:
+                    relation = cell_view.to(face_view)
+                except KeyError:
+                    continue
+                if relation.src_indices is not None or relation.tgt_indices.ndim != 2:
+                    raise ValueError(
+                        "FVMGeometry currently requires fixed-width cell-to-face relations."
+                    )
+
+                local_faces = relation.tgt_indices
+                cell_count, local_face_count = local_faces.shape
+                if cell_count != cell_sizes[cell_id]:
+                    raise ValueError("cell-to-face relation has an invalid cell count.")
+
+                incidence_face.append(
+                    bm.reshape(local_faces, (-1,))
+                    + self.face_sector_offsets[face_id]
+                )
+                local_cells = bm.arange(
+                    cell_count,
+                    dtype=local_faces.dtype,
+                    device=bm.get_device(local_faces),
+                )
+                incidence_cell.append(
+                    bm.repeat(local_cells + cell_offset, local_face_count)
+                )
+                incidence_local_face.append(
+                    bm.tile(
+                        bm.arange(
+                            local_face_count,
+                            dtype=local_faces.dtype,
+                            device=bm.get_device(local_faces),
+                        ) + local_face_offset,
+                        cell_count,
+                    )
+                )
+                local_face_offset += local_face_count
+            cell_face_counts.append(
+                bm.full(
+                    (cell_sizes[cell_id],),
+                    local_face_offset,
+                    dtype=cell_view.indices.dtype,
+                    device=bm.get_device(cell_view.indices),
+                )
+            )
+
+        if not incidence_face:
+            raise ValueError("mesh has no cell-to-face incidences.")
+
+        incidence_face = bm.concatenate(incidence_face, axis=0)
+        incidence_cell = bm.concatenate(incidence_cell, axis=0)
+        incidence_local_face = bm.concatenate(incidence_local_face, axis=0)
+        incidence_count = bm.bincount(incidence_face, minlength=total_faces)
+        invalid_incidence = (incidence_count < 1) | (incidence_count > 2)
+        if bool(bm.to_numpy(bm.any(invalid_incidence))):
+            raise ValueError(
+                "FVMGeometry requires a manifold mesh with one or two cells per face."
+            )
+
+        order = bm.argsort(incidence_face)
+        sorted_cell = incidence_cell[order]
+        sorted_local_face = incidence_local_face[order]
+        group_end = bm.cumsum(incidence_count, axis=0)
+        group_start = group_end - incidence_count
+        first = group_start
+        last = group_end - 1
+
+        full_owner = sorted_cell[first]
+        full_neighbour = sorted_cell[last]
+        full_owner_local = sorted_local_face[first]
+        full_neighbour_local = sorted_local_face[last]
+
+        face_to_cell = bm.stack([full_owner, full_neighbour], axis=1)[index]
+        owner_local_face = full_owner_local[index]
+        neighbour_local_face = full_neighbour_local[index]
         if face_to_cell.ndim == 1:
             face_to_cell = face_to_cell[None, :]
-        self.owner_local_face = (
-            face_to_cell[:, 2] if face_to_cell.shape[1] >= 4 else None
-        )
-        self.neighbour_local_face = (
-            face_to_cell[:, 3] if face_to_cell.shape[1] >= 4 else None
-        )
-        self.face_to_cell = face_to_cell[:, :2]
+            owner_local_face = owner_local_face[None]
+            neighbour_local_face = neighbour_local_face[None]
+
+        self.face_to_cell = face_to_cell
+        self.owner_local_face = owner_local_face
+        self.neighbour_local_face = neighbour_local_face
         self.owner = self.face_to_cell[:, 0]
         self.neighbour = self.face_to_cell[:, 1]
         self.is_internal = self.owner != self.neighbour
         self.is_boundary = ~self.is_internal
 
-        self.cell_center = mesh.entity_barycenter("cell")
-        self.face_center = mesh.entity_barycenter("face", index=index)
+        self.face_center = full_face_center[index]
+        self.face_measure = full_face_measure[index]
         if self.face_center.ndim == 1:
             self.face_center = self.face_center[None, :]
+            self.face_measure = self.face_measure[None]
+        self.NF = self.face_center.shape[0]
+        self.cell_face_count = bm.concatenate(cell_face_counts, axis=0)
 
         owner_to_neighbour = self.cell_center[self.neighbour] - self.cell_center[self.owner]
         owner_to_face = self.face_center - self.cell_center[self.owner]
         self.d_f = bm.where(self.is_internal[:, None], owner_to_neighbour, owner_to_face)
         self.mag_d_f = bm.linalg.norm(self.d_f, axis=1)
-        if bm.any(self.mag_d_f <= 0.0):
+        if bool(bm.to_numpy(bm.any(self.mag_d_f <= 0.0))):
             raise ValueError("face centre vector has zero length.")
 
-        if mesh.geo_dimension() == 2:
-            S_f = mesh.edge_normal(index=index)
-        elif hasattr(mesh, "face_normal"):
-            S_f = mesh.face_normal(index=index)
-        else:
-            mag_S_f = mesh.entity_measure("face", index=index)
-            S_f = mag_S_f[:, None] * mesh.face_unit_normal(index=index)
+        S_f = self.face_measure[:, None] * full_unit_normal[index]
         if S_f.ndim == 1:
             S_f = S_f[None, :]
 
@@ -123,19 +269,53 @@ class FVMGeometry:
         S_f = bm.where(projection[:, None] < 0.0, -S_f, S_f)
         self.S_f = S_f
         self.mag_S_f = bm.linalg.norm(self.S_f, axis=1)
-        if bm.any(self.mag_S_f <= 0.0):
+        if bool(bm.to_numpy(bm.any(self.mag_S_f <= 0.0))):
             raise ValueError("face area vector has zero length.")
         self.n_f = self.S_f / self.mag_S_f[:, None]
 
         owner_projection = bm.einsum("ij,ij->i", self.S_f, self.d_f)
-        if bm.any(owner_projection <= 0.0):
+        if bool(bm.to_numpy(bm.any(owner_projection <= 0.0))):
             raise ValueError("face area vector is not owner-oriented.")
 
         self.boundary_owner_to_face_vector = owner_to_face[self.is_boundary]
         boundary_normal = self.n_f[self.is_boundary]
         self.boundary_normal_distance = bm.einsum("ij,ij->i", self.boundary_owner_to_face_vector, boundary_normal)
-        if bm.any(self.boundary_normal_distance <= 0.0):
+        if bool(bm.to_numpy(bm.any(self.boundary_normal_distance <= 0.0))):
             raise ValueError("boundary face has zero owner-normal distance.")
+
+    def cell_integral(self, integrand, *, q: int = 3):
+        """Integrate one Cartesian function over all cell sectors.
+
+        ``integrand(points, cell_slice)`` receives physical quadrature points
+        for one homogeneous cell sector and the corresponding slice in the
+        global FVM cell ordering.  Sector results are concatenated in that
+        ordering.
+        """
+        values = []
+        for view, cell_slice in zip(self.cell_views, self.cell_sector_slices):
+            values.append(
+                view.integral(
+                    lambda points, cell_slice=cell_slice: integrand(
+                        points, cell_slice
+                    ),
+                    q=q,
+                )
+            )
+        return bm.concatenate(values, axis=0)
+
+    def face_integral(self, integrand, *, q: int = 3):
+        """Integrate one Cartesian function over all selected face sectors."""
+        values = []
+        for view, face_slice in zip(self.face_views, self.face_sector_slices):
+            values.append(
+                view.integral(
+                    lambda points, face_slice=face_slice: integrand(
+                        points, face_slice
+                    ),
+                    q=q,
+                )
+            )
+        return bm.concatenate(values, axis=0)[self.index]
 
     def diffusion_face_decomposition(
         self,
@@ -235,7 +415,7 @@ class FVMGeometry:
             )
 
         result = bm.zeros(
-            (self.mesh.number_of_cells(),) + tuple(face_flux.shape[1:]),
+            (self.NC,) + tuple(face_flux.shape[1:]),
             dtype=face_flux.dtype,
         )
         result = bm.index_add(result, self.owner, face_flux, axis=0)
@@ -287,10 +467,10 @@ def interpolate_cell_to_face(
     cell_values = bm.array(cell_values)
     if cell_values.ndim == 0:
         raise ValueError("cell_values must have a control-volume axis.")
-    if cell_values.shape[0] != geometry.mesh.number_of_cells():
+    if cell_values.shape[0] != geometry.NC:
         raise ValueError(
             f"cell_values has {cell_values.shape[0]} cells, expected "
-            f"{geometry.mesh.number_of_cells()}."
+            f"{geometry.NC}."
         )
 
     owner_weight = face_interpolation_owner_weight(

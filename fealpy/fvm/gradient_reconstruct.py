@@ -46,7 +46,7 @@ class LSQGradientReconstruct:
         weights = self.owner.layer_weights
         if self._layered_lsq_cache_key != weights:
             first_weight, second_weight = weights
-            NC = self.mesh.number_of_cells()
+            NC = self.fvm_geometry.NC
             c2c = self.padded_cell_neighbors(NC)
             N = self.layered_lsq_stencil(c2c, NC)
             cell_centers = self.fvm_geometry.cell_center
@@ -160,22 +160,18 @@ class LSQGradientReconstruct:
 
     def padded_cell_neighbors(self, NC):
         """Return a dense neighbour stencil for fixed or variable face counts."""
-        faces_per_cell = self.mesh.number_of_faces_of_cells()
-        if getattr(faces_per_cell, "ndim", 0) == 0:
-            return self.mesh.cell_to_cell()
-
+        faces_per_cell = self.fvm_geometry.cell_face_count
         max_faces = int(bm.to_numpy(bm.max(faces_per_cell)))
-        cells = bm.arange(NC, dtype=self.mesh.itype)
+        face_to_cell = self.fvm_geometry.face_to_cell
+        cells = bm.arange(
+            NC,
+            dtype=face_to_cell.dtype,
+            device=bm.get_device(face_to_cell),
+        )
         cell_to_cell = bm.broadcast_to(cells[:, None], (NC, max_faces))
         cell_to_cell = bm.copy(cell_to_cell)
-        face_to_cell = self.fvm_geometry.face_to_cell
         owner_local_face = self.fvm_geometry.owner_local_face
         neighbour_local_face = self.fvm_geometry.neighbour_local_face
-        if owner_local_face is None or neighbour_local_face is None:
-            raise RuntimeError(
-                "variable-face cell stencils require local face indices in "
-                "FVMGeometry."
-            )
         cell_to_cell = bm.set_at(
             cell_to_cell,
             (face_to_cell[:, 0], owner_local_face),
@@ -190,7 +186,7 @@ class LSQGradientReconstruct:
 
     def face_weighted_lsq(self, U):
         if self._face_weighted_lsq_cache is None:
-            NC = self.mesh.number_of_cells()
+            NC = self.fvm_geometry.NC
             cell_centers = self.fvm_geometry.cell_center
             face_centers = self.fvm_geometry.face_center
             owner = self.fvm_geometry.owner
@@ -258,7 +254,7 @@ class LSQGradientReconstruct:
             A,
             inv_A,
         ) = self._face_weighted_lsq_cache
-        NC = self.mesh.number_of_cells()
+        NC = self.fvm_geometry.NC
         if U.ndim == 1:
             b = bm.zeros((NC, self.GD), dtype=U.dtype)
         else:
@@ -483,13 +479,14 @@ class QuadraticLSQGradientReconstruct:
     def _cell_second_moment(self):
         center = self.fvm_geometry.cell_center
 
-        def integrand(points, index=None):
-            local_center = center if index is None else center[index]
+        def integrand(points, cell_slice):
+            local_center = center[cell_slice]
             delta = points - local_center[:, None, :]
             return bm.einsum("cqi,cqj->cqij", delta, delta)
 
-        measure = self.mesh.entity_measure("cell")
-        return self.mesh.integral(integrand, q=3, celltype=True) / measure[:, None, None]
+        return self.fvm_geometry.cell_integral(
+            integrand, q=3
+        ) / self.fvm_geometry.cell_measure[:, None, None]
 
     def _features(self, displacement, moment_difference, scale):
         scaled_d = displacement / scale[..., None]
@@ -522,7 +519,7 @@ class QuadraticLSQGradientReconstruct:
         return bm.sort(unique, axis=1)
 
     def _build_cache(self):
-        NC = self.mesh.number_of_cells()
+        NC = self.fvm_geometry.NC
         c2c = self.owner.lsq_reconstruct.padded_cell_neighbors(NC)
         second = c2c[c2c].reshape(NC, -1)
         third = c2c[second].reshape(NC, -1)
@@ -690,9 +687,9 @@ class GreenGaussGradientReconstruct:
                 f"Unknown Green-Gauss boundary_type: {self.owner.boundary_type!r}."
             )
 
-        cell_measure = self.mesh.entity_measure("cell")
+        cell_measure = self.fvm_geometry.cell_measure
         scalar_field = U.ndim == 1
-        NC = self.mesh.number_of_cells()
+        NC = self.fvm_geometry.NC
         if scalar_field:
             grad_U = bm.zeros((NC, self.GD), dtype=U.dtype)
         else:
@@ -791,8 +788,8 @@ class GradientReconstruct:
         geometry=None,
     ):
         self.mesh = mesh
-        self.GD = mesh.geo_dimension()
         self.fvm_geometry = geometry if geometry is not None else FVMGeometry(mesh)
+        self.GD = self.fvm_geometry.cell_center.shape[1]
         self.S_f = self.fvm_geometry.S_f
         self.boundary_value = boundary_value
         self.boundary_type = boundary_type

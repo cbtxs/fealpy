@@ -130,7 +130,7 @@ class NSFVMSimpleModel(ComputationalModel, CollocatedSimpleSolver):
     def __str__(self) -> str:
         return (
             f"{self.__class__.__name__}:\n"
-            f"  Mesh shape: {self.mesh.number_of_cells()} cells\n"
+            f"  Mesh shape: {self.NC} cells\n"
             f"  PDE type: {type(self.pde).__name__}\n"
         )
 
@@ -141,12 +141,14 @@ class NSFVMSimpleModel(ComputationalModel, CollocatedSimpleSolver):
             self.pde.velocity,
             self.velocity,
             q=self.error_quadrature_order,
+            geometry=self.fvm_geometry,
         )
         pressure_error, self.exact_pressure = cell_average_l2_error(
             self.mesh,
             self.pde.pressure,
             self.pressure,
             q=self.error_quadrature_order,
+            geometry=self.fvm_geometry,
         )
         return tuple(velocity_error[i] for i in range(self.GD)) + (pressure_error,)
 
@@ -154,7 +156,7 @@ class NSFVMSimpleModel(ComputationalModel, CollocatedSimpleSolver):
         """Plot numerical and exact solution errors for u, v, and p."""
         import matplotlib.pyplot as plt
 
-        cell_centers = self.mesh.entity_barycenter("cell")
+        cell_centers = self.fvm_geometry.cell_center
         x, y = cell_centers[:, 0], cell_centers[:, 1]
 
         fig = plt.figure(figsize=(15, 10))

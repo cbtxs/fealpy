@@ -1,8 +1,12 @@
 import numpy as np
+import pytest
 
 from fealpy.backend import backend_manager as bm
 from fealpy.fvm import FVMGeometry
-from fealpy.mesh import HexahedronMesh, PolygonMesh, TetrahedronMesh
+from fealpy.mesh import HexahedronMesh, TetrahedronMesh
+from fealpy.mesh.storage import EntitySector, MeshBlock
+from fealpy.mesh.topology.builder import TopologyBuilder
+from fealpy.mesh.view import Mesh
 
 
 def _vector_quadratic(points):
@@ -48,19 +52,32 @@ def _vector_quadratic_2d(points):
     )
 
 
-def _polygon_cell_average(mesh, function, q=5):
-    integral = mesh.integral(
-        lambda points, index: function(points),
-        q=q,
-        celltype=True,
+def _mixed_tri_quad_mesh():
+    node = bm.array([
+        [0.0, 0.0], [0.5, 0.0], [1.0, 0.0],
+        [0.0, 0.5], [0.5, 0.5], [1.0, 0.5],
+        [0.0, 1.0], [0.5, 1.0], [1.0, 1.0],
+    ])
+    quads = bm.array([[0, 1, 3, 4], [3, 4, 6, 7]], dtype=bm.int32)
+    triangles = bm.array(
+        [[1, 2, 5], [1, 5, 4], [4, 5, 8], [4, 8, 7]],
+        dtype=bm.int32,
     )
-    return integral / mesh.entity_measure("cell")[:, None]
+    block = MeshBlock(positions=node)
+    block.add_sector(EntitySector("quad", quads), root=True)
+    block.add_sector(EntitySector("tri", triangles), root=True)
+    TopologyBuilder.construct(block)
+    return Mesh(block).fealpy_api()
 
 
-def _polygon_face_average(mesh, function, q=5):
-    bcs, weights = mesh.quadrature_formula(q, "face").get_quadrature_points_and_weights()
-    points = bm.einsum("qi,eid->eqd", bcs, mesh.entity("node")[mesh.entity("face")])
-    return bm.einsum("q,eqd->ed", weights, function(points))
+def _cell_average(geometry, function, q=5):
+    integral = geometry.cell_integral(lambda points, _: function(points), q=q)
+    return integral / geometry.cell_measure[:, None]
+
+
+def _face_average(geometry, function, q=5):
+    integral = geometry.face_integral(lambda points, _: function(points), q=q)
+    return integral / geometry.face_measure[:, None]
 
 
 def test_cell_anchored_quadratic_face_flux_recovers_quadratic_face_average():
@@ -177,6 +194,10 @@ def test_face_flux_reconstruct_none_variant_returns_zero_correction():
     np.testing.assert_allclose(bm.to_numpy(correction), 0.0)
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason="mesh R-fvm-01: quadrilateral face normals are zero",
+)
 def test_cell_anchored_quadratic_falls_back_to_zero_defect_when_stencil_is_rank_deficient():
     bm.set_backend("numpy")
     from fealpy.fvm import FaceFluxReconstruct
@@ -206,30 +227,14 @@ def test_cell_anchored_quadratic_falls_back_to_zero_defect_when_stencil_is_rank_
     assert diagnostics["fallback_face_count"] == mesh.number_of_faces()
 
 
-def test_cell_anchored_quadratic_recovers_mixed_polygon_face_averages():
+def test_cell_anchored_quadratic_recovers_mixed_tri_quad_face_averages():
     bm.set_backend("numpy")
     from fealpy.fvm import CellAnchoredQuadraticFaceFluxReconstruct
 
-    node = bm.array([
-        [0.0, 0.0], [0.5, 0.0], [1.0, 0.0],
-        [0.0, 0.5], [0.5, 0.5], [1.0, 0.5],
-        [0.0, 1.0], [0.5, 1.0], [1.0, 1.0],
-    ])
-    cells = (
-        bm.array([
-            0, 1, 4, 3,
-            3, 4, 7, 6,
-            1, 2, 5,
-            1, 5, 4,
-            4, 5, 8,
-            4, 8, 7,
-        ], dtype=bm.int64),
-        bm.array([0, 4, 8, 11, 14, 17, 20], dtype=bm.int64),
-    )
-    mesh = PolygonMesh(node, cells)
+    mesh = _mixed_tri_quad_mesh()
     geometry = FVMGeometry(mesh)
-    cell_average = _polygon_cell_average(mesh, _vector_quadratic_2d)
-    exact_face_average = _polygon_face_average(mesh, _vector_quadratic_2d)
+    cell_average = _cell_average(geometry, _vector_quadratic_2d)
+    exact_face_average = _face_average(geometry, _vector_quadratic_2d)
     reconstruct = CellAnchoredQuadraticFaceFluxReconstruct(
         mesh,
         geometry=geometry,

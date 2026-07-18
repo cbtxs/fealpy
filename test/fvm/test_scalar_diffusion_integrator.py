@@ -36,16 +36,13 @@ def test_scalar_diffusion_local_matrix_matches_orthogonal_flux_formula():
     mesh, space = _box_space(nx=2, ny=1)
     geometry = FVMGeometry(mesh)
     coef = np.linspace(0.8, 1.4, mesh.number_of_faces())
-    qf = mesh.quadrature_formula(2, "face")
-    bcs, _ = qf.get_quadrature_points_and_weights()
-    phi = space.basis(bcs)
     orthogonal_factor = geometry.diffusion_face_decomposition(
         "over_relaxed"
     ).orthogonal_factor
 
     local = scalar_diffusion_local_matrix(
         space,
-        phi,
+        space.number_of_local_dofs(),
         coef=coef,
         orthogonal_factor=orthogonal_factor,
     )
@@ -63,14 +60,10 @@ def test_scalar_diffusion_rejects_cell_wise_coefficient():
 
     mesh, space = _box_space(nx=2, ny=1)
     geometry = FVMGeometry(mesh)
-    qf = mesh.quadrature_formula(2, "face")
-    bcs, _ = qf.get_quadrature_points_and_weights()
-    phi = space.basis(bcs)
-
     with pytest.raises(ValueError, match="face-wise"):
         scalar_diffusion_local_matrix(
             space,
-            phi,
+            space.number_of_local_dofs(),
             coef=np.ones(mesh.number_of_cells()),
             orthogonal_factor=geometry.diffusion_face_decomposition(
                 "over_relaxed"

@@ -38,10 +38,10 @@ class RhieChowInterpolation:
         from .gradient_reconstruct import GradientReconstruct
 
         self.mesh = mesh
-        self.cm = self.mesh.entity_measure('cell')
-        self.NC = mesh.number_of_cells()
-        self.GD = mesh.geo_dimension()
         self.fvm_geometry = geometry if geometry is not None else FVMGeometry(mesh)
+        self.cm = self.fvm_geometry.cell_measure
+        self.NC = self.fvm_geometry.NC
+        self.GD = self.fvm_geometry.cell_center.shape[1]
         self.face_to_cell = self.fvm_geometry.face_to_cell
         self.velocity_interpolation = self._validate_velocity_interpolation(
             velocity_interpolation

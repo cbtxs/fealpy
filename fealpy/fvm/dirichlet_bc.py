@@ -41,7 +41,7 @@ class DirichletBC:
         self.mesh = mesh
         self.gd = gd
         self.threshold = threshold
-        self.geometry = geometry
+        self.geometry = geometry if geometry is not None else FVMGeometry(mesh)
         self.component = component
         self._static_boundary_patch = None
         if nonorthogonal_eps <= 0.0:
@@ -74,7 +74,7 @@ class DirichletBC:
 
     def system_components(self, b, A=None):
         """Return the number of component-major fields represented by ``b``."""
-        NC = self.mesh.number_of_cells()
+        NC = self.geometry.NC
         if A is not None and (A.shape[0] != A.shape[1] or A.shape[0] != b.shape[0]):
             raise ValueError("DirichletBC expects a square matrix matching the RHS size.")
         if b.shape[0] == NC:
@@ -85,7 +85,7 @@ class DirichletBC:
 
     def matrix_components(self, A):
         """Return the number of component-major fields represented by ``A``."""
-        NC = self.mesh.number_of_cells()
+        NC = self.geometry.NC
         if A.shape[0] != A.shape[1]:
             raise ValueError("DirichletBC expects a square matrix.")
         if A.shape[0] == NC:
@@ -133,7 +133,7 @@ class DirichletBC:
     @variantmethod("over_relaxed")
     def diffusion_boundary_data(self, coef=1.0, threshold=None, dtype=None):
         """Return owner cells, implicit coefficients, and points for Dirichlet faces."""
-        geometry = self.geometry if self.geometry is not None else FVMGeometry(self.mesh)
+        geometry = self.geometry
         decomposition = geometry.diffusion_face_decomposition("over_relaxed")
         return self._diffusion_boundary_data_from_factor(
             geometry,
@@ -145,7 +145,7 @@ class DirichletBC:
 
     @diffusion_boundary_data.register("bounded_over_relaxed")
     def diffusion_boundary_data(self, coef=1.0, threshold=None, dtype=None):
-        geometry = self.geometry if self.geometry is not None else FVMGeometry(self.mesh)
+        geometry = self.geometry
         decomposition = geometry.diffusion_face_decomposition(
             "bounded_over_relaxed", eps=self.nonorthogonal_eps
         )
@@ -159,7 +159,7 @@ class DirichletBC:
 
     @diffusion_boundary_data.register("uncorrected")
     def diffusion_boundary_data(self, coef=1.0, threshold=None, dtype=None):
-        geometry = self.geometry if self.geometry is not None else FVMGeometry(self.mesh)
+        geometry = self.geometry
         decomposition = geometry.diffusion_face_decomposition("uncorrected")
         return self._diffusion_boundary_data_from_factor(
             geometry,
@@ -185,7 +185,7 @@ class DirichletBC:
             coef = bm.array(coef)
             if coef.shape == ():
                 pass
-            elif coef.ndim == 1 and coef.shape[0] == self.mesh.number_of_faces():
+            elif coef.ndim == 1 and coef.shape[0] == geometry.NF:
                 coef = coef[boundary_faces]
             else:
                 raise ValueError("coef must be scalar or face-wise.")
@@ -196,7 +196,7 @@ class DirichletBC:
 
     def apply_diffusion_matrix(self, A, coef=1.0, threshold=None):
         """Add the implicit Dirichlet diffusion diagonal to ``A``."""
-        NC = self.mesh.number_of_cells()
+        NC = self.geometry.NC
         components = self.matrix_components(A)
         dtype = getattr(getattr(A, "values", None), "dtype", None)
         boundary_owner, boundary_integrator, _ = self.diffusion_boundary_data(
@@ -223,7 +223,7 @@ class DirichletBC:
 
     def apply_diffusion_rhs(self, b, coef=1.0, threshold=None):
         """Add the explicit Dirichlet diffusion RHS contribution to ``b``."""
-        NC = self.mesh.number_of_cells()
+        NC = self.geometry.NC
         components = self.system_components(b)
         boundary_owner, boundary_integrator, boundary_points = self.diffusion_boundary_data(
             coef=coef,
@@ -279,15 +279,15 @@ class DirichletBC:
             return b
 
         threshold = self.threshold if threshold is None else threshold
-        geometry = self.geometry if self.geometry is not None else FVMGeometry(self.mesh)
+        geometry = self.geometry
         boundary_faces, boundary_points = self.boundary_patch(geometry, threshold)
-        NC = self.mesh.number_of_cells()
+        NC = geometry.NC
         components = self.system_components(b)
         Sf = geometry.S_f[boundary_faces]
         coef = bm.array(coef)
-        if coef.ndim == 1 and coef.shape[0] == self.mesh.number_of_faces():
+        if coef.ndim == 1 and coef.shape[0] == geometry.NF:
             flux = coef[boundary_faces]
-        elif coef.ndim == 2 and coef.shape[0] == self.mesh.number_of_faces():
+        elif coef.ndim == 2 and coef.shape[0] == geometry.NF:
             flux = bm.einsum("ij,ij->i", coef[boundary_faces], Sf)
         else:
             raise ValueError("coef must be a face-wise scalar flux or vector face field.")

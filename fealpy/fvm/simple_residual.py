@@ -32,7 +32,7 @@ def _as_float(value):
         return float(value)
 
 
-def cell_l2_norm(mesh, value):
+def cell_l2_norm(mesh, value, geometry=None):
     """Return the cell-volume weighted L2 norm of a cell-centred field.
 
     For cell values ``q_K`` this computes
@@ -41,19 +41,20 @@ def cell_l2_norm(mesh, value):
 
     The result is a dimensional norm; no domain-volume normalization is applied.
     """
-    cell_measure = mesh.entity_measure("cell")
+    geometry = FVMGeometry(mesh) if geometry is None else geometry
+    cell_measure = geometry.cell_measure
     return _as_float(bm.sqrt(bm.sum(cell_measure * value**2)))
 
 
-def relative_l2_update(mesh, update, reference, floor=1.0):
+def relative_l2_update(mesh, update, reference, floor=1.0, geometry=None):
     """Return ``||update|| / (||reference|| + floor)`` for iteration control.
 
     The ``floor`` prevents a zero initial pressure or velocity field from
     turning the first relative update into a singular diagnostic.  It is part
     of the stopping criterion scale, not a numerical correction to the solve.
     """
-    update_norm = cell_l2_norm(mesh, update)
-    reference_norm = cell_l2_norm(mesh, reference)
+    update_norm = cell_l2_norm(mesh, update, geometry=geometry)
+    reference_norm = cell_l2_norm(mesh, reference, geometry=geometry)
     return update_norm / (reference_norm + floor)
 
 
@@ -149,7 +150,7 @@ def collocated_mass_metrics(mesh, face_velocity, geometry=None):
     geometry = geometry if geometry is not None else FVMGeometry(mesh)
     face_flux = bm.einsum("ij,ij->i", face_velocity, geometry.S_f)
     cell_flux_imbalance = geometry.scatter_face_flux_to_cells(face_flux)
-    cell_measure = mesh.entity_measure("cell")
+    cell_measure = geometry.cell_measure
     divergence_l2 = _as_float(
         bm.sqrt(bm.sum(cell_flux_imbalance**2 / cell_measure))
     )
@@ -212,13 +213,16 @@ def simple_iteration_residual(
     supplied, which is the residual used for stopping the current collocated
     SIMPLE loop.
     """
-    pressure_correction_l2 = cell_l2_norm(mesh, pressure_correction)
+    pressure_correction_l2 = cell_l2_norm(
+        mesh, pressure_correction, geometry=geometry
+    )
     residual = {}
     if record_pressure_correction_relative:
         residual["pressure_correction_relative"] = relative_l2_update(
             mesh,
             pressure_correction,
             pressure,
+            geometry=geometry,
         )
     if stopping_face_velocity is None:
         mass_metrics = collocated_mass_metrics(

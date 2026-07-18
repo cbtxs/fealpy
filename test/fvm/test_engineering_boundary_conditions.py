@@ -172,24 +172,12 @@ def test_boundary_face_velocity_average_integrates_quadratic_dirichlet_data():
     np.testing.assert_allclose(bm.to_numpy(average[:, 1]), 0.0)
 
 
-def test_boundary_face_velocity_average_supports_polygon_mesh():
+def test_boundary_face_velocity_average_supports_single_quadrangle():
     bm.set_backend("numpy")
     from fealpy.fvm import PDEBoundaryConditions
-    from fealpy.mesh import PolygonMesh
+    from fealpy.mesh import QuadrangleMesh
 
-    node = bm.array(
-        [
-            [0.0, 0.0],
-            [1.0, 0.0],
-            [1.0, 1.0],
-            [0.0, 1.0],
-        ]
-    )
-    cells = (
-        bm.array([0, 1, 2, 3], dtype=bm.int64),
-        bm.array([0, 4], dtype=bm.int64),
-    )
-    mesh = PolygonMesh(node, cells)
+    mesh = QuadrangleMesh.from_box([0.0, 1.0, 0.0, 1.0], nx=1, ny=1)
 
     def quadratic_velocity(points):
         x = points[..., 0]
@@ -205,6 +193,7 @@ def test_boundary_face_velocity_average_supports_polygon_mesh():
         mesh=mesh,
         quadrature_order=3,
     )
+    node = mesh.entity("node")
     edge = mesh.entity("face")[faces]
     x0 = node[edge[:, 0], 0]
     x1 = node[edge[:, 1], 0]
@@ -651,7 +640,7 @@ def test_rhie_chow_uses_engineering_dirichlet_pressure_boundary():
     normal_component = bm.einsum(
         "ij,ij->i",
         rhie_chow.pressure_gradient_difference(pressure)[outlet_faces],
-        model.mesh.edge_normal()[outlet_faces],
+        model.fvm_geometry.S_f[outlet_faces],
     )
 
     assert float(bm.max(bm.abs(normal_component))) > 1.0e-12
@@ -673,7 +662,7 @@ def test_simple_natural_velocity_outlet_adds_owner_convection_diagonal():
     )
     diag = bm.array(A.to_scipy().diagonal())
     outlet_faces = model.engineering_bc.patch_face_index("right")
-    outlet_owners = model.mesh.edge_to_cell()[outlet_faces, 0]
+    outlet_owners = model.fvm_geometry.owner[outlet_faces]
 
     assert float(bm.min(diag[outlet_owners])) > 0.0
     assert float(bm.min(diag[outlet_owners + model.NC])) > 0.0

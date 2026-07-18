@@ -66,7 +66,7 @@ class PoissonFVMModel(ComputationalModel):
         self.p = self.controls.space_degree
         self.space = ScaledMonomialSpace(self.mesh, self.p)
         self.fvm_geometry = FVMGeometry(self.mesh)
-        self.cell_measure = self.mesh.entity_measure("cell")
+        self.cell_measure = self.fvm_geometry.cell_measure
         self.gradient = GradientReconstruct(
             self.mesh,
             method=self.controls.gradient_method,
@@ -104,7 +104,7 @@ class PoissonFVMModel(ComputationalModel):
     def __str__(self) -> str:
         return (
             f"{self.__class__.__name__}:\n"
-            f"  Mesh: {self.mesh.number_of_cells()} cells\n"
+            f"  Mesh: {self.fvm_geometry.NC} cells\n"
             f"  Space degree: {self.p}\n"
             f"  PDE type: {type(self.pde).__name__}\n"
         )
@@ -122,7 +122,13 @@ class PoissonFVMModel(ComputationalModel):
         )
         matrix = bform.assembly()
         lform = LinearForm(self.space)
-        lform.add_integrator(ScalarSourceIntegrator(self.pde.source, q=2))
+        lform.add_integrator(
+            ScalarSourceIntegrator(
+                self.pde.source,
+                q=2,
+                geometry=self.fvm_geometry,
+            )
+        )
         rhs = lform.assembly()
         boundary = DirichletBC(
             self.mesh,
@@ -247,6 +253,7 @@ class PoissonFVMModel(ComputationalModel):
             self.pde.solution,
             self.solution,
             q=self.error_quadrature_order,
+            geometry=self.fvm_geometry,
         )
         return self.error
 

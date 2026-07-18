@@ -41,7 +41,6 @@ def apply_boundary_flux_constraint(flux, boundary_faces, boundary_velocity, face
 
 
 def _dirichlet_face_average(
-    mesh,
     geometry,
     value,
     threshold,
@@ -62,23 +61,22 @@ def _dirichlet_face_average(
     else:
         flag = boundary_face_flag(centers, threshold)
     selected_faces = boundary_faces[flag]
-    quadrature = mesh.quadrature_formula(quadrature_order, "face")
-    bcs, weights = quadrature.get_quadrature_points_and_weights()
-    if hasattr(mesh, "bc_to_point"):
-        points = mesh.bc_to_point(bcs)[selected_faces]
-    elif geometry.cell_center.shape[1] == 2 and hasattr(mesh, "edge_bc_to_point"):
-        points = mesh.edge_bc_to_point(bcs, index=selected_faces)
-    else:
-        raise TypeError(
-            f"{type(mesh).__name__} cannot map face quadrature points "
-            "to physical coordinates."
-        )
-    flat_points = bm.reshape(points, (-1, points.shape[-1]))
-    values = bm.array(value(flat_points), dtype=points.dtype)
-    if values.ndim == 1:
-        values = bm.broadcast_to(values, flat_points.shape)
-    values = bm.reshape(values, points.shape)
-    average = bm.einsum("q,fqd->fd", weights, values)
+    def integrand(points, _face_slice):
+        flat_points = bm.reshape(points, (-1, points.shape[-1]))
+        values = bm.array(value(flat_points), dtype=points.dtype)
+        if values.shape == (points.shape[-1],):
+            values = bm.broadcast_to(values, flat_points.shape)
+        elif values.shape == (flat_points.shape[0],):
+            values = bm.broadcast_to(values[:, None], flat_points.shape)
+        elif values.shape != flat_points.shape:
+            raise ValueError(
+                "velocity Dirichlet data must evaluate to a vector at each "
+                f"quadrature point; got shape {values.shape}."
+            )
+        return bm.reshape(values, points.shape)
+
+    integral = geometry.face_integral(integrand, q=quadrature_order)
+    average = integral[selected_faces] / geometry.face_measure[selected_faces, None]
     return selected_faces, average
 
 
@@ -247,7 +245,6 @@ class PDEBoundaryConditions:
         if mesh is not None and mesh is not self.mesh:
             raise ValueError("mesh-bound boundary conditions require their original mesh.")
         return _dirichlet_face_average(
-            self.mesh,
             self.geometry,
             self.dirichlet_velocity,
             self.dirichlet_velocity_threshold,

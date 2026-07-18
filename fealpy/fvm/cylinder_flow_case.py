@@ -404,11 +404,14 @@ class CylinderFlowCase:
         min_angle = angles.min(axis=1)
         max_angle = angles.max(axis=1)
         nonorthogonal = self._nonorthogonal_angles(mesh)
-        boundary_counts, unclassified, multi_classified = self._boundary_counts(mesh)
+        geometry = FVMGeometry(mesh)
+        boundary_counts, unclassified, multi_classified = self._boundary_counts(
+            geometry
+        )
         quality = CylinderMeshQuality(
-            number_of_cells=int(mesh.number_of_cells()),
-            number_of_faces=int(mesh.number_of_faces()),
-            number_of_boundary_faces=int(mesh.boundary_face_index().shape[0]),
+            number_of_cells=geometry.NC,
+            number_of_faces=geometry.NF,
+            number_of_boundary_faces=int(bm.sum(geometry.is_boundary)),
             min_cell_angle=float(min_angle.min()),
             max_cell_angle=float(max_angle.max()),
             mean_cell_angle=float(angles.mean()),
@@ -448,9 +451,9 @@ class CylinderFlowCase:
         )
         return np.degrees(np.arccos(np.clip(np.abs(cosine), 0.0, 1.0)))
 
-    def _boundary_counts(self, mesh):
-        boundary_faces = mesh.boundary_face_index()
-        face_centers = mesh.entity_barycenter("face")[boundary_faces]
+    def _boundary_counts(self, geometry):
+        boundary_faces = bm.nonzero(geometry.is_boundary)[0]
+        face_centers = geometry.face_center[boundary_faces]
         flags = {
             "inlet": np.asarray(bm.to_numpy(self.is_inlet_boundary(face_centers))),
             "outlet": np.asarray(bm.to_numpy(self.is_outlet_boundary(face_centers))),

@@ -63,10 +63,6 @@ class CollocatedPisoSolver(CollocatedNSFVMComponents):
         self.convection_coef = positive_scalar(convection_coef, "convection_coef")
         self.source = source
         self.mesh = mesh
-        self.cm = self.mesh.entity_measure("cell")
-        self.cell_center = self.mesh.entity_barycenter("cell")
-        self.face_center = self.mesh.entity_barycenter("face")
-        self.NC = self.mesh.number_of_cells()
         if not isinstance(boundary_conditions, PDEBoundaryConditions):
             raise TypeError(
                 "boundary_conditions must be PDEBoundaryConditions; convert "
@@ -129,7 +125,7 @@ class CollocatedPisoSolver(CollocatedNSFVMComponents):
     def __str__(self) -> str:
         return (
             f"{self.__class__.__name__}:\n"
-            f"  Mesh shape: {self.mesh.number_of_cells()} cells\n"
+            f"  Mesh shape: {self.NC} cells\n"
             f"  Time steps: {self.controls.nt}\n"
             f"  PISO correctors: {self.controls.n_correctors}\n"
             f"  Momentum nonorthogonal corrections: "
@@ -156,6 +152,7 @@ class CollocatedPisoSolver(CollocatedNSFVMComponents):
             dirichlet_pressure=self.dirichlet_pressure_value,
             dirichlet_pressure_threshold=self.dirichlet_pressure_threshold,
             with_dirichlet_velocity_bc=True,
+            geometry=self.boundary_conditions.geometry,
         )
         self.pressure_state_bc = None
         if (
@@ -262,7 +259,7 @@ class CollocatedPisoSolver(CollocatedNSFVMComponents):
         if max_iter < 0:
             raise ValueError("pressure_nonorthogonal_max_iter must be non-negative.")
 
-        explicit_cross_flux = bm.zeros(self.mesh.number_of_faces(), dtype=rhs.dtype)
+        explicit_cross_flux = bm.zeros(self.NF, dtype=rhs.dtype)
         cross_rhs = bm.zeros_like(rhs)
         has_dirichlet_pressure = (
             self.dirichlet_pressure_value is not None
@@ -448,7 +445,7 @@ class CollocatedPisoSolver(CollocatedNSFVMComponents):
             or previous_cell_velocity is None
             or previous_face_velocity is None
         ):
-            return bm.zeros(self.mesh.number_of_faces(), dtype=self.cm.dtype)
+            return bm.zeros(self.NF, dtype=self.cm.dtype)
 
         previous_face_flux = self.compute_face_flux(previous_face_velocity)
         previous_cell_flux = self.compute_face_flux(

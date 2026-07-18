@@ -74,8 +74,6 @@ class CollocatedSimpleSolver(CollocatedNSFVMComponents):
         self.convection_coef = nonnegative_scalar(convection_coef, "convection_coef")
         self.source = source
         self.mesh = mesh
-        self.cm = self.mesh.entity_measure("cell")
-        self.NC = self.mesh.number_of_cells()
         if not isinstance(boundary_conditions, PDEBoundaryConditions):
             raise TypeError(
                 "boundary_conditions must be PDEBoundaryConditions; convert "
@@ -123,6 +121,7 @@ class CollocatedSimpleSolver(CollocatedNSFVMComponents):
             dirichlet_pressure=self.dirichlet_pressure_data,
             dirichlet_pressure_threshold=self.dirichlet_pressure_threshold,
             with_dirichlet_velocity_bc=True,
+            geometry=self.boundary_conditions.geometry,
         )
         self.pressure_correction_bc = None
         self.pressure_correction_gradient = self.pressure_gradient
@@ -463,7 +462,7 @@ class CollocatedSimpleSolver(CollocatedNSFVMComponents):
         )
         field_dtype = self.cm.dtype
         p = bm.zeros(self.NC, dtype=field_dtype)
-        uf = bm.zeros((self.mesh.number_of_faces(), self.GD), dtype=field_dtype)
+        uf = bm.zeros((self.NF, self.GD), dtype=field_dtype)
         u = bm.zeros((self.NC, self.GD), dtype=field_dtype)
         pressure_gradient = self.pressure_gradient.cell_gradient(p)
         predictor = self.temporary_velocity(

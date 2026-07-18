@@ -10,6 +10,7 @@ class ShiftedOperatorGeometry:
         from fealpy.fvm.fvm_geometry import FVMGeometry
 
         real = FVMGeometry(mesh, index=index)
+        self._real = real
         is_boundary = np.asarray(real.is_boundary)
 
         face_center = np.asarray(real.face_center).copy()
@@ -41,6 +42,9 @@ class ShiftedOperatorGeometry:
             self.boundary_owner_to_face_vector,
             self.n_f[self.is_boundary],
         )
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
 
     def linear_owner_weight(self):
         return bm.where(

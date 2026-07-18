@@ -218,7 +218,7 @@ class CavitySnapshotWriter:
     ) -> None:
         speed = bm.linalg.norm(cell_velocity, axis=1)
         vortex = primary_vortex_summary(
-            model.mesh.entity_barycenter("cell"),
+            model.fvm_geometry.cell_center,
             cell_velocity,
             domain=self.domain,
             boundary_margin=self.boundary_margin,
@@ -285,7 +285,7 @@ def write_benchmark_outputs(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    points = model.mesh.entity_barycenter("cell")
+    points = model.fvm_geometry.cell_center
     u_profile, v_profile = centerline_velocity_profiles(points, model.velocity)
     vortex = primary_vortex_summary(
         points,

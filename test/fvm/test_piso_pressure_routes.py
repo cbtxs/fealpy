@@ -34,6 +34,14 @@ def test_piso_model_uses_recommended_default_linear_policy():
     assert model.pressure_nullspace_linear_solver == "petsc_gmres_hypre"
 
 
+def test_piso_solver_reuses_boundary_geometry():
+    from fealpy.fvm import NSFVMPISOModel
+
+    model = NSFVMPISOModel(_model_options(nx=2, ny=2, nt=1))
+
+    assert model.fvm_geometry is model.boundary_conditions.geometry
+
+
 def test_piso_pressure_state_boundary_inherits_diffusion_configuration():
     from fealpy.backend import backend_manager as bm
     from fealpy.fvm import NSFVMPISOModel
@@ -438,10 +446,11 @@ def test_piso_zero_momentum_nonorthogonal_still_solves_base_equation(monkeypatch
 
 def test_piso_pressure_nonorthogonal_stops_on_complete_residual():
     from fealpy.backend import backend_manager as bm
-    from fealpy.fvm import NSFVMPISOModel
+    from fealpy.fvm import FVMLinearSolverConfig, NSFVMPISOModel
 
     options = _model_options(nx=2, ny=2, nt=1)
     options["pressure_nonorthogonal_max_iter"] = 2
+    options["linear_solver_config"] = FVMLinearSolverConfig(solver="scipy")
     model = NSFVMPISOModel(options)
     nc = model.NC
 

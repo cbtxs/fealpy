@@ -120,6 +120,7 @@ def test_simple_fixed_point_ignores_pressure_correction_size():
 
 class OneBoundaryFaceGeometry:
     S_f = bm.array([[1.0, 0.0]])
+    cell_measure = bm.array([4.0])
     is_internal = bm.array([False])
     owner = bm.array([0], dtype=bm.int32)
     neighbour = bm.array([0], dtype=bm.int32)

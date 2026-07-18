@@ -52,8 +52,8 @@ def test_simple_iteration_mass_uses_pressure_corrected_face_velocity(monkeypatch
         }
 
     monkeypatch.setattr(simple_residual, "collocated_mass_metrics", fake_mass_metrics)
-    monkeypatch.setattr(simple_residual, "cell_l2_norm", lambda mesh, value: 0.0)
-    monkeypatch.setattr(simple_residual, "relative_l2_update", lambda mesh, update, p: 0.0)
+    monkeypatch.setattr(simple_residual, "cell_l2_norm", lambda mesh, value, **kwargs: 0.0)
+    monkeypatch.setattr(simple_residual, "relative_l2_update", lambda mesh, update, p, **kwargs: 0.0)
 
     residual = simple_iteration_residual(
         None,
@@ -94,8 +94,8 @@ def test_simple_iteration_mass_skips_raw_face_velocity_by_default(monkeypatch):
         }
 
     monkeypatch.setattr(simple_residual, "collocated_mass_metrics", fake_mass_metrics)
-    monkeypatch.setattr(simple_residual, "cell_l2_norm", lambda mesh, value: 0.0)
-    monkeypatch.setattr(simple_residual, "relative_l2_update", lambda mesh, update, p: 0.0)
+    monkeypatch.setattr(simple_residual, "cell_l2_norm", lambda mesh, value, **kwargs: 0.0)
+    monkeypatch.setattr(simple_residual, "relative_l2_update", lambda mesh, update, p, **kwargs: 0.0)
 
     residual = simple_iteration_residual(
         None,
@@ -128,8 +128,8 @@ def test_simple_iteration_pressure_criterion_uses_pressure_correction_l2(monkeyp
                 "absolute_linf": 0.0,
         },
     )
-    monkeypatch.setattr(simple_residual, "cell_l2_norm", lambda mesh, value: 2.5)
-    monkeypatch.setattr(simple_residual, "relative_l2_update", lambda mesh, update, p: 1.0e-8)
+    monkeypatch.setattr(simple_residual, "cell_l2_norm", lambda mesh, value, **kwargs: 2.5)
+    monkeypatch.setattr(simple_residual, "relative_l2_update", lambda mesh, update, p, **kwargs: 1.0e-8)
 
     residual = simple_iteration_residual(
         None,
@@ -161,8 +161,8 @@ def test_simple_iteration_can_record_relative_pressure_correction(monkeypatch):
                 "absolute_linf": 0.0,
         },
     )
-    monkeypatch.setattr(simple_residual, "cell_l2_norm", lambda mesh, value: 2.5)
-    monkeypatch.setattr(simple_residual, "relative_l2_update", lambda mesh, update, p: 1.0e-8)
+    monkeypatch.setattr(simple_residual, "cell_l2_norm", lambda mesh, value, **kwargs: 2.5)
+    monkeypatch.setattr(simple_residual, "relative_l2_update", lambda mesh, update, p, **kwargs: 1.0e-8)
 
     residual = simple_iteration_residual(
         None,

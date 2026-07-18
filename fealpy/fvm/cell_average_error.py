@@ -32,8 +32,10 @@ shows the expected second-order convergence.
 from fealpy.backend import backend_manager as bm
 from fealpy.typing import TensorLike
 
+from .fvm_geometry import FVMGeometry
 
-def cell_average(mesh, func, *, q: int = 4) -> TensorLike:
+
+def cell_average(mesh, func, *, q: int = 4, geometry=None) -> TensorLike:
     r"""Return the control-volume average of an exact function.
 
     Finite-volume unknowns represent cell averages.  For an exact function
@@ -44,14 +46,24 @@ def cell_average(mesh, func, *, q: int = 4) -> TensorLike:
 
     on every cell ``K``.
     """
-    integral = mesh.integral(func, q=q, celltype=True)
-    cell_measure = mesh.entity_measure("cell")
+    geometry = FVMGeometry(mesh) if geometry is None else geometry
+    integral = geometry.cell_integral(
+        lambda points, _: func(points), q=q
+    )
+    cell_measure = geometry.cell_measure
     if integral.ndim == 1:
         return integral / cell_measure
     return integral / cell_measure.reshape((cell_measure.shape[0],) + (1,) * (integral.ndim - 1))
 
 
-def cell_average_l2_error(mesh, func, numerical: TensorLike, *, q: int = 4):
+def cell_average_l2_error(
+    mesh,
+    func,
+    numerical: TensorLike,
+    *,
+    q: int = 4,
+    geometry=None,
+):
     r"""Return the discrete L2 error against exact control-volume averages.
 
     ``mesh.error(func, numerical)`` is not used here because it measures the
@@ -62,8 +74,9 @@ def cell_average_l2_error(mesh, func, numerical: TensorLike, *, q: int = 4):
     the error quantity used to observe second-order convergence of the
     cell-average solution.
     """
-    average = cell_average(mesh, func, q=q)
-    cell_measure = mesh.entity_measure("cell")
+    geometry = FVMGeometry(mesh) if geometry is None else geometry
+    average = cell_average(mesh, func, q=q, geometry=geometry)
+    cell_measure = geometry.cell_measure
     diff = numerical - average
     if diff.ndim == 1:
         error = bm.sqrt(bm.sum(cell_measure * diff**2))

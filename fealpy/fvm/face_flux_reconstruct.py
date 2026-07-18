@@ -63,7 +63,7 @@ class CellAnchoredQuadraticFaceFluxReconstruct:
             raise ValueError("rank_tolerance must lie in (0, 1).")
         self.mesh = mesh
         self.geometry = geometry if geometry is not None else FVMGeometry(mesh)
-        self.GD = mesh.geo_dimension()
+        self.GD = self.geometry.cell_center.shape[1]
         self.quadrature_order = int(quadrature_order)
         self.max_stencil_layers = int(max_stencil_layers)
         self.rank_tolerance = float(rank_tolerance)
@@ -75,36 +75,23 @@ class CellAnchoredQuadraticFaceFluxReconstruct:
         return np.asarray(bm.to_numpy(value))
 
     def _central_second_moment(self, entity, center):
-        if not hasattr(self.mesh, "bc_to_point"):
-            if entity == "cell" and hasattr(self.mesh, "integral"):
-                def second_moment(points, index):
-                    delta = points - center[index][:, None, :]
-                    return bm.einsum("...i,...j->...ij", delta, delta)
+        def second_moment(points, entity_slice):
+            delta = points - center[entity_slice][:, None, :]
+            return bm.einsum("...i,...j->...ij", delta, delta)
 
-                integral = self.mesh.integral(
-                    second_moment,
-                    q=self.quadrature_order,
-                    celltype=True,
-                )
-                measure = self.mesh.entity_measure("cell")
-                return integral / measure[:, None, None]
-            if entity == "face" and self.GD == 2:
-                edge = self.mesh.entity("face")
-                node = self.mesh.entity("node")
-                tangent = node[edge[:, 1]] - node[edge[:, 0]]
-                return bm.einsum("ei,ej->eij", tangent, tangent) / 12.0
-            raise TypeError(
-                f"{type(self.mesh).__name__} cannot provide {entity} moments."
+        if entity == "cell":
+            integral = self.geometry.cell_integral(
+                second_moment, q=self.quadrature_order
             )
-
-        quadrature = self.mesh.quadrature_formula(
-            self.quadrature_order,
-            entity,
-        )
-        bcs, weights = quadrature.get_quadrature_points_and_weights()
-        points = self.mesh.bc_to_point(bcs)
-        delta = points - center[:, None, :]
-        return bm.einsum("q,eqi,eqj->eij", weights, delta, delta)
+            measure = self.geometry.cell_measure
+        elif entity == "face":
+            integral = self.geometry.face_integral(
+                second_moment, q=self.quadrature_order
+            )
+            measure = self.geometry.face_measure
+        else:
+            raise ValueError("entity must be 'cell' or 'face'.")
+        return integral / measure[:, None, None]
 
     def _feature(self, displacement, moment_difference, scale):
         scale = np.asarray(scale, dtype=float)
@@ -121,7 +108,7 @@ class CellAnchoredQuadraticFaceFluxReconstruct:
         return np.stack(columns, axis=-1)
 
     def _cell_adjacency(self):
-        nc = self.mesh.number_of_cells()
+        nc = self.geometry.NC
         adjacency = [set() for _ in range(nc)]
         owner = self._as_numpy(self.geometry.owner).astype(np.int64)
         neighbour = self._as_numpy(self.geometry.neighbour).astype(np.int64)
@@ -209,7 +196,7 @@ class CellAnchoredQuadraticFaceFluxReconstruct:
         cell_moment = self._as_numpy(cell_moment_tensor)
         face_moment = self._as_numpy(face_moment_tensor)
         adjacency = self._cell_adjacency()
-        nc = self.mesh.number_of_cells()
+        nc = self.geometry.NC
         records = [
             self._cell_stencil(cell, adjacency, cell_center, cell_moment)
             for cell in range(nc)
@@ -289,7 +276,7 @@ class CellAnchoredQuadraticFaceFluxReconstruct:
         boundary_faces=None,
     ):
         """Return one vector area average per face."""
-        expected = (self.mesh.number_of_cells(), self.GD)
+        expected = (self.geometry.NC, self.GD)
         if cell_velocity.ndim != 2 or cell_velocity.shape != expected:
             raise ValueError("cell_velocity must have shape (NC, GD).")
         coefficients = self._coefficients(cell_velocity)

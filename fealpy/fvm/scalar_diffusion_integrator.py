@@ -15,6 +15,13 @@ from fealpy.sparse import CSRTensor
 from .fvm_geometry import FVMGeometry
 
 
+def _local_dof_count(space: _FS) -> int:
+    scalar_space = getattr(space, "scalar_space", None)
+    if scalar_space is None:
+        return int(space.number_of_local_dofs())
+    return int(space.dof_numel * scalar_space.number_of_local_dofs())
+
+
 class ScalarDiffusionIntegrator(LinearInt, OpInt, FaceInt):
     """Assemble the implicit two-point diffusion contribution.
 
@@ -69,32 +76,28 @@ class ScalarDiffusionIntegrator(LinearInt, OpInt, FaceInt):
         index = self.index
         mesh = getattr(space, 'mesh', None)
         geometry = self.geometry if self.geometry is not None else FVMGeometry(mesh, index=index)
-        q = self.q
-        qf = mesh.quadrature_formula(q, 'face')
-        bcs, ws = qf.get_quadrature_points_and_weights()
-        basis = space.basis(bcs, index=index)
-        return geometry, index, bcs, basis
+        return geometry
 
     @variantmethod("over_relaxed")
     def assembly(self, space: _FS) -> TensorLike:
-        geometry, _, _, basis = self.fetch(space)
+        geometry = self.fetch(space)
         decomposition = geometry.diffusion_face_decomposition("over_relaxed")
         return scalar_diffusion_local_matrix(
             space,
-            basis,
+            _local_dof_count(space),
             coef=self.coef,
             orthogonal_factor=decomposition.orthogonal_factor,
         )
 
     @assembly.register("bounded_over_relaxed")
     def assembly(self, space: _FS) -> TensorLike:
-        geometry, _, _, basis = self.fetch(space)
+        geometry = self.fetch(space)
         decomposition = geometry.diffusion_face_decomposition(
             "bounded_over_relaxed", eps=self.nonorthogonal_eps
         )
         return scalar_diffusion_local_matrix(
             space,
-            basis,
+            _local_dof_count(space),
             coef=self.coef,
             orthogonal_factor=decomposition.orthogonal_factor,
         )
@@ -105,7 +108,7 @@ class ScalarDiffusionIntegrator(LinearInt, OpInt, FaceInt):
 
 def scalar_diffusion_local_matrix(
     space: _FS,
-    basis: TensorLike,
+    local_dofs: int,
     *,
     coef: Optional[CoefLike]=None,
     orthogonal_factor: TensorLike,
@@ -120,7 +123,7 @@ def scalar_diffusion_local_matrix(
     implicit matrix uses exactly the same face split as the explicit and
     boundary diffusion terms.
     """
-    D = basis.shape[-1]
+    D = int(local_dofs)
     if coef is None:
         face_coef = bm.ones_like(orthogonal_factor, dtype=space.ftype)
     elif isinstance(coef, (int, float)):
@@ -176,7 +179,7 @@ class ScalarDiffusionMatrixAssembler:
         self.space = space
         self.mesh = getattr(space, "mesh", None)
         self.geometry = geometry if geometry is not None else FVMGeometry(self.mesh)
-        self.NC = self.mesh.number_of_cells()
+        self.NC = self.geometry.NC
         self.sparse_shape = (self.NC, self.NC)
         if nonorthogonal_eps <= 0.0:
             raise ValueError("nonorthogonal_eps must be positive.")

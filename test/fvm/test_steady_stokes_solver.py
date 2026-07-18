@@ -9,6 +9,13 @@ from fealpy.fvm import (
     SimpleSolverControls,
     StokesFVMSimpleModel,
 )
+from fealpy.model.navier_stokes.exp0012 import Exp0012
+
+
+class ThreeDimensionalStokesMMS(Exp0012):
+    @cartesian
+    def source(self, points):
+        return -self.viscosity() * self.lap_velocity(points) + self.grad_pressure(points)
 
 
 def _solve_stokes_model(*, momentum_relaxation=0.7, pressure_relaxation=0.3):
@@ -17,7 +24,8 @@ def _solve_stokes_model(*, momentum_relaxation=0.7, pressure_relaxation=0.3):
             "pde": 1,
             "nx": 2,
             "ny": 2,
-            "linear_solver": "scipy",
+            "linear_solver_config": FVMLinearSolverConfig(solver="scipy"),
+            "pressure_constraint": "gauge",
             "momentum_equation_relaxation": momentum_relaxation,
             "log_level": "ERROR",
             "pbar_log": False,
@@ -76,12 +84,12 @@ def test_stokes_fixed_point_is_independent_of_relaxation_parameters():
     )
 
 
-def test_collocated_stokes_runs_on_three_dimensional_hexahedra():
+def test_collocated_stokes_runs_on_three_dimensional_tetrahedra():
     from fealpy.model.navier_stokes.exp0012 import Exp0012
 
     bm.set_backend("numpy")
     pde = Exp0012({"mu": 1.0})
-    mesh = pde.init_mesh["uniform_hex"](nx=2, ny=2, nz=2)
+    mesh = pde.init_mesh["uniform_tet"](nx=2, ny=2, nz=2)
     viscosity = float(bm.to_numpy(pde.viscosity()))
 
     @cartesian
@@ -98,7 +106,7 @@ def test_collocated_stokes_runs_on_three_dimensional_hexahedra():
             dirichlet_velocity=pde.dirichlet_velocity,
         ),
         controls=SimpleSolverControls(
-            pressure_constraint="nullspace",
+            pressure_constraint="gauge",
             rhie_chow_velocity_scheme="second_order_reconstructed",
         ),
         linear_solver_config=FVMLinearSolverConfig(solver="scipy"),
@@ -113,3 +121,23 @@ def test_collocated_stokes_runs_on_three_dimensional_hexahedra():
     assert pressure.shape == (mesh.number_of_cells(),)
     assert bool(bm.all(bm.isfinite(velocity)))
     assert bool(bm.all(bm.isfinite(pressure)))
+
+
+def test_stokes_model_forwards_three_dimensional_mesh_parameters():
+    bm.set_backend("numpy")
+    model = StokesFVMSimpleModel(
+        {
+            "pde": ThreeDimensionalStokesMMS({"mu": 1.0}),
+            "mesh_type": "uniform_tet",
+            "nx": 2,
+            "ny": 2,
+            "nz": 3,
+            "pressure_constraint": "gauge",
+            "linear_solver_config": FVMLinearSolverConfig(solver="scipy"),
+            "log_level": "ERROR",
+            "pbar_log": False,
+        }
+    )
+
+    assert model.GD == 3
+    assert model.NC == 72

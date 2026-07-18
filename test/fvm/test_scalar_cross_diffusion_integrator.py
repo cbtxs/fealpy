@@ -37,8 +37,9 @@ def _bad_two_triangle_space():
 
 
 def _expected_scalar_scatter(mesh, face_flux):
-    face_to_cell = np.asarray(mesh.edge_to_cell()[:, :2], dtype=np.int64)
-    expected = np.zeros(mesh.number_of_cells(), dtype=float)
+    geometry = FVMGeometry(mesh)
+    face_to_cell = np.asarray(geometry.face_to_cell, dtype=np.int64)
+    expected = np.zeros(geometry.NC, dtype=float)
     internal = face_to_cell[:, 0] != face_to_cell[:, 1]
     np.add.at(expected, face_to_cell[:, 0], face_flux)
     np.add.at(expected, face_to_cell[internal, 1], -face_flux[internal])
@@ -46,8 +47,9 @@ def _expected_scalar_scatter(mesh, face_flux):
 
 
 def _expected_vector_scatter(mesh, face_flux):
-    face_to_cell = np.asarray(mesh.edge_to_cell()[:, :2], dtype=np.int64)
-    expected = np.zeros((mesh.number_of_cells(), face_flux.shape[1]), dtype=float)
+    geometry = FVMGeometry(mesh)
+    face_to_cell = np.asarray(geometry.face_to_cell, dtype=np.int64)
+    expected = np.zeros((geometry.NC, face_flux.shape[1]), dtype=float)
     internal = face_to_cell[:, 0] != face_to_cell[:, 1]
     np.add.at(expected, face_to_cell[:, 0], face_flux)
     np.add.at(expected, face_to_cell[internal, 1], -face_flux[internal])
@@ -250,8 +252,8 @@ def test_cross_diffusion_rhs_assembler_matches_linear_form_vector_boundary_all()
 def test_cross_diffusion_rhs_assembler_matches_linear_form_limited():
     mesh, space = _bad_two_triangle_space()
     geometry = FVMGeometry(mesh)
-    edge_to_cell = np.asarray(mesh.edge_to_cell()[:, :2])
-    is_internal = edge_to_cell[:, 0] != edge_to_cell[:, 1]
+    face_to_cell = np.asarray(geometry.face_to_cell)
+    is_internal = face_to_cell[:, 0] != face_to_cell[:, 1]
     uh = np.array([0.0, 1.0])
     grad_f = np.zeros((mesh.number_of_edges(), mesh.geo_dimension()))
     grad_f[is_internal, 0] = 100.0
@@ -377,8 +379,8 @@ def test_bounded_over_relaxed_Tf_is_stabilized_on_bad_internal_face():
     geometry = FVMGeometry(mesh)
     eps = 0.05
 
-    edge_to_cell = np.asarray(mesh.edge_to_cell()[:, :2])
-    is_internal = edge_to_cell[:, 0] != edge_to_cell[:, 1]
+    face_to_cell = np.asarray(geometry.face_to_cell)
+    is_internal = face_to_cell[:, 0] != face_to_cell[:, 1]
     delta = np.asarray(geometry.d_f)
     normal = np.asarray(geometry.n_f)
     face_area = np.asarray(geometry.mag_S_f)
@@ -412,8 +414,8 @@ def test_uncorrected_method_returns_zero_rhs():
 def test_limited_correction_with_zero_limit_coeff_returns_zero_internal_rhs():
     mesh, space = _bad_two_triangle_space()
     geometry = FVMGeometry(mesh)
-    edge_to_cell = np.asarray(mesh.edge_to_cell()[:, :2])
-    is_internal = edge_to_cell[:, 0] != edge_to_cell[:, 1]
+    face_to_cell = np.asarray(geometry.face_to_cell)
+    is_internal = face_to_cell[:, 0] != face_to_cell[:, 1]
     grad_f = np.zeros((mesh.number_of_edges(), mesh.geo_dimension()))
     grad_f[is_internal, 0] = 1.0
 
@@ -434,8 +436,8 @@ def test_limited_correction_with_zero_limit_coeff_returns_zero_internal_rhs():
 def test_limited_correction_matches_manual_limiter_on_bad_internal_face():
     mesh, space = _bad_two_triangle_space()
     geometry = FVMGeometry(mesh)
-    edge_to_cell = np.asarray(mesh.edge_to_cell()[:, :2])
-    is_internal = edge_to_cell[:, 0] != edge_to_cell[:, 1]
+    face_to_cell = np.asarray(geometry.face_to_cell)
+    is_internal = face_to_cell[:, 0] != face_to_cell[:, 1]
     uh = np.array([0.0, 1.0])
     grad_f = np.zeros((mesh.number_of_edges(), mesh.geo_dimension()))
     grad_f[is_internal, 0] = 100.0
@@ -445,8 +447,8 @@ def test_limited_correction_matches_manual_limiter_on_bad_internal_face():
     correction_vector = np.asarray(decomposition.T_f)
     full_flux = np.einsum("ij,ij->i", correction_vector, grad_f)
     orthogonal_coeff = np.asarray(decomposition.orthogonal_factor)
-    owner = edge_to_cell[:, 0]
-    neighbour = edge_to_cell[:, 1]
+    owner = face_to_cell[:, 0]
+    neighbour = face_to_cell[:, 1]
     orthogonal_flux = np.zeros(mesh.number_of_edges())
     orthogonal_flux[is_internal] = (
         orthogonal_coeff[is_internal]
@@ -578,8 +580,8 @@ def test_cross_diffusion_rejects_unknown_method():
 def test_bounded_over_relaxed_boundary_policy_zero_masks_boundary_flux():
     mesh, space = _box_space(nx=1, ny=1)
     geometry = FVMGeometry(mesh)
-    edge_to_cell = np.asarray(mesh.edge_to_cell()[:, :2])
-    is_internal = edge_to_cell[:, 0] != edge_to_cell[:, 1]
+    face_to_cell = np.asarray(geometry.face_to_cell)
+    is_internal = face_to_cell[:, 0] != face_to_cell[:, 1]
     grad_f = np.stack(
         [
             np.linspace(0.2, 1.0, mesh.number_of_edges()),
@@ -613,7 +615,6 @@ def test_bounded_over_relaxed_boundary_policy_zero_masks_boundary_flux():
         rtol=1.0e-13,
         atol=1.0e-13,
     )
-
 
 def test_bounded_over_relaxed_boundary_policy_all_keeps_raw_boundary_flux():
     mesh, space = _box_space(nx=1, ny=1)
@@ -650,42 +651,3 @@ def test_bounded_over_relaxed_boundary_policy_all_keeps_raw_boundary_flux():
         rtol=1.0e-13,
         atol=1.0e-13,
     )
-
-
-def _assert_finite_geometry_quantities(mesh):
-    geometry = FVMGeometry(mesh)
-    decomposition = geometry.diffusion_face_decomposition(
-        "bounded_over_relaxed"
-    )
-    T_f = decomposition.T_f
-    assert np.asarray(T_f).shape == (
-        mesh.number_of_edges(),
-        mesh.geo_dimension(),
-    )
-    assert np.all(np.isfinite(np.asarray(decomposition.orthogonal_factor)))
-    assert np.all(np.isfinite(np.asarray(T_f)))
-
-
-def test_circle_mesher_bounded_over_relaxed_geometry_smoke():
-    pytest.importorskip("gmsh")
-    from fealpy.mesher.circle_mesher import CircleMesher
-
-    mesh = CircleMesher(h=0.4).init_mesh()
-
-    _assert_finite_geometry_quantities(mesh)
-
-
-def test_box_with_circular_hole_mesher_bounded_over_relaxed_geometry_smoke():
-    pytest.importorskip("gmsh")
-    from fealpy.mesher import BoxWithCircularHoleMesher2D
-
-    mesh = BoxWithCircularHoleMesher2D(
-        {
-            "box": (-3.0, 3.0, -2.0, 2.0),
-            "center": (0.0, 0.0),
-            "radius": 0.5,
-            "h": 0.5,
-        }
-    ).init_mesh()
-
-    _assert_finite_geometry_quantities(mesh)

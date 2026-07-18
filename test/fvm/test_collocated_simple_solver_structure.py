@@ -52,6 +52,12 @@ def test_collocated_simple_solver_default_pressure_relaxation_is_conservative():
     assert solve_parameters["relax"].default == 0.3
 
 
+def test_collocated_simple_solver_reuses_boundary_geometry():
+    solver = _cavity_solver()
+
+    assert solver.fvm_geometry is solver.boundary_conditions.geometry
+
+
 def test_cell_vector_dof_conversion_is_component_major_on_torch_backend():
     pytest.importorskip("torch")
     from fealpy.backend import backend_manager as bm
