@@ -36,9 +36,6 @@ class EntitySchema:
                 of boundary entities.
             - mask: Tensor of shape (num_entity,) containing a boolean mask
                 indicating whether each entity is a boundary entity.
-            - count: Tensor of shape (num_entity,) containing the count of
-                adjacent top-dimensional entities for each entity, or None if
-                not applicable.
         """
         raise NotImplementedError()
 

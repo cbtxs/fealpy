@@ -15,9 +15,13 @@ class ShapedEntitySchema(EntitySchema):
         from ...topology.boundary import BoundaryInferencer
 
         if ctx.block._cache_boundary_info is None:
-            ctx.block._cache_boundary_info = BoundaryInferencer.infer_all(ctx.block)
+            ctx.block._cache_boundary_info = {}
 
-        return ctx.block._cache_boundary_info[ctx.sector.schema_name]
+        return BoundaryInferencer.infer_entity(
+            ctx.block,
+            ctx.sector.schema_name,
+            ctx.block._cache_boundary_info
+        )
 
     @classmethod
     def local_entity(cls, tgt_name: str, /, indexing: Literal["o", "s"] = "o") -> list[list[int]]:
