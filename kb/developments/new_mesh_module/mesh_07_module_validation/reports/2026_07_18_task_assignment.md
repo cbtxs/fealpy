@@ -6,7 +6,7 @@
 
 ## 一、分配原则
 
-- 本轮安排 4 名开发人员，任务之间按代码边界拆分，可并行开展。
+- 本轮安排 3 名开发人员，任务之间按代码边界拆分，可并行开展。
 - 每项任务都必须包含代码修改、针对性测试和实际 pytest 结果。
 - 不允许由上层 FVM 重复实现面法向或积分权重；几何算法和积分算法仍由 Mesh 模块负责。
 - 不改变 `barycenter()` 的语义，不处理尚未决策的旧接口迁移、NodeMesh 特殊算法、from_<...> 构造器补全等事项。
@@ -14,14 +14,13 @@
 
 ## 二、任务总览
 
-| 任务 | 负责人 | 主题 | 主要代码范围 | 并行关系 |
-|---|---|---|---|---|
-| M07-A | 开发人员 A | 四边形 OFace 顺序与几何算法 | `quadrilateral.py`、`mesher/box.py` | 可独立开始 |
-| M07-B | 开发人员 B | 法向标准形状与兼容接口及其单元测试 | 各 schema `normal()`、`entity_view.py`、`fealpy_api.py`、法向测试 | 可独立开始；不得修改 A 的四边形算法 |
-| M07-C | 开发人员 C | Jacobian 加权积分、契约及其单元测试 | `classic/base.py`、`entity_schema.py`、积分测试 | 可独立开始；不得修改 A/B 的法向代码 |
-| M07-D | 开发人员 D | 恢复六面体原 FEALPy 顶点排序 | `hexahedron.py`、必要的 `mesher/box.py`/拓扑关系及六面体测试 | 可独立开始；与 A 共享 `box.py` 时须先协调边界 |
+| 任务    | 负责人    | 主题                     | 主要代码范围                                         | 并行关系                          |
+| ----- | ------ | ---------------------- | ---------------------------------------------- | ----------------------------- |
+| M07-A | 开发人员 A | 四边形 OFace 顺序与几何算法      | `quadrilateral.py`、`mesher/box.py`             | 可独立开始                         |
+| M07-C | 开发人员 C | Jacobian 加权积分、契约及其单元测试 | `classic/base.py`、`entity_schema.py`、积分测试      | 可独立开始；不得修改 A 的四边形算法           |
+| M07-D | 开发人员 D | 恢复六面体原 FEALPy 顶点排序     | `hexahedron.py`、必要的 `mesher/box.py`/拓扑关系及六面体测试 | 可独立开始；与 A 共享 `box.py` 时须先协调边界 |
 
-A、B、C、D 各自负责实现和对应单元测试。测试必须归属于被测 Mesh 模块，文件名和测试函数名忠实描述模块、接口或数学性质，不得使用任务编号、验证活动名称或 FVM 等具体领域名称。四项任务完成后再运行相关测试集合进行交叉核验。
+A、C、D 各自负责实现和对应单元测试。测试必须归属于被测 Mesh 模块，文件名和测试函数名忠实描述模块、接口或数学性质，不得使用任务编号、验证活动名称或 FVM 等具体领域名称。三项任务完成后再运行相关测试集合进行交叉核验。
 
 ---
 
@@ -63,7 +62,7 @@ A、B、C、D 各自负责实现和对应单元测试。测试必须归属于被
 - 直接构造的规则矩形 quad：映射、面积、切向和法向正确。
 - 验证记录中的非仿射梯形：面积为 `3/2`，节点顺序为环状顺序。
 - `Box2d(nx=1, ny=1).quadrangulate()` 生成的 cell 顺序符合 `OFace` 约定。
-- 六面体生成的真实 quad face 不因节点重排而出现零法向；这里只验证 `Entity("face").normal()` 的几何值，兼容接口形状由 M07-B 验证。
+- 六面体生成的真实 quad face 不因节点重排而出现零法向；这里只验证 `Entity("face").normal()` 的几何值。
 
 ### 验证命令
 
@@ -75,58 +74,7 @@ pytest -q tests/mesh/unit/schema/test_quadrilateral_schema.py tests/mesher/unit/
 
 ---
 
-## 四、M07-B：法向标准形状与兼容接口
-
-### 目标
-
-落实已决策的法向契约：Schema 和 EntityView 的 `normal()` 统一返回 `(NE, NN, GD)`；旧兼容接口 `face_normal()` 和 `face_unit_normal()` 统一返回 `(NF, GD)`。
-
-### 修改范围
-
-- 所有实际实现 `normal()` 的 schema 文件，至少检查：
-  - `fealpy/mesh/schema/classic/triangle.py`
-  - `fealpy/mesh/schema/classic/quadrilateral.py`
-  - `fealpy/mesh/schema/classic/segment.py`
-  - `fealpy/mesh/schema/classic/tetrahedron.py`
-  - `fealpy/mesh/schema/classic/hexahedron.py`
-  - `fealpy/mesh/schema/classic/pyramid.py`
-  - `fealpy/mesh/schema/classic/point.py`
-- `fealpy/mesh/view/entity_view.py`
-- `fealpy/mesh/view/fealpy_api.py`
-- 新增或修改模块测试文件：`tests/mesh/unit/schema/test_normal.py`
-
-M07-B 不负责修改 `QuadrilateralSchema` 的法向数学算法、`fealpy/mesh/schema/entity_schema.py` 和 `tests/mesh/unit/schema/test_quadrilateral_schema.py`；如发现 A 的算法仍返回错误数值，只在反馈中记录，不直接改 A 的代码。B 只负责标准形状适配、兼容接口和自己的法向契约测试。
-
-### 实现要求
-
-1. 所有支持法向的 schema 返回三维数组；单个法向方向也必须保留 `NN=1` 这一轴。
-2. 检查三角形、四边形及已有三维实体实现，避免只在兼容层 `squeeze` 而导致标准接口仍不一致。
-3. `EntityView.normal()` 文档、实际输出和索引子集行为保持一致。
-4. `FEALPyMesh.face_normal()` 从标准三维结果提取第一个法向方向，返回二维 `(NF, GD)`。
-5. `FEALPyMesh.face_unit_normal()` 复用兼容接口或同一提取逻辑，返回二维 `(NF, GD)`；正常非退化面必须返回有限单位向量。
-6. 不在本任务决定退化面应抛异常、返回标记还是允许 NaN；该问题保持未决，不增加新的退化策略。
-
-### 必须测试
-
-- 单位立方体六个 face：
-  - `mesh.Entity("face").normal().shape == (6, 1, 3)`；
-  - `mesh.face_normal().shape == (6, 3)`；
-  - `mesh.face_unit_normal().shape == (6, 3)`；
-  - 法向有限且单位化结果范数为 1。
-- 三角形二维 face/edge 的标准三维返回形状不回归。
-- `index=None` 和选定 face 子集都满足上述形状契约。
-
-### 验证命令
-
-```bash
-pytest -q tests/mesh/unit/schema/test_normal.py tests/mesh/unit/schema/test_triangle_schema.py tests/mesh/unit/schema/test_quadrilateral_schema.py
-```
-
-若 A 尚未完成，允许先使用测试预期值编写测试；最终验证必须在 A 的实现同时存在时运行。
-
----
-
-## 五、M07-C：Jacobian 加权积分及统一契约
+## 四、M07-C：Jacobian 加权积分及统一契约
 
 ### 目标
 
@@ -139,7 +87,7 @@ pytest -q tests/mesh/unit/schema/test_normal.py tests/mesh/unit/schema/test_tria
 - 必要时只修改与 Jacobian 返回形状直接相关的 concrete schema；如无需修改，不要扩大范围。
 - 新增或修改模块测试文件：`tests/mesh/unit/test_entity_integral.py`
 
-不得修改 A/B 负责的法向实现、兼容接口和法向测试文件。`fealpy/mesh/schema/entity_schema.py` 由 M07-C 独占修改，负责同时明确 `normal()` 和 `jacobi_matrix()` 的公共契约，避免与 M07-B 产生文件冲突。
+- 不得修改 A 负责的四边形法向实现和测试文件。`fealpy/mesh/schema/entity_schema.py` 由 M07-C 独占修改，负责同时明确 `normal()` 和 `jacobi_matrix()` 的公共契约。
 
 ### 数学与实现要求
 
@@ -184,7 +132,7 @@ pytest -q tests/mesh/unit/test_entity_integral.py tests/mesh/unit/schema/test_qu
 3. 除 `from_box` 外的各种 `from_<...>` 构造方法：没有形成具体 API 决策。
 4. HalfEdgeMesh、DartMesh、UniformMesh 迁移：决策是不进入新网格体系，仅整理原文件；不作为本轮 Mesh 开发任务。
 5. 高阶形状、Polygon/Polyhedron：虽有“进一步实现即可”的方向性决策，但没有一天内可执行的具体范围、接口和验收标准，本轮暂不拆分任务。
-6. 棱柱/棱锥 quad face 的额外复核、非仿射六面体高阶矩积分、多后端扩展、退化面处理策略：报告中尚无明确决策，暂不安排实现任务；可在 A/B/C 完成后作为下一轮决策输入。
+6. 棱柱/棱锥 quad face 的额外复核、非仿射六面体高阶矩积分、多后端扩展、退化面处理策略：报告中尚无明确决策，暂不安排实现任务；可在 A/C/D 完成后作为下一轮决策输入。
 7. `barycenter()` 物理质心语义：报告明确不作为本轮 Mesh bug。
 
 ## 七、完成标准
@@ -193,6 +141,6 @@ pytest -q tests/mesh/unit/test_entity_integral.py tests/mesh/unit/schema/test_qu
 
 - 负责人提交了代码修改和对应测试；
 - 负责范围内的定向 pytest 实际通过；
-- M07-A、M07-B、M07-C 各自负责的模块单元测试通过，或明确记录与本轮无关的既有失败；
+- M07-A、M07-C、M07-D 各自负责的模块单元测试通过，或明确记录与本轮无关的既有失败；
 - 没有把未决策事项擅自转化为实现行为；
 - 完成反馈注明实际修改文件、测试命令、通过/失败结果和遗留问题。
