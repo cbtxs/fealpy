@@ -26,8 +26,8 @@ def test_quadrilateral_schema_barycenter_and_measure_2d():
             [0.0, 1.0],
             [1.5, 1.0]],
         quads=[
-            [0, 1, 2, 3],
-            [4, 5, 6, 7]])
+            [0, 1, 3, 2],
+            [4, 5, 7, 6]])
     barycenter = np.asarray(QuadrilateralSchema.barycenter(ctx, None))
     measure = np.asarray(QuadrilateralSchema.measure(ctx, None))
 
@@ -56,8 +56,8 @@ def test_quadrilateral_schema_measure_3d_and_index():
             [0.0, 1.0, 0.0],
             [2.0, 1.0, 0.0]],
         quads=[
-            [0, 1, 2, 3],
-            [4, 5, 6, 7]])
+            [0, 1, 3, 2],
+            [4, 5, 7, 6]])
 
     measure = np.asarray(QuadrilateralSchema.measure(ctx, None))
     barycenter = np.asarray(QuadrilateralSchema.barycenter(ctx, slice(1, 2)))

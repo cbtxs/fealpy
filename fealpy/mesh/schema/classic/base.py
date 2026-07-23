@@ -129,13 +129,26 @@ class ShapedEntitySchema(EntitySchema):
         """Integral of a barycentric function."""
         quadrature = cls.quadrature_formula(q)
         bcs, ws = quadrature.get_quadrature_points_and_weights()
+        if not isinstance(bcs, tuple):
+            bcs = (bcs,)
 
         if not getattr(func, "coordtype", None) == "barycentric":
             func = cls.barycentric(ctx, func, index)
-        values = func(bcs)
-        measure = cls.measure(ctx, index)
+        values = func(bcs) # type: ignore
+        J = cls.jacobi_matrix(ctx, bcs, index)
+        det = bm.linalg.det # type: ignore
 
-        return bm.einsum("c, q, cq... -> c...", measure, ws, values)
+        if J.shape[-2] == J.shape[-1]:
+            factor = bm.abs(det(J)) # [NC, NQ]
+        else:
+            # For non-square Jacobians, compute the square root of the determinant of J^T * J
+            JTJ = bm.einsum("...ji, ...jk -> ...ik", J, J) # [NC, NQ, ref_dim, ref_dim]
+            factor = bm.sqrt(det(JTJ)) # [NC, NQ]
+
+        if cls.ref_measure is not None:
+            factor = cls.ref_measure * factor
+
+        return bm.einsum("cq, q, cq... -> c...", factor, ws, values)
 
 
 @overload

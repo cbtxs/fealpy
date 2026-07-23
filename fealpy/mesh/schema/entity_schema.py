@@ -23,6 +23,7 @@ class EntitySchema:
     SFace: ClassVar[dict[str, list[list[int]]]] = {}
     orientation: ClassVar[list[tuple[int, ...]]] = []
     ccw: ClassVar[list[int] | None] = None
+    ref_measure: ClassVar[float | None] = None
 
     ### [Entity Topology] ###
 

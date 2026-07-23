@@ -717,3 +717,23 @@ class Mesh(MeshView):
         """Provides a plotting interface for the mesh."""
         from ..plotting.classic import MeshPloter
         return MeshPloter(self)
+
+    def find_node(
+        self,
+        ax,
+        color = 'r',
+        showindex: bool = False,
+        multiindex = None,
+        fontcolor: str = 'k',
+        fontsize: int = 24
+    ):
+        from ..plotting.classic import EntityFinder
+        return EntityFinder(self)(
+            ax,
+            etype='node',
+            color=color,
+            showindex=showindex,
+            multiindex=multiindex,
+            fontcolor=fontcolor,
+            fontsize=fontsize
+        )
