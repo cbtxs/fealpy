@@ -10,6 +10,13 @@ from fealpy.decorator.variantmethod import variantmethod
 from .fvm_geometry import FVMGeometry, face_interpolation_owner_weight
 
 
+def _validate_max_condition(max_condition):
+    value = float(max_condition)
+    if not np.isfinite(value) or value < 1.0:
+        raise ValueError("max_condition must be finite and at least 1.")
+    return value
+
+
 class _CellAnchoredCache:
     def __init__(
         self,
@@ -21,6 +28,7 @@ class _CellAnchoredCache:
         rank,
         condition,
         layer,
+        valid,
     ):
         self.stencil = stencil
         self.coefficient_operator = coefficient_operator
@@ -29,6 +37,7 @@ class _CellAnchoredCache:
         self.rank = rank
         self.condition = condition
         self.layer = layer
+        self.valid = valid
 
 
 class CellAnchoredQuadraticFaceFluxReconstruct:
@@ -53,6 +62,7 @@ class CellAnchoredQuadraticFaceFluxReconstruct:
         geometry=None,
         quadrature_order: int = 3,
         max_stencil_layers: int = 4,
+        max_condition: float = 100.0,
         rank_tolerance: float = 1.0e-12,
     ):
         if quadrature_order < 2:
@@ -66,6 +76,7 @@ class CellAnchoredQuadraticFaceFluxReconstruct:
         self.GD = self.geometry.cell_center.shape[1]
         self.quadrature_order = int(quadrature_order)
         self.max_stencil_layers = int(max_stencil_layers)
+        self.max_condition = _validate_max_condition(max_condition)
         self.rank_tolerance = float(rank_tolerance)
         self.ncoeff = self.GD + self.GD * (self.GD + 1) // 2
         self._cache = None
@@ -134,7 +145,8 @@ class CellAnchoredQuadraticFaceFluxReconstruct:
     def _cell_stencil(self, cell, adjacency, cell_center, cell_moment):
         visited = {cell}
         frontier = {cell}
-        last_record = None
+        best_full_rank_record = None
+        best_rank_deficient_record = None
         for layer in range(1, self.max_stencil_layers + 1):
             next_frontier = set()
             for current in frontier:
@@ -157,7 +169,7 @@ class CellAnchoredQuadraticFaceFluxReconstruct:
                     sample_weight = 1.0 / np.maximum(scaled_distance, 0.1) ** 2
                     weighted = np.sqrt(sample_weight)[:, None] * feature
                     rank, condition = self._matrix_rank_and_condition(weighted)
-                    last_record = (
+                    record = (
                         stencil,
                         feature,
                         sample_weight,
@@ -167,11 +179,27 @@ class CellAnchoredQuadraticFaceFluxReconstruct:
                         layer,
                     )
                     if rank == self.ncoeff:
-                        return last_record
+                        if (
+                            np.isfinite(condition)
+                            and condition <= self.max_condition
+                        ):
+                            return record
+                        if (
+                            best_full_rank_record is None
+                            or condition <= best_full_rank_record[5]
+                        ):
+                            best_full_rank_record = record
+                    elif (
+                        best_rank_deficient_record is None
+                        or rank >= best_rank_deficient_record[4]
+                    ):
+                        best_rank_deficient_record = record
             if not frontier:
                 break
-        if last_record is not None:
-            return last_record
+        if best_full_rank_record is not None:
+            return best_full_rank_record
+        if best_rank_deficient_record is not None:
+            return best_rank_deficient_record
         return (
             np.empty((0,), dtype=np.int64),
             np.empty((0, self.ncoeff), dtype=float),
@@ -214,12 +242,18 @@ class CellAnchoredQuadraticFaceFluxReconstruct:
         rank = np.empty(nc, dtype=np.int64)
         condition = np.empty(nc, dtype=float)
         layer = np.empty(nc, dtype=np.int64)
+        valid = np.empty(nc, dtype=bool)
         characteristic = np.empty(nc, dtype=float)
 
         for cell, record in enumerate(records):
             cells, feature, sample_weight, scale, cell_rank, cell_condition, cell_layer = record
             stencil[cell, : cells.size] = cells
-            if cell_rank == self.ncoeff:
+            cell_valid = (
+                cell_rank == self.ncoeff
+                and np.isfinite(cell_condition)
+                and cell_condition <= self.max_condition
+            )
+            if cell_valid:
                 weighted = np.sqrt(sample_weight)[:, None] * feature
                 operator = np.linalg.pinv(
                     weighted,
@@ -229,6 +263,7 @@ class CellAnchoredQuadraticFaceFluxReconstruct:
             rank[cell] = cell_rank
             condition[cell] = cell_condition
             layer[cell] = cell_layer
+            valid[cell] = cell_valid
             characteristic[cell] = scale
 
         owner = self._as_numpy(self.geometry.owner).astype(np.int64)
@@ -253,6 +288,7 @@ class CellAnchoredQuadraticFaceFluxReconstruct:
             rank=rank,
             condition=condition,
             layer=layer,
+            valid=valid,
         )
 
     def clear_cache(self):
@@ -339,8 +375,8 @@ class CellAnchoredQuadraticFaceFluxReconstruct:
     ):
         """Return the integrated flux defect relative to a base face field.
 
-        Faces touching a rank-deficient cell receive zero defect, so the
-        caller's already-defined base flux remains active there.
+        Faces touching a rank-deficient or ill-conditioned cell receive zero
+        defect, so the caller's already-defined base flux remains active there.
         """
         target = self.reconstruct(
             cell_velocity,
@@ -349,7 +385,7 @@ class CellAnchoredQuadraticFaceFluxReconstruct:
         )
         base = bm.einsum("fi,fi->f", base_face_velocity, self.geometry.S_f)
         valid_cell = bm.array(
-            self._cache.rank == self.ncoeff,
+            self._cache.valid,
             dtype=bm.bool,
             device=bm.get_device(self.geometry.owner),
         )
@@ -363,7 +399,12 @@ class CellAnchoredQuadraticFaceFluxReconstruct:
         """Return rank and conditioning data for the cached cell stencils."""
         if self._cache is None:
             self._build_cache()
-        valid_cell = self._cache.rank == self.ncoeff
+        valid_cell = self._cache.valid
+        rank_deficient_cell = self._cache.rank < self.ncoeff
+        ill_conditioned_cell = ~rank_deficient_cell & ~valid_cell
+        rank_deficient_cell_count = int(np.count_nonzero(rank_deficient_cell))
+        ill_conditioned_cell_count = int(np.count_nonzero(ill_conditioned_cell))
+        fallback_cell_count = rank_deficient_cell_count + ill_conditioned_cell_count
         owner = self._as_numpy(self.geometry.owner).astype(np.int64)
         neighbour = self._as_numpy(self.geometry.neighbour).astype(np.int64)
         fallback_face_count = np.count_nonzero(
@@ -371,10 +412,21 @@ class CellAnchoredQuadraticFaceFluxReconstruct:
         )
         return {
             "minimum_rank": int(np.min(self._cache.rank)),
-            "failed_cell_count": int(
-                np.count_nonzero(self._cache.rank < self.ncoeff)
-            ),
+            "condition_limit": self.max_condition,
+            "rank_deficient_cell_count": rank_deficient_cell_count,
+            "ill_conditioned_cell_count": ill_conditioned_cell_count,
+            "fallback_cell_count": fallback_cell_count,
+            "failed_cell_count": fallback_cell_count,
+            "fallback_reason_counts": {
+                "rank_deficient": rank_deficient_cell_count,
+                "ill_conditioned": ill_conditioned_cell_count,
+            },
             "maximum_condition": float(np.max(self._cache.condition)),
+            "maximum_accepted_condition": (
+                float(np.max(self._cache.condition[valid_cell]))
+                if np.any(valid_cell)
+                else None
+            ),
             "maximum_stencil_layer": int(np.max(self._cache.layer)),
             "fallback_face_count": int(fallback_face_count),
             "stencil_layer_counts": {
@@ -395,9 +447,11 @@ class FaceFluxReconstruct:
         geometry=None,
         quadrature_order=3,
         max_stencil_layers=4,
+        max_condition=100.0,
     ):
         self.mesh = mesh
         self.geometry = geometry if geometry is not None else FVMGeometry(mesh)
+        max_condition = _validate_max_condition(max_condition)
         self.cell_anchored_quadratic = None
         if method == "cell_anchored_quadratic":
             self.cell_anchored_quadratic = CellAnchoredQuadraticFaceFluxReconstruct(
@@ -405,6 +459,7 @@ class FaceFluxReconstruct:
                 geometry=self.geometry,
                 quadrature_order=quadrature_order,
                 max_stencil_layers=max_stencil_layers,
+                max_condition=max_condition,
             )
         if method not in self.correction:
             raise ValueError(f"Unknown face-flux correction variant: {method!r}.")

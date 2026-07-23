@@ -121,8 +121,125 @@ def test_cell_anchored_quadratic_face_flux_recovers_quadratic_face_average():
     )
     diagnostics = reconstruct.diagnostics()
     assert diagnostics["minimum_rank"] == 9
+    assert diagnostics["condition_limit"] == 100.0
+    assert diagnostics["rank_deficient_cell_count"] == 0
+    assert diagnostics["ill_conditioned_cell_count"] == 0
+    assert diagnostics["fallback_cell_count"] == 0
     assert diagnostics["failed_cell_count"] == 0
+    assert diagnostics["fallback_reason_counts"] == {
+        "rank_deficient": 0,
+        "ill_conditioned": 0,
+    }
+    assert diagnostics["maximum_accepted_condition"] is not None
+    assert diagnostics["maximum_accepted_condition"] <= 100.0
     assert diagnostics["maximum_stencil_layer"] <= 4
+
+
+@pytest.mark.parametrize("max_condition", [0.0, float("nan"), float("inf")])
+def test_face_flux_reconstruct_rejects_invalid_condition_limit(max_condition):
+    bm.set_backend("numpy")
+    from fealpy.fvm import (
+        CellAnchoredQuadraticFaceFluxReconstruct,
+        FaceFluxReconstruct,
+    )
+
+    mesh = TetrahedronMesh.from_box(
+        box=[0.0, 1.0, 0.0, 1.0, 0.0, 1.0],
+        nx=1,
+        ny=1,
+        nz=1,
+    )
+
+    with pytest.raises(ValueError, match="max_condition"):
+        CellAnchoredQuadraticFaceFluxReconstruct(
+            mesh,
+            max_condition=max_condition,
+        )
+    with pytest.raises(ValueError, match="max_condition"):
+        FaceFluxReconstruct(
+            mesh,
+            method="none",
+            max_condition=max_condition,
+        )
+
+
+def test_cell_anchored_quadratic_falls_back_when_full_rank_stencil_remains_ill_conditioned():
+    bm.set_backend("numpy")
+    from fealpy.fvm import FaceFluxReconstruct
+
+    mesh = TetrahedronMesh.from_box(
+        box=[0.0, 1.0, 0.0, 1.0, 0.0, 1.0],
+        nx=2,
+        ny=2,
+        nz=2,
+    )
+    geometry = FVMGeometry(mesh)
+    cell_velocity = bm.copy(geometry.cell_center)
+    base_face_velocity = 0.5 * (
+        cell_velocity[geometry.owner] + cell_velocity[geometry.neighbour]
+    )
+    reconstruct = FaceFluxReconstruct(
+        mesh,
+        method="cell_anchored_quadratic",
+        geometry=geometry,
+        max_condition=1.0,
+    )
+
+    correction = reconstruct.correction(cell_velocity, base_face_velocity)
+    diagnostics = reconstruct.diagnostics()
+
+    np.testing.assert_allclose(bm.to_numpy(correction), 0.0)
+    assert diagnostics["condition_limit"] == 1.0
+    assert diagnostics["rank_deficient_cell_count"] == 0
+    assert diagnostics["ill_conditioned_cell_count"] == mesh.number_of_cells()
+    assert diagnostics["fallback_cell_count"] == mesh.number_of_cells()
+    assert diagnostics["failed_cell_count"] == mesh.number_of_cells()
+    assert diagnostics["fallback_reason_counts"] == {
+        "rank_deficient": 0,
+        "ill_conditioned": mesh.number_of_cells(),
+    }
+    assert diagnostics["maximum_accepted_condition"] is None
+    assert diagnostics["fallback_face_count"] == mesh.number_of_faces()
+    assert diagnostics["stencil_layer_counts"] == {
+        4: mesh.number_of_cells()
+    }
+
+
+def test_cell_anchored_quadratic_expands_full_rank_stencil_until_condition_is_acceptable():
+    bm.set_backend("numpy")
+    from fealpy.fvm import CellAnchoredQuadraticFaceFluxReconstruct
+
+    mesh = TetrahedronMesh.from_box(
+        box=[0.0, 1.0, 0.0, 1.0, 0.0, 1.0],
+        nx=2,
+        ny=2,
+        nz=2,
+    )
+    geometry = FVMGeometry(mesh)
+    cell_average = _entity_average(mesh, "cell", _vector_quadratic)
+    exact_face_average = _entity_average(mesh, "face", _vector_quadratic)
+    reconstruct = CellAnchoredQuadraticFaceFluxReconstruct(
+        mesh,
+        geometry=geometry,
+        max_condition=25.0,
+    )
+
+    face_average = reconstruct.face_average(
+        cell_average,
+        boundary_face_average=exact_face_average[geometry.is_boundary],
+    )
+    diagnostics = reconstruct.diagnostics()
+
+    np.testing.assert_allclose(
+        bm.to_numpy(face_average),
+        bm.to_numpy(exact_face_average),
+        rtol=2.0e-11,
+        atol=2.0e-12,
+    )
+    assert diagnostics["fallback_cell_count"] == 0
+    assert diagnostics["maximum_accepted_condition"] <= 25.0
+    assert diagnostics["maximum_stencil_layer"] == 4
+    assert diagnostics["stencil_layer_counts"].get(4, 0) > 0
 
 
 def test_face_flux_reconstruct_closes_divergence_free_quadratic_field():

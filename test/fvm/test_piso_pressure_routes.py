@@ -251,6 +251,30 @@ def test_piso_rejects_unknown_options():
         NSFVMPISOModel(options)
 
 
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("rhie_chow_velocity_scheme", "second_order_reconstructed"),
+        ("face_flux_correction_scheme", "cell_anchored_quadratic"),
+        ("face_flux_quadrature_order", 4),
+        ("face_flux_max_stencil_layers", 5),
+        ("face_flux_max_condition", 75.0),
+        ("pressure_flux_response_scheme", "face_operator_consistent"),
+    ],
+)
+def test_piso_rejects_retired_high_accuracy_options(name, value):
+    from fealpy.fvm import NSFVMPISOModel
+
+    options = _model_options(nx=2, ny=2, nt=1)
+    options[name] = value
+
+    with pytest.raises(
+        ValueError,
+        match=rf"unsupported NSFVMPISOModel options: {name}",
+    ):
+        NSFVMPISOModel(options)
+
+
 def test_piso_snapshot_callback_respects_interval_and_start_step():
     from fealpy.fvm import FVMLinearSolverConfig, NSFVMPISOModel
 

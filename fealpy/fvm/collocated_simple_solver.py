@@ -160,6 +160,7 @@ class CollocatedSimpleSolver(CollocatedNSFVMComponents):
             geometry=self.fvm_geometry,
             quadrature_order=self.controls.face_flux_quadrature_order,
             max_stencil_layers=self.controls.face_flux_max_stencil_layers,
+            max_condition=self.controls.face_flux_max_condition,
         )
         self.linear_solver = init_fvm_linear_solver(
             linear_solver,
@@ -407,35 +408,20 @@ class CollocatedSimpleSolver(CollocatedNSFVMComponents):
         pressure_gradient=None,
     ):
         """Construct Rhie-Chow face velocity and enforce velocity Dirichlet data."""
-        if self.controls.rhie_chow_velocity_scheme == "interpolated":
-            base_face_velocity, face_response = (
-                self.rhie_chow.cell_velocity_to_face(
-                    u,
-                    face_response_coefficient=response_coef,
-                )
-            )
-            gradient_difference = self.rhie_chow.pressure_gradient_difference(
-                p,
-                pressure_gradient=pressure_gradient,
-            )
-            uf = base_face_velocity - face_response * gradient_difference
-        else:
-            base_face_velocity = self.second_order_reconstructed_face_velocity(u)
-            gradient_difference = self.rhie_chow.pressure_gradient_difference(
-                p,
-                pressure_gradient=pressure_gradient,
-            )
-            uf = base_face_velocity - response_coef[:, None] * gradient_difference
-        if self.controls.face_flux_correction_scheme != "none":
-            flux_correction = self.face_flux_reconstruct.correction(
-                u,
-                base_face_velocity,
-                boundary_face_average=boundary_velocity,
-                boundary_faces=boundary_faces,
-            )
-            Sf = self.fvm_geometry.S_f
-            Sf_dot_Sf = bm.einsum("fi,fi->f", Sf, Sf)
-            uf = uf + (flux_correction / Sf_dot_Sf)[:, None] * Sf
+        base_face_velocity = self.spatial_face_velocity(
+            u,
+            boundary_faces=boundary_faces,
+            boundary_face_average=(
+                boundary_velocity
+                if self.controls.face_flux_correction_scheme != "none"
+                else None
+            ),
+        )
+        gradient_difference = self.rhie_chow.pressure_gradient_difference(
+            p,
+            pressure_gradient=pressure_gradient,
+        )
+        uf = base_face_velocity - response_coef[:, None] * gradient_difference
         return bm.set_at(uf, boundary_faces, boundary_velocity)
 
     def solve(

@@ -45,6 +45,7 @@ def test_simple_solver_controls_default_to_current_recommended_policy():
     assert controls.pressure_nonorthogonal_atol == 1.0e-12
     assert controls.face_flux_correction_scheme == "none"
     assert controls.face_flux_quadrature_order == 3
+    assert controls.face_flux_max_condition == 100.0
 
 
 def test_simple_solver_controls_accept_gradient_reconstruction_weights():
@@ -102,11 +103,13 @@ def test_simple_solver_controls_accept_cell_anchored_face_flux_correction():
         face_flux_correction_scheme="cell_anchored_quadratic",
         face_flux_quadrature_order=4,
         face_flux_max_stencil_layers=5,
+        face_flux_max_condition=75.0,
     )
 
     assert controls.face_flux_correction_scheme == "cell_anchored_quadratic"
     assert controls.face_flux_quadrature_order == 4
     assert controls.face_flux_max_stencil_layers == 5
+    assert controls.face_flux_max_condition == 75.0
 
 
 @pytest.mark.parametrize(
@@ -115,6 +118,9 @@ def test_simple_solver_controls_accept_cell_anchored_face_flux_correction():
         ({"face_flux_correction_scheme": "unknown"}, "face_flux_correction_scheme"),
         ({"face_flux_quadrature_order": 1}, "face_flux_quadrature_order"),
         ({"face_flux_max_stencil_layers": 0}, "face_flux_max_stencil_layers"),
+        ({"face_flux_max_condition": 0.0}, "face_flux_max_condition"),
+        ({"face_flux_max_condition": float("nan")}, "face_flux_max_condition"),
+        ({"face_flux_max_condition": float("inf")}, "face_flux_max_condition"),
     ],
 )
 def test_simple_solver_controls_reject_invalid_face_flux_correction(
@@ -137,6 +143,19 @@ def test_piso_solver_controls_default_to_current_recommended_policy():
     assert controls.pressure_nullspace_linear_solver == "petsc_gmres_hypre"
     assert controls.momentum_nonorthogonal_atol == 1.0e-12
     assert controls.pressure_nonorthogonal_atol == 1.0e-12
+
+
+def test_piso_solver_controls_do_not_expose_retired_high_accuracy_routes():
+    retired = {
+        "rhie_chow_velocity_scheme",
+        "face_flux_correction_scheme",
+        "face_flux_quadrature_order",
+        "face_flux_max_stencil_layers",
+        "face_flux_max_condition",
+        "pressure_flux_response_scheme",
+    }
+
+    assert PisoSolverControls.option_names().isdisjoint(retired)
 
 
 def test_piso_solver_controls_accept_gradient_reconstruction_weights():

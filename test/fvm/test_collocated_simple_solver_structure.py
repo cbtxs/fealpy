@@ -331,6 +331,7 @@ def test_collocated_simple_solver_runs_with_cell_anchored_face_flux_correction(
             pressure_constraint="gauge",
             momentum_solve_strategy="vector",
             face_flux_correction_scheme="cell_anchored_quadratic",
+            face_flux_max_condition=75.0,
             momentum_nonorthogonal_max_iter=0,
             pressure_nonorthogonal_max_iter=0,
         ),
@@ -351,6 +352,10 @@ def test_collocated_simple_solver_runs_with_cell_anchored_face_flux_correction(
     velocity, pressure = solver.solve(max_iter=1, tol=1.0e-3)
 
     assert solver.face_flux_reconstruct.method == "cell_anchored_quadratic"
+    assert (
+        solver.face_flux_reconstruct.cell_anchored_quadratic.max_condition
+        == 75.0
+    )
     assert solver.face_flux_reconstruct.diagnostics()["minimum_rank"] == 5
     assert calls["count"] == 1
     assert velocity.shape == (solver.NC, solver.GD)
@@ -392,6 +397,7 @@ def test_ns_fvm_simple_model_forwards_face_flux_correction_options():
             "face_flux_correction_scheme": "cell_anchored_quadratic",
             "face_flux_quadrature_order": 4,
             "face_flux_max_stencil_layers": 5,
+            "face_flux_max_condition": 75.0,
             "momentum_solve_strategy": "vector",
             "linear_solver_config": FVMLinearSolverConfig(solver="scipy"),
             "log_level": "ERROR",
@@ -401,6 +407,11 @@ def test_ns_fvm_simple_model_forwards_face_flux_correction_options():
     assert model.controls.face_flux_correction_scheme == "cell_anchored_quadratic"
     assert model.controls.face_flux_quadrature_order == 4
     assert model.controls.face_flux_max_stencil_layers == 5
+    assert model.controls.face_flux_max_condition == 75.0
+    assert (
+        model.face_flux_reconstruct.cell_anchored_quadratic.max_condition
+        == 75.0
+    )
 
 
 def test_collocated_simple_solver_accepts_zero_convection_for_stokes_limit():

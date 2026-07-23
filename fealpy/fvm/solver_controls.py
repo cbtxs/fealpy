@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, fields
+import math
 
 from fealpy.backend import backend_manager as bm
 
@@ -73,6 +74,37 @@ def validate_diffusion_controls(method: str, nonorthogonal_eps: float) -> None:
         )
     if nonorthogonal_eps <= 0.0:
         raise ValueError("diffusion_nonorthogonal_eps must be positive.")
+
+
+def validate_rhie_chow_velocity_scheme(method: str) -> None:
+    """Validate the cell-to-face velocity reconstruction used by Rhie--Chow."""
+    if method not in {"interpolated", "second_order_reconstructed"}:
+        raise ValueError(
+            "rhie_chow_velocity_scheme must be 'interpolated' or "
+            "'second_order_reconstructed'."
+        )
+
+
+def validate_face_flux_correction_controls(
+    method: str,
+    quadrature_order: int,
+    max_stencil_layers: int,
+    max_condition: float,
+) -> None:
+    """Validate conservative face-average flux reconstruction controls."""
+    if method not in {"none", "cell_anchored_quadratic"}:
+        raise ValueError(
+            "face_flux_correction_scheme must be 'none' or "
+            "'cell_anchored_quadratic'."
+        )
+    if quadrature_order < 2:
+        raise ValueError("face_flux_quadrature_order must be at least 2.")
+    if max_stencil_layers < 1:
+        raise ValueError("face_flux_max_stencil_layers must be positive.")
+    if not math.isfinite(max_condition) or max_condition < 1.0:
+        raise ValueError(
+            "face_flux_max_condition must be finite and at least 1."
+        )
 
 
 class SolverControlsMapping:
@@ -165,6 +197,7 @@ class SimpleSolverControls(SolverControlsMapping):
     face_flux_correction_scheme: str = "none"
     face_flux_quadrature_order: int = 3
     face_flux_max_stencil_layers: int = 4
+    face_flux_max_condition: float = 100.0
     pressure_constraint: str = "nullspace"
     momentum_solve_strategy: str = "component"
     momentum_component_matrix_policy: str = "shared"
@@ -219,14 +252,13 @@ class SimpleSolverControls(SolverControlsMapping):
             raise ValueError("pressure_nonorthogonal_atol must be non-negative.")
         self.validate_pressure_constraint(self.pressure_constraint)
         self.validate_pressure_response_scheme(self.pressure_response_scheme)
-        self.validate_rhie_chow_velocity_scheme(self.rhie_chow_velocity_scheme)
-        self.validate_face_flux_correction_scheme(
-            self.face_flux_correction_scheme
+        validate_rhie_chow_velocity_scheme(self.rhie_chow_velocity_scheme)
+        validate_face_flux_correction_controls(
+            self.face_flux_correction_scheme,
+            self.face_flux_quadrature_order,
+            self.face_flux_max_stencil_layers,
+            self.face_flux_max_condition,
         )
-        if self.face_flux_quadrature_order < 2:
-            raise ValueError("face_flux_quadrature_order must be at least 2.")
-        if self.face_flux_max_stencil_layers < 1:
-            raise ValueError("face_flux_max_stencil_layers must be positive.")
         self.validate_momentum_solve_strategy(self.momentum_solve_strategy)
         self.validate_momentum_component_matrix_policy(
             self.momentum_component_matrix_policy
@@ -251,22 +283,6 @@ class SimpleSolverControls(SolverControlsMapping):
     def validate_pressure_response_scheme(method: str) -> None:
         if method not in {"simple", "simplec"}:
             raise ValueError("pressure_response_scheme must be 'simple' or 'simplec'.")
-
-    @staticmethod
-    def validate_rhie_chow_velocity_scheme(method: str) -> None:
-        if method not in {"interpolated", "second_order_reconstructed"}:
-            raise ValueError(
-                "rhie_chow_velocity_scheme must be 'interpolated' or "
-                "'second_order_reconstructed'."
-            )
-
-    @staticmethod
-    def validate_face_flux_correction_scheme(method: str) -> None:
-        if method not in {"none", "cell_anchored_quadratic"}:
-            raise ValueError(
-                "face_flux_correction_scheme must be 'none' or "
-                "'cell_anchored_quadratic'."
-            )
 
     @staticmethod
     def validate_momentum_solve_strategy(method: str) -> None:

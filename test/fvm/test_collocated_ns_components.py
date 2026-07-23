@@ -379,3 +379,67 @@ def test_simplec_momentum_response_denominator_uses_matrix_row_sum():
 
     np.testing.assert_allclose(np.asarray(simple), 4.0)
     np.testing.assert_allclose(np.asarray(simplec), 3.0)
+
+
+def test_spatial_face_velocity_dispatches_second_order_scheme(monkeypatch):
+    from fealpy.fvm import NSFVMSimpleModel
+
+    bm.set_backend("numpy")
+    model = NSFVMSimpleModel({
+        "pde": 1,
+        "nx": 2,
+        "ny": 2,
+        "rhie_chow_velocity_scheme": "second_order_reconstructed",
+        "pressure_constraint": "gauge",
+        "log_level": "ERROR",
+    })
+    marker = bm.ones((model.NF, model.GD), dtype=model.cm.dtype) * 7.0
+    monkeypatch.setattr(
+        model,
+        "second_order_reconstructed_face_velocity",
+        lambda velocity: marker,
+    )
+
+    actual = model.spatial_face_velocity(
+        bm.zeros((model.NC, model.GD), dtype=model.cm.dtype)
+    )
+
+    np.testing.assert_allclose(np.asarray(actual), np.asarray(marker))
+
+
+def test_spatial_face_velocity_applies_only_requested_flux_defect(monkeypatch):
+    from types import SimpleNamespace
+
+    from fealpy.fvm import NSFVMSimpleModel
+
+    bm.set_backend("numpy")
+    model = NSFVMSimpleModel({
+        "pde": 1,
+        "nx": 2,
+        "ny": 2,
+        "rhie_chow_velocity_scheme": "interpolated",
+        "face_flux_correction_scheme": "cell_anchored_quadratic",
+        "pressure_constraint": "gauge",
+        "log_level": "ERROR",
+    })
+    base = bm.zeros((model.NF, model.GD), dtype=model.cm.dtype)
+    defect = bm.arange(model.NF, dtype=model.cm.dtype) + 1.0
+    monkeypatch.setattr(
+        model,
+        "face_interpolate_cell_vector",
+        lambda velocity, method: base,
+    )
+    monkeypatch.setattr(
+        model,
+        "face_flux_reconstruct",
+        SimpleNamespace(correction=lambda *args, **kwargs: defect),
+    )
+
+    actual = model.spatial_face_velocity(
+        bm.zeros((model.NC, model.GD), dtype=model.cm.dtype)
+    )
+
+    np.testing.assert_allclose(
+        np.asarray(model.compute_face_flux(actual)),
+        np.asarray(defect),
+    )

@@ -1387,6 +1387,40 @@ class CollocatedFaceFluxAlgebra:
             method=method,
         )
 
+    def spatial_face_velocity(
+        self,
+        cell_velocity,
+        *,
+        boundary_faces=None,
+        boundary_face_average=None,
+    ):
+        """Construct the configured spatial face velocity before pressure coupling."""
+        if cell_velocity.shape != (self.NC, self.GD):
+            raise ValueError("cell velocity must have shape (NC, GD).")
+        if self.controls.rhie_chow_velocity_scheme == "interpolated":
+            face_velocity = self.face_interpolate_cell_vector(
+                cell_velocity,
+                method=self.controls.face_interpolation_method,
+            )
+        else:
+            face_velocity = self.second_order_reconstructed_face_velocity(
+                cell_velocity
+            )
+
+        if self.controls.face_flux_correction_scheme == "none":
+            return face_velocity
+
+        flux_defect = self.face_flux_reconstruct.correction(
+            cell_velocity,
+            face_velocity,
+            boundary_face_average=boundary_face_average,
+            boundary_faces=boundary_faces,
+        )
+        return self.enforce_face_flux(
+            face_velocity,
+            self.compute_face_flux(face_velocity) + flux_defect,
+        )
+
     def second_order_reconstructed_face_velocity(self, cell_velocity):
         """Blend owner/neighbour linear reconstructions at face centres."""
         if cell_velocity.shape != (self.NC, self.GD):
