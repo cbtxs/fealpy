@@ -7,7 +7,7 @@ from typing import Optional
 from fealpy.backend import backend_manager as bm
 from fealpy.typing import TensorLike
 
-from .fvm_geometry import FVMGeometry
+from .fvm_geometry import FVMGeometry, interpolate_cell_to_face
 
 
 def reconstruct_face_gradient(
@@ -32,7 +32,11 @@ def reconstruct_face_gradient(
     """
     geometry = geometry if geometry is not None else FVMGeometry(mesh)
     cell_gradient = bm.array(cell_gradient)
-    face_gradient = interpolate_cell_gradient(geometry, cell_gradient, interpolation_method)
+    face_gradient = interpolate_cell_to_face(
+        cell_gradient,
+        geometry=geometry,
+        method=interpolation_method,
+    )
 
     patch_sn_grads = []
     if dirichlet_faces is not None:
@@ -94,18 +98,3 @@ def reconstruct_face_gradient(
         face_gradient = bm.set_at(face_gradient, faces, corrected_boundary)
 
     return face_gradient
-
-
-def interpolate_cell_gradient(geometry: FVMGeometry, cell_gradient: TensorLike, method: str) -> TensorLike:
-    if method not in {"average", "linear"}:
-        raise ValueError("interpolation_method must be 'average' or 'linear'.")
-    if method == "linear":
-        owner_weight = geometry.linear_owner_weight()
-    else:
-        average_weight = 0.5 * bm.ones_like(geometry.mag_S_f)
-        owner_weight = bm.where(geometry.is_internal, average_weight, 1.0)
-
-    weight_shape = (owner_weight.shape[0],) + (1,) * (cell_gradient.ndim - 1)
-    owner_weight = owner_weight.reshape(weight_shape)
-    neighbour_weight = 1.0 - owner_weight
-    return owner_weight * cell_gradient[geometry.owner] + neighbour_weight * cell_gradient[geometry.neighbour]

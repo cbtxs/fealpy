@@ -86,8 +86,8 @@ class NSFVMRCModel(ComputationalModel):
         self.velocity_gradient = GradientReconstruct(
             self.mesh,
             method="green_gauss",
-            gd=self.pde.dirichlet_velocity,
-            bc_type="dirichlet",
+            boundary_value=self.pde.dirichlet_velocity,
+            boundary_type="dirichlet",
         )
         self.fvm_geometry = FVMGeometry(self.mesh)
         self.velocity_dirichlet_bc = DirichletBC(
@@ -125,6 +125,7 @@ class NSFVMRCModel(ComputationalModel):
                 uh,
                 grad_f,
                 geometry=self.fvm_geometry,
+                method="bounded_over_relaxed",
                 boundary_policy="all",
             )
         )

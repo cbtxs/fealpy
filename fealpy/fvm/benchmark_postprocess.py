@@ -9,7 +9,10 @@ from typing import Iterable
 import numpy as np
 
 from fealpy.backend import backend_manager as bm
+from fealpy.mesh import write_mesh_to_vtu
 from fealpy.typing import TensorLike
+
+from .fvm_geometry import FVMGeometry
 
 
 def re_label(re: float) -> str:
@@ -48,21 +51,23 @@ def write_dict_csv(path: str | Path, rows: Iterable[dict]) -> None:
 
 
 def solution_cell_fields(
-    uh: TensorLike,
-    vh: TensorLike,
+    velocity: TensorLike,
     pressure: TensorLike,
     *,
     fields: tuple[str, ...] = ("velocity", "u", "v", "pressure"),
     velocity_gradient=None,
 ) -> dict[str, TensorLike]:
     """Build selected cell fields for VTU output."""
-    velocity = bm.stack([uh, vh], axis=-1)
+    if velocity.ndim != 2 or velocity.shape[1] < 2:
+        raise ValueError("velocity must have shape (NC, GD) with GD >= 2.")
+    u = velocity[:, 0]
+    v = velocity[:, 1]
     available = {
         "velocity": velocity,
-        "u": uh,
-        "v": vh,
+        "u": u,
+        "v": v,
         "pressure": pressure,
-        "speed": bm.sqrt(uh**2 + vh**2),
+        "speed": bm.linalg.norm(velocity, axis=1),
     }
     if "vorticity" in fields:
         if velocity_gradient is None:
@@ -74,23 +79,37 @@ def solution_cell_fields(
 
 def write_solution_vtk(
     mesh,
-    uh: TensorLike,
-    vh: TensorLike,
+    velocity: TensorLike,
     pressure: TensorLike,
     path: str | Path,
     *,
     fields: tuple[str, ...] = ("velocity", "u", "v", "pressure"),
     velocity_gradient=None,
+    geometry: FVMGeometry | None = None,
 ) -> None:
-    """Attach cell fields and write a VTU file through the mesh object."""
+    """Attach global FVM cell fields to one root sector and write a VTU file."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    for name, value in solution_cell_fields(
-        uh,
-        vh,
+    geometry = FVMGeometry(mesh) if geometry is None else geometry
+    if len(geometry.cell_views) != 1:
+        raise RuntimeError(
+            "mixed cell-sector VTU output is unavailable until "
+            "fealpy.mesh.write_mesh_to_vtu merges same-named cell fields "
+            "across sectors."
+        )
+    cell_fields = solution_cell_fields(
+        velocity,
         pressure,
         fields=fields,
         velocity_gradient=velocity_gradient,
-    ).items():
-        mesh.celldata[name] = value
-    mesh.to_vtk(fname=str(path))
+    )
+    for view, cell_slice in zip(
+        geometry.cell_views, geometry.cell_sector_slices
+    ):
+        for name, value in cell_fields.items():
+            view.set_attribute(name, value[cell_slice])
+    write_mesh_to_vtu(
+        str(path),
+        mesh,
+        entity_names=[view.sector.schema_name for view in geometry.cell_views],
+    )

@@ -13,6 +13,7 @@ from fealpy.fvm import (
     RhieChowInterpolation,
     ScalarCrossDiffusionIntegrator,
     reconstruct_face_gradient,
+    FVMGeometry,
 )
 
 
@@ -44,11 +45,12 @@ def _skew_two_cell_mesh():
 
 
 def _openfoam_owner_weight(mesh, face):
-    face_to_cell = np.asarray(mesh.edge_to_cell()[:, :2])
+    geometry = FVMGeometry(mesh)
+    face_to_cell = np.asarray(geometry.face_to_cell)
     owner, neighbour = face_to_cell[face]
-    face_center = np.asarray(mesh.entity_barycenter("face")[face])
-    cell_center = np.asarray(mesh.entity_barycenter("cell"))
-    sf = np.asarray(mesh.edge_normal()[face])
+    face_center = np.asarray(geometry.face_center[face])
+    cell_center = np.asarray(geometry.cell_center)
+    sf = np.asarray(geometry.S_f[face])
     own = abs(float(np.dot(sf, face_center - cell_center[owner])))
     nei = abs(float(np.dot(sf, cell_center[neighbour] - face_center)))
     return nei / (own + nei)
@@ -57,7 +59,8 @@ def _openfoam_owner_weight(mesh, face):
 def test_convection_integrator_can_use_openfoam_linear_face_weights():
     mesh = _skew_two_cell_mesh()
     space = ScaledMonomialSpace2d(mesh, 0)
-    face_to_cell = np.asarray(mesh.edge_to_cell()[:, :2])
+    geometry = FVMGeometry(mesh)
+    face_to_cell = np.asarray(geometry.face_to_cell)
     internal_face = int(
         np.flatnonzero(face_to_cell[:, 0] != face_to_cell[:, 1])[0]
     )
@@ -72,7 +75,7 @@ def test_convection_integrator_can_use_openfoam_linear_face_weights():
     )
 
     weight = _openfoam_owner_weight(mesh, internal_face)
-    sf = np.asarray(mesh.edge_normal()[internal_face])
+    sf = np.asarray(geometry.S_f[internal_face])
     flux = float(np.dot(sf, face_velocity[internal_face]))
     expected = flux * np.array(
         [
@@ -101,6 +104,7 @@ def test_convection_integrator_expands_face_stencil_for_tensor_space():
 def test_convection_integrator_default_matches_central_face_stencil():
     mesh = _skew_two_cell_mesh()
     space = ScaledMonomialSpace2d(mesh, 0)
+    geometry = FVMGeometry(mesh)
     face_velocity = np.tile(np.array([[0.7, -0.2]]), (mesh.number_of_faces(), 1))
 
     for interpolation in ("average", "linear"):
@@ -112,7 +116,7 @@ def test_convection_integrator_default_matches_central_face_stencil():
 
         if interpolation == "average":
             owner_weight = np.where(
-                np.asarray(mesh.edge_to_cell()[:, 0] != mesh.edge_to_cell()[:, 1]),
+                np.asarray(geometry.owner != geometry.neighbour),
                 0.5,
                 1.0,
             )
@@ -120,7 +124,7 @@ def test_convection_integrator_default_matches_central_face_stencil():
             owner_weight = np.asarray(
                 face_interpolation_owner_weight(mesh, method="linear")
             )
-        flux = np.einsum("ij,ij->i", np.asarray(mesh.edge_normal()), face_velocity)
+        flux = np.einsum("ij,ij->i", np.asarray(geometry.S_f), face_velocity)
         expected = flux[:, None, None] * np.array(
             [
                 [[weight, 1.0 - weight], [-weight, weight - 1.0]]
@@ -152,28 +156,6 @@ def test_convection_integrator_default_skips_quadrature_fetch(monkeypatch):
     ).assembly(space)
 
     assert local.shape == (mesh.number_of_faces(), 2, 2)
-
-
-def test_convection_integrator_fast_method_is_compatible_alias():
-    mesh = _skew_two_cell_mesh()
-    scalar_space = ScaledMonomialSpace2d(mesh, 0)
-    vector_space = TensorFunctionSpace(scalar_space, shape=(2, -1))
-    face_velocity = np.tile(np.array([[0.7, -0.2]]), (mesh.number_of_faces(), 1))
-
-    default = BilinearForm(vector_space).add_integrator(
-        ConvectionIntegrator(q=2, coef=face_velocity, interpolation="linear")
-    ).assembly()
-    fast = BilinearForm(vector_space).add_integrator(
-        ConvectionIntegrator(
-            q=2,
-            coef=face_velocity,
-            interpolation="linear",
-            method="fast",
-        )
-    ).assembly()
-    diff = fast.to_scipy() - default.to_scipy()
-
-    np.testing.assert_allclose(diff.data, 0.0, atol=1.0e-13)
 
 
 def test_convection_matrix_assembler_matches_bilinear_form_vector_matrix():
@@ -209,19 +191,22 @@ def test_convection_matrix_assembler_matches_bilinear_form_vector_matrix():
 
 def test_rhie_chow_can_use_openfoam_linear_velocity_interpolation():
     mesh = _skew_two_cell_mesh()
-    face_to_cell = np.asarray(mesh.edge_to_cell()[:, :2])
+    geometry = FVMGeometry(mesh)
+    face_to_cell = np.asarray(geometry.face_to_cell)
     internal_face = int(
         np.flatnonzero(face_to_cell[:, 0] != face_to_cell[:, 1])[0]
     )
     weight = _openfoam_owner_weight(mesh, internal_face)
     velocity = np.array([[1.0, -2.0], [4.0, 3.0]])
-    flat_velocity = velocity.flatten(order="F")
-    ap = np.ones(2 * mesh.number_of_cells())
+    face_response = np.ones(mesh.number_of_faces())
 
     uf, _ = RhieChowInterpolation(
         mesh,
         velocity_interpolation="linear",
-    ).cell_velocity_to_face(flat_velocity, ap)
+    ).cell_velocity_to_face(
+        velocity,
+        face_response_coefficient=face_response,
+    )
 
     owner, neighbour = face_to_cell[internal_face]
     expected = weight * velocity[owner] + (1.0 - weight) * velocity[neighbour]
@@ -237,7 +222,7 @@ def test_simple_solver_pressure_gradient_integrator_is_exact_for_linear_pressure
 
     for model_cls, options in cases:
         model = model_cls({**options, "pbar_log": False})
-        points = model.mesh.entity_barycenter("cell")
+        points = model.fvm_geometry.cell_center
         pressure = linear_pressure(points)
 
         grad_p = GradientReconstruct(model.mesh).cell_gradient(pressure)
@@ -263,7 +248,7 @@ def test_piso_velocity_pressure_correction_uses_lsq_gradient_and_cell_layout():
         "space_degree": 0,
         "pbar_log": False,
     })
-    points = model.mesh.entity_barycenter("cell")
+    points = model.fvm_geometry.cell_center
     pressure_rate = linear_pressure(points)
     velocity = linear_velocity(points)
     response = 0.25
@@ -288,12 +273,14 @@ def test_rhie_chow_gradient_difference_vanishes_for_linear_internal_pressure():
         "space_degree": 0,
         "pbar_log": False,
     })
-    points = model.mesh.entity_barycenter("cell")
+    points = model.fvm_geometry.cell_center
     pressure = linear_pressure(points)
-    face_to_cell = model.mesh.edge_to_cell()[:, :2]
+    face_to_cell = model.fvm_geometry.face_to_cell
     is_internal = np.asarray(face_to_cell[:, 0] != face_to_cell[:, 1])
 
-    grad_diff = np.asarray(RhieChowInterpolation(model.mesh).GradientDifference(pressure))
+    grad_diff = np.asarray(
+        RhieChowInterpolation(model.mesh).pressure_gradient_difference(pressure)
+    )
 
     assert np.max(np.abs(grad_diff[is_internal])) < 1.0e-12
 
@@ -307,7 +294,7 @@ def test_rhie_chow_interpolation_accepts_precomputed_pressure_gradient(monkeypat
         "pbar_log": False,
     })
     pressure = np.zeros(model.NC)
-    velocity = np.zeros(model.GD * model.NC)
+    velocity = np.zeros((model.NC, model.GD))
     a_p = np.ones(model.GD * model.NC)
     pressure_gradient = np.zeros((model.NC, model.GD))
     rhie_chow = RhieChowInterpolation(model.mesh)
@@ -318,7 +305,7 @@ def test_rhie_chow_interpolation_accepts_precomputed_pressure_gradient(monkeypat
 
     rhie_chow.gradient_reconstruct = ForbiddenGradient()
 
-    face_velocity = rhie_chow.Interpolation(
+    face_velocity = rhie_chow.reconstruct(
         velocity,
         a_p,
         pressure,
@@ -336,15 +323,15 @@ def test_cross_diffusion_gradient_path_is_exact_for_linear_velocity():
         "space_degree": 0,
         "pbar_log": False,
     })
-    points = model.mesh.entity_barycenter("cell")
+    points = model.fvm_geometry.cell_center
     velocity = linear_velocity(points)
     exact_cell_grad = np.array([[1.0, 2.0], [-0.5, 0.25]])
 
     gradient = GradientReconstruct(
         model.mesh,
         method="green_gauss",
-        gd=linear_velocity,
-        bc_type="dirichlet",
+        boundary_value=linear_velocity,
+        boundary_type="dirichlet",
     )
     cell_grad = np.asarray(
         gradient.cell_gradient(velocity)
@@ -363,6 +350,7 @@ def _boundary_all_cross_diffusion(model, velocity):
     lform.add_integrator(
         ScalarCrossDiffusionIntegrator(
             grad_f=grad_f,
+            method="bounded_over_relaxed",
             boundary_policy="all",
         )
     )
@@ -375,7 +363,7 @@ def _cell_velocity_for_model(model, points):
     return model.pde.velocity(points)
 
 
-def test_momentum_nonorthogonal_rhs_keeps_boundary_correction_for_current_bc_layer():
+def test_momentum_nonorthogonal_rhs_keeps_boundary_correction():
     cases = [
         (NSFVMSimpleModel, {"pde": 6, "nx": 4, "ny": 4, "space_degree": 0}),
         (
@@ -393,7 +381,7 @@ def test_momentum_nonorthogonal_rhs_keeps_boundary_correction_for_current_bc_lay
 
     for model_cls, options in cases:
         model = model_cls({**options, "pbar_log": False})
-        points = model.mesh.entity_barycenter("cell")
+        points = model.fvm_geometry.cell_center
         velocity = _cell_velocity_for_model(model, points)
 
         actual = np.asarray(model.momentum_nonorthogonal_rhs(velocity))
@@ -416,7 +404,7 @@ def test_exact_pressure_lsq_gradient_decreases_on_solver_pde_meshes():
                 "ny": nx,
                 "pbar_log": False,
             })
-            points = model.mesh.entity_barycenter("cell")
+            points = model.fvm_geometry.cell_center
             pressure = model.pde.pressure(points)
             grad_p = GradientReconstruct(model.mesh).cell_gradient(
                 pressure

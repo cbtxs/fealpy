@@ -46,8 +46,8 @@ class LSQGradientReconstruct:
         weights = self.owner.layer_weights
         if self._layered_lsq_cache_key != weights:
             first_weight, second_weight = weights
-            NC = self.mesh.number_of_cells()
-            c2c = self.mesh.cell_to_cell()
+            NC = self.fvm_geometry.NC
+            c2c = self.padded_cell_neighbors(NC)
             N = self.layered_lsq_stencil(c2c, NC)
             cell_centers = self.fvm_geometry.cell_center
             d = cell_centers[N] - cell_centers[:, None, :]
@@ -60,7 +60,17 @@ class LSQGradientReconstruct:
             cells = bm.arange(NC, dtype=N.dtype)
             for k in range(N.shape[1]):
                 A = self.add_lsq_matrix_samples(A, cells, d[:, k, :], sample_weight[:, k])
-            inv_A = self.invert_lsq_matrix(A, "layered_lsq")
+            bc_type = None if self.owner.boundary_value is None else (
+                "dirichlet" if self.owner.boundary_type is None else self.owner.boundary_type
+            )
+            use_dirichlet_samples = (
+                bc_type == "dirichlet" and self.owner.boundary_weight != 0.0
+            )
+            inv_A = (
+                None
+                if use_dirichlet_samples
+                else self.invert_lsq_matrix(A, "layered_lsq")
+            )
             self._layered_lsq_cache_key = weights
             self._layered_lsq_cache = (N, weighted_d, A, inv_A, cell_centers)
             self._layered_lsq_dirichlet_cache_key = None
@@ -70,10 +80,12 @@ class LSQGradientReconstruct:
         b = least_squares_rhs(U, N, weighted_d)
 
         bc_type = None
-        if self.owner.gd is not None:
-            bc_type = "dirichlet" if self.owner.bc_type is None else self.owner.bc_type
+        if self.owner.boundary_value is not None:
+            bc_type = "dirichlet" if self.owner.boundary_type is None else self.owner.boundary_type
             if bc_type not in ("dirichlet", "neumann"):
-                raise ValueError(f"Unknown LSQ boundary bc_type: {self.owner.bc_type!r}.")
+                raise ValueError(
+                    f"Unknown LSQ boundary_type: {self.owner.boundary_type!r}."
+                )
 
         if bc_type == "dirichlet":
             boundary_weight = self.owner.boundary_weight
@@ -82,7 +94,7 @@ class LSQGradientReconstruct:
                 if self._layered_lsq_dirichlet_cache_key != cache_key:
                     boundary_faces = selected_boundary_faces(
                         self.fvm_geometry,
-                        self.owner.threshold,
+                        self.owner.boundary_threshold,
                         default_all=True,
                     )
                     bd_owner = self.fvm_geometry.owner[boundary_faces]
@@ -101,7 +113,7 @@ class LSQGradientReconstruct:
                     )
                 boundary_faces, bd_owner, bd_d, inv_A = self._layered_lsq_dirichlet_cache
                 face_centers = self.fvm_geometry.face_center
-                bd_value = self.owner.gd(face_centers[boundary_faces])
+                bd_value = self.owner.boundary_value(face_centers[boundary_faces])
                 b = self.add_lsq_rhs_samples(
                     b, bd_owner, bd_d, bd_value - U[bd_owner], boundary_weight
                 )
@@ -111,13 +123,13 @@ class LSQGradientReconstruct:
         if bc_type == "neumann":
             boundary_faces = selected_boundary_faces(
                 self.fvm_geometry,
-                self.owner.threshold,
+                self.owner.boundary_threshold,
                 default_all=True,
             )
             owner = self.fvm_geometry.owner[boundary_faces]
             unit_normal = self.fvm_geometry.n_f[boundary_faces]
             face_centers = self.fvm_geometry.face_center
-            bd_value = self.owner.gd(face_centers[boundary_faces])
+            bd_value = self.owner.boundary_value(face_centers[boundary_faces])
             if owner.shape[0] == 0:
                 return grad
 
@@ -146,9 +158,35 @@ class LSQGradientReconstruct:
             return constrained_grad
         return grad
 
+    def padded_cell_neighbors(self, NC):
+        """Return a dense neighbour stencil for fixed or variable face counts."""
+        faces_per_cell = self.fvm_geometry.cell_face_count
+        max_faces = int(bm.to_numpy(bm.max(faces_per_cell)))
+        face_to_cell = self.fvm_geometry.face_to_cell
+        cells = bm.arange(
+            NC,
+            dtype=face_to_cell.dtype,
+            device=bm.get_device(face_to_cell),
+        )
+        cell_to_cell = bm.broadcast_to(cells[:, None], (NC, max_faces))
+        cell_to_cell = bm.copy(cell_to_cell)
+        owner_local_face = self.fvm_geometry.owner_local_face
+        neighbour_local_face = self.fvm_geometry.neighbour_local_face
+        cell_to_cell = bm.set_at(
+            cell_to_cell,
+            (face_to_cell[:, 0], owner_local_face),
+            face_to_cell[:, 1],
+        )
+        cell_to_cell = bm.set_at(
+            cell_to_cell,
+            (face_to_cell[:, 1], neighbour_local_face),
+            face_to_cell[:, 0],
+        )
+        return cell_to_cell
+
     def face_weighted_lsq(self, U):
         if self._face_weighted_lsq_cache is None:
-            NC = self.mesh.number_of_cells()
+            NC = self.fvm_geometry.NC
             cell_centers = self.fvm_geometry.cell_center
             face_centers = self.fvm_geometry.face_center
             owner = self.fvm_geometry.owner
@@ -216,7 +254,7 @@ class LSQGradientReconstruct:
             A,
             inv_A,
         ) = self._face_weighted_lsq_cache
-        NC = self.mesh.number_of_cells()
+        NC = self.fvm_geometry.NC
         if U.ndim == 1:
             b = bm.zeros((NC, self.GD), dtype=U.dtype)
         else:
@@ -231,17 +269,17 @@ class LSQGradientReconstruct:
             rhs_weight,
         )
 
-        if self.owner.gd is not None:
-            bc_type = "dirichlet" if self.owner.bc_type is None else self.owner.bc_type
+        if self.owner.boundary_value is not None:
+            bc_type = "dirichlet" if self.owner.boundary_type is None else self.owner.boundary_type
             if bc_type not in ("dirichlet", "neumann"):
                 raise ValueError(
                     "face_weighted_lsq accepts only Dirichlet or Neumann boundary data."
                 )
-            cache_key = (bc_type, self.owner.threshold)
+            cache_key = (bc_type, self.owner.boundary_threshold)
             if self._face_weighted_lsq_boundary_cache_key != cache_key:
                 selected = selected_boundary_faces(
                     self.fvm_geometry,
-                    self.owner.threshold,
+                    self.owner.boundary_threshold,
                     default_all=True,
                 )
                 selected_owner = self.fvm_geometry.owner[selected]
@@ -276,7 +314,7 @@ class LSQGradientReconstruct:
                 selected_scale,
                 normal_distance,
             ) = self._face_weighted_lsq_boundary_cache
-            bd_value = self.owner.gd(points)
+            bd_value = self.owner.boundary_value(points)
             if bc_type == "neumann":
                 if U.ndim == 1:
                     bd_value = U[selected_owner] + bd_value * normal_distance
@@ -415,6 +453,219 @@ class LSQGradientReconstruct:
         return inv_A
 
 
+class QuadraticLSQGradientReconstruct:
+    r"""Quadratic k-exact gradients for cell-average finite-volume fields.
+
+    Around cell centroid ``x_P`` the reconstructed polynomial is written as
+
+    ``u_h = u_P + g_P r + 1/2 H_P : (r r - M_P)``,
+
+    where ``M_P`` is the cell-average second central moment.  Neighbour-cell
+    equations therefore use ``d d + M_N - M_P`` in their quadratic columns.
+    This distinction is required because FVM unknowns are cell averages, not
+    point samples at cell centroids.
+    """
+
+    def __init__(self, owner):
+        self.owner = owner
+        self.mesh = owner.mesh
+        self.GD = owner.GD
+        self.fvm_geometry = owner.fvm_geometry
+        self.clear_cache()
+
+    def clear_cache(self):
+        self._cache = None
+
+    def _cell_second_moment(self):
+        center = self.fvm_geometry.cell_center
+
+        def integrand(points, cell_slice):
+            local_center = center[cell_slice]
+            delta = points - local_center[:, None, :]
+            return bm.einsum("cqi,cqj->cqij", delta, delta)
+
+        return self.fvm_geometry.cell_integral(
+            integrand, q=3
+        ) / self.fvm_geometry.cell_measure[:, None, None]
+
+    def _features(self, displacement, moment_difference, scale):
+        scaled_d = displacement / scale[..., None]
+        scaled_moment = moment_difference / scale[..., None, None] ** 2
+        columns = [scaled_d[..., component] for component in range(self.GD)]
+        for first in range(self.GD):
+            for second in range(first, self.GD):
+                value = (
+                    scaled_d[..., first] * scaled_d[..., second]
+                    + scaled_moment[..., first, second]
+                )
+                if first == second:
+                    value = 0.5 * value
+                columns.append(value)
+        return bm.stack(columns, axis=-1)
+
+    def _unique_stencil(self, stencil, NC):
+        sorted_stencil = bm.sort(stencil, axis=1)
+        duplicate = bm.zeros_like(sorted_stencil, dtype=bm.bool)
+        duplicate = bm.set_at(
+            duplicate,
+            (slice(None), slice(1, None)),
+            sorted_stencil[:, 1:] == sorted_stencil[:, :-1],
+        )
+        cells = bm.broadcast_to(
+            bm.arange(NC, dtype=sorted_stencil.dtype)[:, None],
+            sorted_stencil.shape,
+        )
+        unique = bm.set_at(bm.copy(sorted_stencil), duplicate, cells[duplicate])
+        return bm.sort(unique, axis=1)
+
+    def _build_cache(self):
+        NC = self.fvm_geometry.NC
+        c2c = self.owner.lsq_reconstruct.padded_cell_neighbors(NC)
+        second = c2c[c2c].reshape(NC, -1)
+        third = c2c[second].reshape(NC, -1)
+        stencil = self._unique_stencil(
+            bm.concatenate((c2c, second, third), axis=1), NC
+        )
+
+        center = self.fvm_geometry.cell_center
+        moment = self._cell_second_moment()
+        displacement = center[stencil] - center[:, None, :]
+        distance = bm.linalg.norm(displacement, axis=-1)
+        active = stencil != bm.arange(NC, dtype=stencil.dtype)[:, None]
+        characteristic = bm.max(distance, axis=1)
+        if bm.any(characteristic <= 0.0):
+            raise ValueError("quadratic_lsq stencil has zero diameter.")
+
+        moment_difference = moment[stencil] - moment[:, None, :, :]
+        feature = self._features(
+            displacement,
+            moment_difference,
+            characteristic[:, None],
+        )
+        scaled_distance = distance / characteristic[:, None]
+        sample_weight = bm.where(
+            active,
+            1.0 / bm.maximum(scaled_distance, 1.0e-14) ** 2,
+            0.0,
+        )
+        normal_matrix = bm.einsum(
+            "ns,nsi,nsj->nij", sample_weight, feature, feature
+        )
+
+        boundary_data = None
+        bc_type = None if self.owner.boundary_value is None else (
+            "dirichlet" if self.owner.boundary_type is None else self.owner.boundary_type
+        )
+        if bc_type not in (None, "dirichlet"):
+            raise ValueError("quadratic_lsq currently supports Dirichlet data only.")
+        if bc_type == "dirichlet" and self.owner.boundary_weight != 0.0:
+            boundary_faces = selected_boundary_faces(
+                self.fvm_geometry,
+                self.owner.boundary_threshold,
+                default_all=True,
+            )
+            boundary_owner = self.fvm_geometry.owner[boundary_faces]
+            boundary_points = self.fvm_geometry.face_center[boundary_faces]
+            boundary_displacement = boundary_points - center[boundary_owner]
+            boundary_moment_difference = -moment[boundary_owner]
+            boundary_scale = characteristic[boundary_owner]
+            boundary_feature = self._features(
+                boundary_displacement,
+                boundary_moment_difference,
+                boundary_scale,
+            )
+            boundary_distance = (
+                bm.linalg.norm(boundary_displacement, axis=-1) / boundary_scale
+            )
+            boundary_weight = self.owner.boundary_weight / bm.maximum(
+                boundary_distance, 1.0e-14
+            ) ** 2
+            boundary_outer = bm.einsum(
+                "n,ni,nj->nij",
+                boundary_weight,
+                boundary_feature,
+                boundary_feature,
+            )
+            normal_matrix = bm.index_add(
+                normal_matrix, boundary_owner, boundary_outer, axis=0
+            )
+            boundary_data = (
+                boundary_faces,
+                boundary_owner,
+                boundary_points,
+                boundary_feature,
+                boundary_weight,
+            )
+
+        determinant = bm.linalg.det(normal_matrix)
+        matrix_scale = bm.maximum(
+            bm.linalg.norm(normal_matrix, axis=(1, 2)),
+            bm.ones_like(determinant),
+        )
+        ncoeff = normal_matrix.shape[-1]
+        if bm.any(bm.abs(determinant) <= 1.0e-14 * matrix_scale**ncoeff):
+            raise ValueError("quadratic_lsq stencil is rank deficient.")
+
+        self._cache = (
+            stencil,
+            feature,
+            sample_weight,
+            characteristic,
+            bm.linalg.inv(normal_matrix),
+            boundary_data,
+        )
+
+    def quadratic_lsq(self, U):
+        if self._cache is None:
+            self._build_cache()
+        (
+            stencil,
+            feature,
+            sample_weight,
+            characteristic,
+            inverse,
+            boundary_data,
+        ) = self._cache
+
+        delta = U[stencil] - U[:, None]
+        if U.ndim == 1:
+            rhs = bm.einsum("ns,nsi,ns->ni", sample_weight, feature, delta)
+        else:
+            rhs = bm.einsum("ns,nsi,nsc->nci", sample_weight, feature, delta)
+
+        if boundary_data is not None:
+            (
+                _,
+                boundary_owner,
+                boundary_points,
+                boundary_feature,
+                boundary_weight,
+            ) = boundary_data
+            boundary_value = self.owner.boundary_value(boundary_points)
+            boundary_delta = boundary_value - U[boundary_owner]
+            if U.ndim == 1:
+                boundary_rhs = bm.einsum(
+                    "n,ni,n->ni",
+                    boundary_weight,
+                    boundary_feature,
+                    boundary_delta,
+                )
+            else:
+                boundary_rhs = bm.einsum(
+                    "n,ni,nc->nci",
+                    boundary_weight,
+                    boundary_feature,
+                    boundary_delta,
+                )
+            rhs = bm.index_add(rhs, boundary_owner, boundary_rhs, axis=0)
+
+        if U.ndim == 1:
+            coefficients = bm.einsum("nij,nj->ni", inverse, rhs)
+            return coefficients[:, : self.GD] / characteristic[:, None]
+        coefficients = bm.einsum("nij,ncj->nci", inverse, rhs)
+        return coefficients[:, :, : self.GD] / characteristic[:, None, None]
+
+
 class GreenGaussGradientReconstruct:
     """Green-Gauss cell-gradient reconstruction."""
 
@@ -427,16 +678,18 @@ class GreenGaussGradientReconstruct:
     def green_gauss(self, U):
         # Green-Gauss is dimension-independent once owner-oriented face
         # geometry is supplied by FVMGeometry.
-        if self.owner.gd is not None and self.owner.bc_type is None:
-            raise ValueError("bc_type must be set when gd is given.")
-        if self.owner.bc_type is not None and self.owner.gd is None:
-            raise ValueError("gd must be provided when bc_type is set.")
-        if self.owner.bc_type not in (None, "dirichlet", "neumann"):
-            raise ValueError(f"Unknown Green-Gauss bc_type: {self.owner.bc_type!r}.")
+        if self.owner.boundary_value is not None and self.owner.boundary_type is None:
+            raise ValueError("boundary_type must be set when boundary_value is given.")
+        if self.owner.boundary_type is not None and self.owner.boundary_value is None:
+            raise ValueError("boundary_value is required when boundary_type is set.")
+        if self.owner.boundary_type not in (None, "dirichlet", "neumann"):
+            raise ValueError(
+                f"Unknown Green-Gauss boundary_type: {self.owner.boundary_type!r}."
+            )
 
-        cell_measure = self.mesh.entity_measure("cell")
+        cell_measure = self.fvm_geometry.cell_measure
         scalar_field = U.ndim == 1
-        NC = self.mesh.number_of_cells()
+        NC = self.fvm_geometry.NC
         if scalar_field:
             grad_U = bm.zeros((NC, self.GD), dtype=U.dtype)
         else:
@@ -458,21 +711,21 @@ class GreenGaussGradientReconstruct:
             axis=0,
         )
 
-        if self.owner.gd is not None:
+        if self.owner.boundary_value is not None:
             boundary_faces = selected_boundary_faces(
                 self.fvm_geometry,
-                self.owner.threshold,
+                self.owner.boundary_threshold,
                 default_all=True,
             )
             bd_owner = self.fvm_geometry.owner[boundary_faces]
             points = self.fvm_geometry.face_center[boundary_faces]
-            if self.owner.bc_type == "dirichlet":
-                bd_value = self.owner.gd(points)
+            if self.owner.boundary_type == "dirichlet":
+                bd_value = self.owner.boundary_value(points)
             else:
                 unit_normal = self.fvm_geometry.n_f[boundary_faces]
                 center_to_face = points - self.fvm_geometry.cell_center[bd_owner]
                 normal_distance = bm.abs(bm.einsum("ij,ij->i", center_to_face, unit_normal))
-                normal_derivative = self.owner.gd(points)
+                normal_derivative = self.owner.boundary_value(points)
                 if scalar_field:
                     bd_value = U[bd_owner] + normal_derivative * normal_distance
                 else:
@@ -506,21 +759,20 @@ class GradientReconstruct:
 
     Dimension status
     ----------------
-    ``layered_lsq``, ``face_weighted_lsq``, and ``green_gauss`` use the cached
-    ``GD = mesh.geo_dimension()`` for gradient dimensions.  The 2D LSQ inverse
-    keeps the explicit fast path; other dimensions use the backend batched
-    inverse.
+    ``layered_lsq``, ``face_weighted_lsq``, ``quadratic_lsq``, and
+    ``green_gauss`` use the cached ``GD = mesh.geo_dimension()`` for gradient
+    dimensions.  The linear 2D LSQ inverse keeps the explicit fast path;
+    quadratic and other-dimensional systems use the backend batched inverse.
 
-    Future cleanup directions
-    -------------------------
+    Implementation notes
+    --------------------
     - Performance: keep the current LSQ geometry/inverse caches, then consider
       further reducing ``face_weighted_lsq`` boundary-geometry recomputation, RHS
       assembly work, and temporary arrays.
     - 3D extension: validate boundary Neumann constraints on three-dimensional
       control volumes before treating those paths as stable.
-    - Boundary semantics: ``gd``/``bc_type``/``threshold`` are inherited from
-      the historical manufactured-solution interface.  Revisit them after the
-      engineering boundary-condition layer becomes stable.
+    - Boundary samples use the explicit ``boundary_value``, ``boundary_type``,
+      and ``boundary_threshold`` protocol for Dirichlet or Neumann data.
     """
 
     def __init__(
@@ -528,20 +780,20 @@ class GradientReconstruct:
         mesh,
         *,
         method="layered_lsq",
-        gd=None,
-        bc_type=None,
-        threshold=None,
-        layer_weights=(1.0, 1.0),
+        boundary_value=None,
+        boundary_type=None,
+        boundary_threshold=None,
+        layer_weights=(1.0, 0.25),
         boundary_weight=1.0,
         geometry=None,
     ):
         self.mesh = mesh
-        self.GD = mesh.geo_dimension()
         self.fvm_geometry = geometry if geometry is not None else FVMGeometry(mesh)
+        self.GD = self.fvm_geometry.cell_center.shape[1]
         self.S_f = self.fvm_geometry.S_f
-        self.gd = gd
-        self.bc_type = bc_type
-        self.threshold = threshold
+        self.boundary_value = boundary_value
+        self.boundary_type = boundary_type
+        self.boundary_threshold = boundary_threshold
 
         try:
             if isinstance(layer_weights, (int, float)):
@@ -567,6 +819,7 @@ class GradientReconstruct:
         self.boundary_weight = boundary_weight
 
         self.lsq_reconstruct = LSQGradientReconstruct(self)
+        self.quadratic_lsq_reconstruct = QuadraticLSQGradientReconstruct(self)
         self.green_gauss_reconstruct = GreenGaussGradientReconstruct(self)
         if method is not None:
             if method not in self.cell_gradient:
@@ -581,6 +834,10 @@ class GradientReconstruct:
     def cell_gradient(self, U):
         return self.lsq_reconstruct.face_weighted_lsq(U)
 
+    @cell_gradient.register("quadratic_lsq")
+    def cell_gradient(self, U):
+        return self.quadratic_lsq_reconstruct.quadratic_lsq(U)
+
     @cell_gradient.register("green_gauss")
     def cell_gradient(self, U):
         return self.green_gauss_reconstruct.green_gauss(U)
@@ -588,3 +845,4 @@ class GradientReconstruct:
     def clear_cache(self):
         """Drop geometry caches after changing mesh coordinates or topology."""
         self.lsq_reconstruct.clear_cache()
+        self.quadratic_lsq_reconstruct.clear_cache()

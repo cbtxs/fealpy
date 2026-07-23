@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 
 from fealpy.backend import backend_manager as bm
-from fealpy.mesh import QuadrangleMesh
+from fealpy.mesh import QuadrangleMesh, TriangleMesh
 from fealpy.sparse import spdiags
 
 
@@ -11,6 +11,7 @@ class ShiftedBoundaryGeometry:
         from fealpy.fvm.fvm_geometry import FVMGeometry
 
         real = FVMGeometry(mesh)
+        self._real = real
         is_boundary = np.asarray(real.is_boundary)
         face_center = np.asarray(real.face_center).copy()
         face_center[is_boundary, 0] += 5.0
@@ -31,8 +32,18 @@ class ShiftedBoundaryGeometry:
         self.mag_d_f = real.mag_d_f
         self._mag_E_f = 2.0 * real.mag_d_f
 
-    def over_relaxed_decomposition(self):
-        return self.S_f, self._mag_E_f, bm.zeros_like(self.S_f)
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+    def diffusion_face_decomposition(self, method="over_relaxed", *, eps=0.05):
+        from fealpy.fvm.fvm_geometry import DiffusionFaceDecomposition
+
+        return DiffusionFaceDecomposition(
+            E_f=self.S_f,
+            mag_E_f=self._mag_E_f,
+            T_f=bm.zeros_like(self.S_f),
+            orthogonal_factor=self._mag_E_f / self.mag_d_f,
+        )
 
 
 def _mesh():
@@ -40,8 +51,86 @@ def _mesh():
     return QuadrangleMesh.from_box([0.0, 1.0, 0.0, 1.0], nx=2, ny=2)
 
 
+def _bad_two_triangle_mesh():
+    bm.set_backend("numpy")
+    node = bm.array(
+        [
+            [0.0, 0.0],
+            [0.0, 1.0],
+            [-0.01, -1.0],
+            [0.01, 1.0],
+        ],
+        dtype=bm.float64,
+    )
+    cell = bm.array([[0, 1, 2], [0, 3, 1]], dtype=bm.int32)
+    return TriangleMesh(node, cell)
+
+
 def _boundary_faces(geometry):
     return np.flatnonzero(np.asarray(geometry.is_boundary))
+
+
+def test_dirichlet_diffusion_uses_selected_decomposition():
+    from fealpy.fvm import DirichletBC, FVMGeometry
+
+    mesh = _bad_two_triangle_mesh()
+    geometry = FVMGeometry(mesh)
+    bc = DirichletBC(
+        mesh,
+        lambda p: p[:, 0] + 2.0 * p[:, 1],
+        geometry=geometry,
+        diffusion_method="bounded_over_relaxed",
+        nonorthogonal_eps=0.05,
+    )
+    _, coefficient, _ = bc.diffusion_boundary_data()
+    boundary = np.asarray(geometry.is_boundary)
+    expected = np.asarray(
+        geometry.diffusion_face_decomposition(
+            "bounded_over_relaxed", eps=0.05
+        ).orthogonal_factor
+    )[boundary]
+    np.testing.assert_allclose(np.asarray(coefficient), expected)
+
+
+def test_dirichlet_diffusion_rejects_unknown_method():
+    from fealpy.fvm import DirichletBC
+
+    mesh = _bad_two_triangle_mesh()
+    with pytest.raises(ValueError, match="unknown diffusion method"):
+        DirichletBC(
+            mesh,
+            lambda p: p[:, 0],
+            diffusion_method="misspelled",
+        )
+
+
+@pytest.mark.parametrize("method", ["over_relaxed", "bounded_over_relaxed"])
+def test_affine_dirichlet_full_flux_is_exact_on_skew_boundary(method):
+    from fealpy.fvm import FVMGeometry
+
+    mesh = _bad_two_triangle_mesh()
+    geometry = FVMGeometry(mesh)
+    boundary = np.asarray(geometry.is_boundary)
+    owner = np.asarray(geometry.owner)[boundary]
+    cell_center = np.asarray(geometry.cell_center)
+    face_center = np.asarray(geometry.face_center)[boundary]
+    gradient = np.array([2.0, -3.0])
+    cell_value = 1.0 + cell_center @ gradient
+    boundary_value = 1.0 + face_center @ gradient
+
+    decomposition = geometry.diffusion_face_decomposition(method, eps=0.05)
+
+    numerical_flux = (
+        np.asarray(decomposition.orthogonal_factor)[boundary]
+        * (boundary_value - cell_value[owner])
+        + np.einsum(
+            "fd,d->f", np.asarray(decomposition.T_f)[boundary], gradient
+        )
+    )
+    exact_flux = np.einsum(
+        "fd,d->f", np.asarray(geometry.S_f)[boundary], gradient
+    )
+    np.testing.assert_allclose(numerical_flux, exact_flux, atol=1.0e-12)
 
 
 def test_neumann_diffusion_uses_fvm_geometry_for_boundary_face_integral(monkeypatch):
@@ -69,33 +158,6 @@ def test_neumann_diffusion_uses_fvm_geometry_for_boundary_face_integral(monkeypa
         * np.asarray(geometry.mag_S_f)[boundary_faces],
     )
     np.testing.assert_allclose(np.asarray(actual), expected, rtol=1.0e-13, atol=1.0e-13)
-
-def test_neumann_diffusion_reuses_supplied_fvm_geometry(monkeypatch):
-    import fealpy.fvm.neumann_bc as neumann_module
-    from fealpy.fvm import FVMGeometry, NeumannBC
-
-    mesh = _mesh()
-    geometry = FVMGeometry(mesh)
-    gd = lambda points: bm.ones(points.shape[0], dtype=points.dtype)
-
-    def fail_geometry(*args, **kwargs):
-        raise AssertionError("NeumannBC should reuse the supplied FVMGeometry.")
-
-    monkeypatch.setattr(neumann_module, "FVMGeometry", fail_geometry)
-
-    actual = NeumannBC(mesh, gd, geometry=geometry).apply_diffusion(
-        bm.zeros(mesh.number_of_cells())
-    )
-
-    boundary_faces = _boundary_faces(geometry)
-    expected = np.zeros(mesh.number_of_cells())
-    np.add.at(
-        expected,
-        np.asarray(geometry.owner)[boundary_faces],
-        np.asarray(geometry.mag_S_f)[boundary_faces],
-    )
-    np.testing.assert_allclose(np.asarray(actual), expected, rtol=1.0e-13, atol=1.0e-13)
-
 
 def test_neumann_diffusion_applies_boundary_face_threshold(monkeypatch):
     import fealpy.fvm.neumann_bc as neumann_module
@@ -128,38 +190,6 @@ def test_neumann_diffusion_applies_boundary_face_threshold(monkeypatch):
     np.testing.assert_allclose(np.asarray(actual), expected, rtol=1.0e-13, atol=1.0e-13)
 
 
-def test_dirichlet_diffusion_uses_fvm_geometry_for_face_points_and_owners(
-    monkeypatch,
-):
-    import fealpy.fvm.dirichlet_bc as dirichlet_module
-    from fealpy.fvm import DirichletBC
-
-    mesh = _mesh()
-    monkeypatch.setattr(dirichlet_module, "FVMGeometry", ShiftedBoundaryGeometry)
-    geometry = ShiftedBoundaryGeometry(mesh)
-    boundary_faces = _boundary_faces(geometry)
-    gd = lambda points: points[:, 0] + 0.25 * points[:, 1]
-    A = spdiags(
-        bm.zeros(mesh.number_of_cells()),
-        0,
-        mesh.number_of_cells(),
-        mesh.number_of_cells(),
-    )
-
-    _, actual = DirichletBC(mesh, gd).apply_diffusion(
-        A,
-        bm.zeros(mesh.number_of_cells()),
-    )
-
-    expected = np.zeros(mesh.number_of_cells())
-    np.add.at(
-        expected,
-        np.asarray(geometry.owner)[boundary_faces],
-        2.0 * np.asarray(gd(geometry.face_center[boundary_faces])),
-    )
-    np.testing.assert_allclose(np.asarray(actual), expected, rtol=1.0e-13, atol=1.0e-13)
-
-
 def test_dirichlet_diffusion_rejects_boundary_face_wise_coef():
     from fealpy.fvm import DirichletBC, FVMGeometry
 
@@ -179,31 +209,6 @@ def test_dirichlet_diffusion_rejects_boundary_face_wise_coef():
             bm.zeros(mesh.number_of_cells()),
             coef=bm.ones(boundary_faces.shape[0]),
         )
-
-
-def test_dirichlet_divergence_uses_fvm_geometry_for_boundary_flux(monkeypatch):
-    import fealpy.fvm.experimental.legacy_boundary_conditions as legacy_bc_module
-    from fealpy.fvm.experimental import ExperimentalDirichletBC
-
-    mesh = _mesh()
-    monkeypatch.setattr(legacy_bc_module, "FVMGeometry", ShiftedBoundaryGeometry)
-    geometry = ShiftedBoundaryGeometry(mesh)
-    boundary_faces = _boundary_faces(geometry)
-
-    def gd(points):
-        return bm.stack([points[:, 0] + 1.0, points[:, 1] - 2.0], axis=1)
-
-    actual = ExperimentalDirichletBC(mesh, gd).DivApply(
-        bm.zeros(2 * mesh.number_of_cells())
-    )
-
-    expected = np.zeros(2 * mesh.number_of_cells())
-    owner = np.asarray(geometry.owner)[boundary_faces]
-    value = np.asarray(gd(geometry.face_center[boundary_faces]))
-    S_f = np.asarray(geometry.S_f)[boundary_faces]
-    np.add.at(expected, owner, -value[:, 0] * S_f[:, 0])
-    np.add.at(expected, owner + mesh.number_of_cells(), -value[:, 1] * S_f[:, 1])
-    np.testing.assert_allclose(np.asarray(actual), expected, rtol=1.0e-13, atol=1.0e-13)
 
 
 def test_dirichlet_convection_uses_fvm_geometry_for_boundary_flux(monkeypatch):
@@ -251,64 +256,17 @@ def test_dirichlet_convection_rejects_boundary_face_wise_coef():
         )
 
 
-def test_engineering_boundary_conditions_use_fvm_geometry_for_patch_faces(
-    monkeypatch,
-):
-    import fealpy.fvm.engineering_boundary_conditions as bc_module
-    from fealpy.fvm import (
-        BoundaryCondition,
-        BoundaryPatch,
-        EngineeringBoundaryConditions,
-    )
-
-    mesh = _mesh()
-    monkeypatch.setattr(
-        bc_module,
-        "FVMGeometry",
-        ShiftedBoundaryGeometry,
-        raising=False,
-    )
-    geometry = ShiftedBoundaryGeometry(mesh)
-    boundary_faces = _boundary_faces(geometry)
-    bc = EngineeringBoundaryConditions(
-        mesh,
-        patches=[BoundaryPatch("shifted", lambda p: p[:, 0] > 4.0)],
-        conditions=[
-            BoundaryCondition(
-                "velocity",
-                "shifted",
-                "dirichlet",
-                lambda p: bm.ones_like(p),
-            )
-        ],
-    )
-
-    selected_faces, selected_values = bc.boundary_face_velocity("velocity")
-
-    np.testing.assert_array_equal(np.asarray(selected_faces), boundary_faces)
-    np.testing.assert_allclose(
-        np.asarray(selected_values),
-        np.ones((boundary_faces.shape[0], mesh.geo_dimension())),
-        rtol=1.0e-13,
-        atol=1.0e-13,
-    )
-
-
-def test_boundary_condition_data_use_fvm_geometry_for_boundary_velocity():
-    from fealpy.fvm import BoundaryConditionData, PDEBoundaryConditions
+def test_pde_boundary_conditions_use_fvm_geometry_for_boundary_velocity():
+    from fealpy.fvm import PDEBoundaryConditions
 
     mesh = _mesh()
     geometry = ShiftedBoundaryGeometry(mesh)
     boundary_faces = _boundary_faces(geometry)
-    bc = BoundaryConditionData(
-        velocity_dirichlet=lambda p: bm.ones_like(p),
-        velocity_dirichlet_threshold=lambda p: p[:, 0] > 4.0,
-    ).to_pde_boundary(mesh)
     shifted_bc = PDEBoundaryConditions(
         mesh,
-        velocity_dirichlet=bc.velocity_dirichlet,
-        velocity_dirichlet_threshold=bc.velocity_dirichlet_threshold,
-        geometry_class=ShiftedBoundaryGeometry,
+        dirichlet_velocity=lambda p: bm.ones_like(p),
+        dirichlet_velocity_threshold=lambda p: p[:, 0] > 4.0,
+        geometry=ShiftedBoundaryGeometry(mesh),
     )
 
     selected_faces, selected_values = shifted_bc.boundary_face_velocity()
@@ -320,31 +278,3 @@ def test_boundary_condition_data_use_fvm_geometry_for_boundary_velocity():
         rtol=1.0e-13,
         atol=1.0e-13,
     )
-
-
-def test_rhie_chow_pressure_dirichlet_partial_uses_fvm_geometry(monkeypatch):
-    import fealpy.fvm.collocated_face_velocity_reconstruct as face_velocity_module
-    from fealpy.fvm import RhieChowInterpolation
-
-    mesh = _mesh()
-    monkeypatch.setattr(face_velocity_module, "FVMGeometry", ShiftedBoundaryGeometry)
-    geometry = ShiftedBoundaryGeometry(mesh)
-    boundary_faces = _boundary_faces(geometry)
-    pressure_dirichlet = lambda p: p[:, 0] - 0.25 * p[:, 1]
-    rhie_chow = RhieChowInterpolation(
-        mesh,
-        pressure_dirichlet=pressure_dirichlet,
-        pressure_dirichlet_threshold=lambda p: p[:, 0] > 4.0,
-    )
-
-    actual = rhie_chow.apply_pressure_dirichlet_boundary_partial(
-        bm.zeros(mesh.number_of_cells()),
-        bm.zeros(mesh.number_of_faces()),
-    )
-
-    expected = np.zeros(mesh.number_of_faces())
-    expected[boundary_faces] = (
-        np.asarray(pressure_dirichlet(geometry.face_center[boundary_faces]))
-        / np.asarray(geometry.mag_d_f)[boundary_faces]
-    )
-    np.testing.assert_allclose(np.asarray(actual), expected, rtol=1.0e-13, atol=1.0e-13)

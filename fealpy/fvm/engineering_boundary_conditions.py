@@ -40,6 +40,46 @@ def apply_boundary_flux_constraint(flux, boundary_faces, boundary_velocity, face
     return bm.set_at(bm.array(flux), boundary_faces, target_flux)
 
 
+def _dirichlet_face_average(
+    geometry,
+    value,
+    threshold,
+    quadrature_order,
+):
+    """Integrate vector Dirichlet data over selected boundary faces."""
+    if quadrature_order < 1:
+        raise ValueError("quadrature_order must be positive.")
+    boundary_faces = bm.nonzero(geometry.is_boundary)[0]
+    centers = geometry.face_center[boundary_faces]
+    if value is None:
+        return boundary_faces[:0], bm.zeros(
+            (0, centers.shape[1]),
+            dtype=centers.dtype,
+        )
+    if threshold is None:
+        flag = bm.ones(boundary_faces.shape[0], dtype=bm.bool)
+    else:
+        flag = boundary_face_flag(centers, threshold)
+    selected_faces = boundary_faces[flag]
+    def integrand(points, _face_slice):
+        flat_points = bm.reshape(points, (-1, points.shape[-1]))
+        values = bm.array(value(flat_points), dtype=points.dtype)
+        if values.shape == (points.shape[-1],):
+            values = bm.broadcast_to(values, flat_points.shape)
+        elif values.shape == (flat_points.shape[0],):
+            values = bm.broadcast_to(values[:, None], flat_points.shape)
+        elif values.shape != flat_points.shape:
+            raise ValueError(
+                "velocity Dirichlet data must evaluate to a vector at each "
+                f"quadrature point; got shape {values.shape}."
+            )
+        return bm.reshape(values, points.shape)
+
+    integral = geometry.face_integral(integrand, q=quadrature_order)
+    average = integral[selected_faces] / geometry.face_measure[selected_faces, None]
+    return selected_faces, average
+
+
 @dataclass(frozen=True)
 class BoundaryPatch:
     """Named boundary-face patch selected by physical face centers."""
@@ -86,77 +126,92 @@ class PDEBoundaryConditions:
         self,
         mesh,
         *,
-        velocity_dirichlet=None,
-        velocity_dirichlet_threshold=None,
-        velocity_neumann=None,
-        velocity_neumann_threshold=None,
-        velocity_natural_threshold=None,
-        pressure_dirichlet=None,
-        pressure_dirichlet_threshold=None,
-        geometry_class=FVMGeometry,
+        dirichlet_velocity=None,
+        dirichlet_velocity_threshold=None,
+        neumann_velocity=None,
+        neumann_velocity_threshold=None,
+        natural_velocity_threshold=None,
+        dirichlet_pressure=None,
+        dirichlet_pressure_threshold=None,
+        geometry=None,
     ) -> None:
         self.mesh = mesh
-        self.geometry = geometry_class(mesh)
-        self.velocity_dirichlet = velocity_dirichlet
-        self.velocity_dirichlet_threshold = velocity_dirichlet_threshold
-        self.velocity_neumann = velocity_neumann
-        self.velocity_neumann_threshold = velocity_neumann_threshold
-        self.velocity_natural_threshold = velocity_natural_threshold
-        self.pressure_dirichlet = pressure_dirichlet
-        self.pressure_dirichlet_threshold_value = pressure_dirichlet_threshold
+        self.geometry = FVMGeometry(mesh) if geometry is None else geometry
+        self.dirichlet_velocity = dirichlet_velocity
+        self.dirichlet_velocity_threshold = dirichlet_velocity_threshold
+        self.neumann_velocity = neumann_velocity
+        self.neumann_velocity_threshold = neumann_velocity_threshold
+        self.natural_velocity_threshold = natural_velocity_threshold
+        self.dirichlet_pressure = dirichlet_pressure
+        self.dirichlet_pressure_threshold = dirichlet_pressure_threshold
 
-    def conditions_for(self, variable: str, kind: str | None = None):
-        """Return non-empty markers matching the available PDE conditions."""
-        if variable == "velocity" and kind is None:
-            has_velocity_condition = (
-                self.velocity_dirichlet is not None
-                or self.velocity_neumann is not None
-                or self.velocity_natural_threshold is not None
-            )
-            return (self,) if has_velocity_condition else ()
-        if variable == "velocity" and kind == "dirichlet":
-            return (self,) if self.velocity_dirichlet is not None else ()
-        if variable == "velocity" and kind == "neumann":
-            return (self,) if self.velocity_neumann is not None else ()
-        if variable == "velocity" and kind == "natural":
-            return (self,) if self.velocity_natural_threshold is not None else ()
-        if variable == "pressure" and kind in (None, "dirichlet"):
-            return (self,) if self.has_pressure_dirichlet() else ()
-        return ()
+    def has_dirichlet(self, variable: str) -> bool:
+        """Return whether one variable has Dirichlet data."""
+        if variable == "velocity":
+            return self.dirichlet_velocity is not None
+        if variable == "pressure":
+            return self.dirichlet_pressure is not None
+        raise ValueError(f"unsupported boundary variable: {variable!r}.")
+
+    def has_neumann(self, variable: str) -> bool:
+        """Return whether one variable has Neumann data."""
+        if variable == "velocity":
+            return self.neumann_velocity is not None
+        if variable == "pressure":
+            return False
+        raise ValueError(f"unsupported boundary variable: {variable!r}.")
+
+    def has_natural(self, variable: str) -> bool:
+        """Return whether one variable has a natural-outlet selector."""
+        if variable == "velocity":
+            return self.natural_velocity_threshold is not None
+        if variable == "pressure":
+            return False
+        raise ValueError(f"unsupported boundary variable: {variable!r}.")
 
     def dirichlet_value(self, variable: str):
         """Return the Dirichlet value callable for one variable."""
-        if variable == "velocity" and self.velocity_dirichlet is not None:
-            return self.velocity_dirichlet
-        if variable == "pressure" and self.has_pressure_dirichlet():
-            return self.pressure_dirichlet_value()
+        if variable == "velocity" and self.dirichlet_velocity is not None:
+            return self.dirichlet_velocity
+        if variable == "pressure" and self.has_dirichlet("pressure"):
+            value = self.dirichlet_pressure
+            if callable(value):
+                return value
+
+            def constant(points):
+                return bm.broadcast_to(
+                    bm.array(value, dtype=points.dtype),
+                    (points.shape[0],),
+                )
+
+            return constant
         raise ValueError(f"{variable!r} has no Dirichlet boundary condition.")
 
     def dirichlet_threshold(self, variable: str):
         """Return the Dirichlet threshold for one variable."""
         if variable == "velocity":
-            return self.velocity_dirichlet_threshold
+            return self.dirichlet_velocity_threshold
         if variable == "pressure":
-            return self.pressure_dirichlet_threshold()
+            return self.dirichlet_pressure_threshold
         raise ValueError(f"unsupported boundary variable: {variable!r}.")
 
     def natural_threshold(self, variable: str):
         """Return the natural threshold for one variable."""
         if variable != "velocity":
             raise ValueError("only velocity natural boundary is supported.")
-        return self.velocity_natural_threshold
+        return self.natural_velocity_threshold
 
     def neumann_value(self, variable: str):
         """Return the Neumann value callable for one variable."""
-        if variable == "velocity" and self.velocity_neumann is not None:
-            return self.velocity_neumann
+        if variable == "velocity" and self.neumann_velocity is not None:
+            return self.neumann_velocity
         raise ValueError(f"{variable!r} has no Neumann boundary condition.")
 
     def neumann_threshold(self, variable: str):
         """Return the Neumann threshold for one variable."""
         if variable != "velocity":
             raise ValueError("only velocity Neumann boundary is supported.")
-        return self.velocity_neumann_threshold
+        return self.neumann_velocity_threshold
 
     def boundary_face_velocity(self, variable: str = "velocity", *, mesh=None):
         """Return selected boundary faces and prescribed velocities."""
@@ -167,65 +222,34 @@ class PDEBoundaryConditions:
         geometry = self.geometry
         boundary_faces = bm.nonzero(geometry.is_boundary)[0]
         points = geometry.face_center[boundary_faces]
-        if self.velocity_dirichlet is None:
+        if self.dirichlet_velocity is None:
             return boundary_faces[:0], bm.zeros((0, points.shape[1]), dtype=points.dtype)
-        if self.velocity_dirichlet_threshold is None:
+        if self.dirichlet_velocity_threshold is None:
             flag = bm.ones(boundary_faces.shape[0], dtype=bm.bool)
         else:
-            flag = boundary_face_flag(points, self.velocity_dirichlet_threshold)
-        return boundary_faces[flag], self.velocity_dirichlet(points)[flag]
+            flag = boundary_face_flag(points, self.dirichlet_velocity_threshold)
+        return boundary_faces[flag], self.dirichlet_velocity(points)[flag]
 
-    def has_pressure_dirichlet(self) -> bool:
-        """Return whether pressure Dirichlet data are available."""
-        return self.pressure_dirichlet is not None and self.pressure_dirichlet_threshold_value is not None
-
-    def pressure_dirichlet_threshold(self):
-        """Return pressure Dirichlet threshold."""
-        return self.pressure_dirichlet_threshold_value
-
-    def pressure_dirichlet_value(self):
-        """Return pressure Dirichlet values as a callable."""
-        value = self.pressure_dirichlet
-        if callable(value):
-            return value
-
-        def constant(points):
-            return bm.broadcast_to(bm.array(value, dtype=points.dtype), (points.shape[0],))
-
-        return constant
-
-
-@dataclass(frozen=True)
-class BoundaryConditionData:
-    """Mesh-independent PDE boundary data for solver adapters.
-
-    This class preserves the old manufactured-case API where value callables
-    and thresholds are known before the mesh object is passed into the solver.
-    When a mesh is available, ``to_pde_boundary(mesh)`` returns the strict
-    mesh-bound ``PDEBoundaryConditions`` object used by the solver protocol.
-    """
-
-    velocity_dirichlet: object
-    velocity_dirichlet_threshold: object = None
-    velocity_neumann: object = None
-    velocity_neumann_threshold: object = None
-    velocity_natural_threshold: object = None
-    pressure_dirichlet: object = None
-    pressure_dirichlet_threshold_value: object = None
-
-    def to_pde_boundary(self, mesh):
-        """Return strict PDE boundary data bound to a concrete mesh."""
-        return PDEBoundaryConditions(
-            mesh,
-            velocity_dirichlet=self.velocity_dirichlet,
-            velocity_dirichlet_threshold=self.velocity_dirichlet_threshold,
-            velocity_neumann=self.velocity_neumann,
-            velocity_neumann_threshold=self.velocity_neumann_threshold,
-            velocity_natural_threshold=self.velocity_natural_threshold,
-            pressure_dirichlet=self.pressure_dirichlet,
-            pressure_dirichlet_threshold=self.pressure_dirichlet_threshold_value,
+    def boundary_face_velocity_average(
+        self,
+        variable: str = "velocity",
+        *,
+        mesh=None,
+        quadrature_order: int = 3,
+    ):
+        """Return face-averaged prescribed Dirichlet velocities."""
+        if variable != "velocity":
+            raise ValueError(
+                "boundary_face_velocity_average only supports 'velocity'."
+            )
+        if mesh is not None and mesh is not self.mesh:
+            raise ValueError("mesh-bound boundary conditions require their original mesh.")
+        return _dirichlet_face_average(
+            self.geometry,
+            self.dirichlet_velocity,
+            self.dirichlet_velocity_threshold,
+            quadrature_order,
         )
-
 
 class EngineeringBoundaryConditions:
     """Map engineering patches to strict PDE boundary-condition data.
@@ -292,7 +316,7 @@ class EngineeringBoundaryConditions:
                     f"{condition.patch!r} needs value data."
                 )
 
-    def conditions_for(self, variable: str, kind: str | None = None):
+    def _conditions(self, variable: str, kind: str | None = None):
         """Return conditions matching a variable and optionally a kind."""
         return tuple(
             condition
@@ -305,44 +329,45 @@ class EngineeringBoundaryConditions:
         """Return strict PDE boundary data for solver kernels."""
         return PDEBoundaryConditions(
             self.mesh,
-            velocity_dirichlet=(
-                self.dirichlet_value("velocity")
-                if self.has_dirichlet("velocity")
+            geometry=self.geometry,
+            dirichlet_velocity=(
+                self._dirichlet_value("velocity")
+                if self._has_dirichlet("velocity")
                 else None
             ),
-            velocity_dirichlet_threshold=(
-                self.dirichlet_threshold("velocity")
-                if self.has_dirichlet("velocity")
+            dirichlet_velocity_threshold=(
+                self._dirichlet_threshold("velocity")
+                if self._has_dirichlet("velocity")
                 else None
             ),
-            velocity_neumann=(
-                self.neumann_value("velocity")
-                if self.conditions_for("velocity", "neumann")
+            neumann_velocity=(
+                self._neumann_value("velocity")
+                if self._conditions("velocity", "neumann")
                 else None
             ),
-            velocity_neumann_threshold=(
-                self.neumann_threshold("velocity")
-                if self.conditions_for("velocity", "neumann")
+            neumann_velocity_threshold=(
+                self._neumann_threshold("velocity")
+                if self._conditions("velocity", "neumann")
                 else None
             ),
-            velocity_natural_threshold=(
-                self.natural_threshold("velocity")
-                if self.conditions_for("velocity", "natural")
+            natural_velocity_threshold=(
+                self._natural_threshold("velocity")
+                if self._conditions("velocity", "natural")
                 else None
             ),
-            pressure_dirichlet=(
-                self.dirichlet_value("pressure")
-                if self.has_dirichlet("pressure")
+            dirichlet_pressure=(
+                self._dirichlet_value("pressure")
+                if self._has_dirichlet("pressure")
                 else None
             ),
-            pressure_dirichlet_threshold=(
-                self.dirichlet_threshold("pressure")
-                if self.has_dirichlet("pressure")
+            dirichlet_pressure_threshold=(
+                self._dirichlet_threshold("pressure")
+                if self._has_dirichlet("pressure")
                 else None
             ),
         )
 
-    def has_dirichlet(self, variable: str) -> bool:
+    def _has_dirichlet(self, variable: str) -> bool:
         """Return whether ``variable`` has at least one Dirichlet patch.
 
         Pressure reference patches are treated as pressure Dirichlet patches
@@ -350,30 +375,30 @@ class EngineeringBoundaryConditions:
         """
         if variable == "pressure":
             return bool(
-                self.conditions_for("pressure", "dirichlet")
-                or self.conditions_for("pressure", "reference")
+                self._conditions("pressure", "dirichlet")
+                or self._conditions("pressure", "reference")
             )
-        return bool(self.conditions_for(variable, "dirichlet"))
+        return bool(self._conditions(variable, "dirichlet"))
 
-    def dirichlet_threshold(self, variable: str):
+    def _dirichlet_threshold(self, variable: str):
         """Return a face-center selector for all Dirichlet patches of variable."""
         kinds = ("dirichlet", "reference") if variable == "pressure" else ("dirichlet",)
-        return self.condition_threshold(variable, kinds)
+        return self._condition_threshold(variable, kinds)
 
-    def natural_threshold(self, variable: str):
+    def _natural_threshold(self, variable: str):
         """Return a face-center selector for all natural patches of variable."""
-        return self.condition_threshold(variable, ("natural",))
+        return self._condition_threshold(variable, ("natural",))
 
-    def neumann_threshold(self, variable: str):
+    def _neumann_threshold(self, variable: str):
         """Return a face-center selector for all Neumann patches of variable."""
-        return self.condition_threshold(variable, ("neumann",))
+        return self._condition_threshold(variable, ("neumann",))
 
-    def condition_threshold(self, variable: str, kinds):
+    def _condition_threshold(self, variable: str, kinds):
         """Return a face-center selector for all patches of selected kinds."""
         conditions = tuple(
             condition
             for kind in kinds
-            for condition in self.conditions_for(variable, kind)
+            for condition in self._conditions(variable, kind)
         )
 
         def threshold(points):
@@ -384,21 +409,21 @@ class EngineeringBoundaryConditions:
 
         return threshold
 
-    def dirichlet_value(self, variable: str):
+    def _dirichlet_value(self, variable: str):
         """Return a value callable assembled from Dirichlet patch data."""
         kinds = ("dirichlet", "reference") if variable == "pressure" else ("dirichlet",)
-        return self.condition_value(variable, kinds)
+        return self._combined_value(variable, kinds)
 
-    def neumann_value(self, variable: str):
+    def _neumann_value(self, variable: str):
         """Return a value callable assembled from Neumann patch data."""
-        return self.condition_value(variable, ("neumann",))
+        return self._combined_value(variable, ("neumann",))
 
-    def condition_value(self, variable: str, kinds):
+    def _combined_value(self, variable: str, kinds):
         """Return a value callable assembled from patch data for selected kinds."""
         conditions = tuple(
             condition
             for kind in kinds
-            for condition in self.conditions_for(variable, kind)
+            for condition in self._conditions(variable, kind)
         )
         if not conditions:
             raise ValueError(f"{variable!r} has no {kinds!r} boundary conditions.")
@@ -424,34 +449,6 @@ class EngineeringBoundaryConditions:
         """Return global face indices belonging to one named patch."""
         boundary_faces = bm.nonzero(self.geometry.is_boundary)[0]
         return boundary_faces[self.patch_face_mask(patch_name)]
-
-    def boundary_face_velocity(self, variable: str = "velocity", *, mesh=None):
-        """Return selected boundary faces and Dirichlet velocities on them."""
-        if variable != "velocity":
-            raise ValueError("boundary_face_velocity only supports 'velocity'.")
-
-        if mesh is not None and mesh is not self.mesh:
-            raise ValueError("mesh-bound boundary conditions require their original mesh.")
-        geometry = self.geometry
-        boundary_faces = bm.nonzero(geometry.is_boundary)[0]
-        points = geometry.face_center[boundary_faces]
-        if not self.has_dirichlet(variable):
-            return boundary_faces[:0], bm.zeros((0, points.shape[1]), dtype=points.dtype)
-
-        flag = boundary_face_flag(points, self.dirichlet_threshold(variable))
-        return boundary_faces[flag], self.dirichlet_value(variable)(points)[flag]
-
-    def has_pressure_dirichlet(self) -> bool:
-        """Return whether pressure has a strict Dirichlet patch."""
-        return self.has_dirichlet("pressure")
-
-    def pressure_dirichlet_threshold(self):
-        """Return pressure Dirichlet patch selector."""
-        return self.dirichlet_threshold("pressure")
-
-    def pressure_dirichlet_value(self):
-        """Return pressure Dirichlet value callable."""
-        return self.dirichlet_value("pressure")
 
     def _patch_flag(self, patch_name: str, points):
         patch = self._patch_by_name[patch_name]

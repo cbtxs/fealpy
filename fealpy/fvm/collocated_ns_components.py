@@ -7,6 +7,7 @@ component shared by SIMPLE and PISO; the solver files keep the actual algorithm
 loops.
 """
 
+from dataclasses import dataclass
 from typing import Optional
 
 from fealpy.typing import TensorLike
@@ -14,7 +15,7 @@ from fealpy.backend import backend_manager as bm
 from fealpy.functionspace import ScaledMonomialSpace, TensorFunctionSpace
 from fealpy.fem import BilinearForm, LinearForm
 from fealpy.sparse import CSRTensor, spdiags
-from fealpy.decorator import cartesian
+from fealpy.decorator import cartesian, variantmethod
 
 from .convection_integrator import ConvectionMatrixAssembler
 from .scalar_cross_diffusion_integrator import CrossDiffusionRHSAssembler
@@ -25,9 +26,37 @@ from .scalar_diffusion_integrator import (
 from .scalar_source_integrator import ScalarSourceIntegrator
 from .gradient_reconstruct import GradientReconstruct
 from .face_gradient import reconstruct_face_gradient
-from .div_reconstruct import DivergenceReconstruct
 from .dirichlet_bc import DirichletBC
-from .fvm_geometry import FVMGeometry, selected_boundary_faces
+from .fvm_geometry import (
+    FVMGeometry,
+    face_interpolation_owner_weight,
+    interpolate_cell_to_face,
+    selected_boundary_faces,
+)
+from .solver_diagnostics import (
+    equation_residual_converged,
+    normalized_equation_residual,
+    normalized_relaxed_equation_residual,
+)
+
+
+@dataclass(frozen=True)
+class ComponentMomentumSystems:
+    """Scalar component systems and their two momentum response diagonals."""
+
+    matrices: list
+    rhs: TensorLike
+    relaxed_diagonal: TensorLike
+    spatial_diagonal: TensorLike
+
+
+@dataclass(frozen=True)
+class MomentumPredictorResult:
+    """Steady momentum predictor with algebraically distinct responses."""
+
+    correction_denominator: TensorLike
+    spatial_diagonal: TensorLike
+    velocity: TensorLike
 
 
 class CollocatedDiscretizationSetup:
@@ -46,54 +75,75 @@ class CollocatedDiscretizationSetup:
     def init_collocated_discretization(
         self,
         degree: int,
-        velocity_dirichlet,
+        dirichlet_velocity,
         *,
         pressure_gradient_method: str = "layered_lsq",
         velocity_gradient_method: str = "layered_lsq",
-        velocity_dirichlet_threshold=None,
-        pressure_dirichlet=None,
-        pressure_dirichlet_threshold=None,
-        with_divergence: bool = False,
-        with_velocity_dirichlet_bc: bool = False,
+        gradient_layer_weights=(1.0, 0.25),
+        gradient_boundary_weight: float = 1.0,
+        diffusion_method: str = "over_relaxed",
+        diffusion_nonorthogonal_eps: float = 0.05,
+        dirichlet_velocity_threshold=None,
+        dirichlet_pressure=None,
+        dirichlet_pressure_threshold=None,
+        with_dirichlet_velocity_bc: bool = False,
+        geometry=None,
     ) -> None:
+        if degree != 0:
+            raise ValueError("space_degree must be 0 for cell-centred FVM.")
         self.p = degree
-        self.GD = self.mesh.geo_dimension()
+        self.fvm_geometry = (
+            geometry if geometry is not None else FVMGeometry(self.mesh)
+        )
+        self.GD = self.fvm_geometry.cell_center.shape[1]
+        self.NC = self.fvm_geometry.NC
+        self.NF = self.fvm_geometry.NF
+        self.cm = self.fvm_geometry.cell_measure
+        self.cell_center = self.fvm_geometry.cell_center
+        self.face_center = self.fvm_geometry.face_center
         self.space = ScaledMonomialSpace(self.mesh, degree)
         self.velocity_space = TensorFunctionSpace(self.space, shape=(self.GD, -1))
-        self.cell_center = self.mesh.entity_barycenter("cell")
-        self.face_center = self.mesh.entity_barycenter("face")
-        self.fvm_geometry = FVMGeometry(self.mesh)
+        self.diffusion_method = diffusion_method
+        self.diffusion_nonorthogonal_eps = float(diffusion_nonorthogonal_eps)
+        if diffusion_method not in self.pressure_diffusion_decomposition:
+            raise ValueError(f"unknown diffusion method: {diffusion_method!r}")
+        self.pressure_diffusion_decomposition.set(diffusion_method)
 
         self.pressure_gradient = GradientReconstruct(
             self.mesh,
             method=pressure_gradient_method,
-            gd=pressure_dirichlet,
-            bc_type="dirichlet" if pressure_dirichlet is not None else None,
-            threshold=pressure_dirichlet_threshold,
+            boundary_value=dirichlet_pressure,
+            boundary_type=(
+                "dirichlet" if dirichlet_pressure is not None else None
+            ),
+            boundary_threshold=dirichlet_pressure_threshold,
+            layer_weights=gradient_layer_weights,
+            boundary_weight=gradient_boundary_weight,
             geometry=self.fvm_geometry,
         )
         self.velocity_gradient = GradientReconstruct(
             self.mesh,
             method=velocity_gradient_method,
-            gd=velocity_dirichlet,
-            bc_type="dirichlet",
-            threshold=velocity_dirichlet_threshold,
+            boundary_value=dirichlet_velocity,
+            boundary_type="dirichlet",
+            boundary_threshold=dirichlet_velocity_threshold,
+            layer_weights=gradient_layer_weights,
+            boundary_weight=gradient_boundary_weight,
             geometry=self.fvm_geometry,
         )
-        self.velocity_dirichlet = velocity_dirichlet
-        self.velocity_dirichlet_threshold = velocity_dirichlet_threshold
-        if with_divergence:
-            self.divergence = DivergenceReconstruct(self.mesh)
-        if with_velocity_dirichlet_bc:
-            self.velocity_dirichlet_bc = DirichletBC(
+        self.dirichlet_velocity = dirichlet_velocity
+        self.dirichlet_velocity_threshold = dirichlet_velocity_threshold
+        if with_dirichlet_velocity_bc:
+            self.dirichlet_velocity_bc = DirichletBC(
                 self.mesh,
-                velocity_dirichlet,
-                threshold=velocity_dirichlet_threshold,
+                dirichlet_velocity,
+                threshold=dirichlet_velocity_threshold,
                 geometry=self.fvm_geometry,
+                diffusion_method=diffusion_method,
+                nonorthogonal_eps=diffusion_nonorthogonal_eps,
             )
 
         self.face_to_cell = self.fvm_geometry.face_to_cell
-        self.last_nonorthogonal_iterations = 0
         self.last_momentum_nonorthogonal_iterations = 0
         self.last_pressure_nonorthogonal_iterations = 0
 
@@ -193,14 +243,26 @@ class CollocatedMomentumEquation:
             self._scalar_momentum_diffusion_matrix_cache = cache
 
         try:
-            key = ("scalar", float(diffusion_coef))
+            key = (
+                "scalar",
+                float(diffusion_coef),
+                self.diffusion_method,
+                self.diffusion_nonorthogonal_eps,
+            )
         except TypeError:
-            key = ("object", id(diffusion_coef))
+            key = (
+                "object",
+                id(diffusion_coef),
+                self.diffusion_method,
+                self.diffusion_nonorthogonal_eps,
+            )
 
         if key not in cache:
             cache[key] = ScalarDiffusionMatrixAssembler(
                 self.space,
                 geometry=self.fvm_geometry,
+                method=self.diffusion_method,
+                nonorthogonal_eps=self.diffusion_nonorthogonal_eps,
             ).assembly(diffusion_coef)
         return cache[key]
 
@@ -230,9 +292,19 @@ class CollocatedMomentumEquation:
             self._momentum_diffusion_matrix_cache = cache
 
         try:
-            key = ("scalar", float(diffusion_coef))
+            key = (
+                "scalar",
+                float(diffusion_coef),
+                self.diffusion_method,
+                self.diffusion_nonorthogonal_eps,
+            )
         except TypeError:
-            key = ("object", id(diffusion_coef))
+            key = (
+                "object",
+                id(diffusion_coef),
+                self.diffusion_method,
+                self.diffusion_nonorthogonal_eps,
+            )
 
         if key not in cache:
             cache[key] = BilinearForm(self.velocity_space).add_integrator(
@@ -240,6 +312,8 @@ class CollocatedMomentumEquation:
                     q=self.p + 2,
                     coef=diffusion_coef,
                     geometry=self.fvm_geometry,
+                    method=self.diffusion_method,
+                    nonorthogonal_eps=self.diffusion_nonorthogonal_eps,
                 )
             ).assembly()
         return cache[key]
@@ -324,44 +398,42 @@ class CollocatedMomentumEquation:
         share the same implicit scalar operator and only the RHS differs.
         ``"per_component"`` keeps the extension point for future component-wise
         implicit operators or component-dependent boundary types.
+
+        ``relaxed_diagonal`` is the diagonal after algebraic momentum
+        under-relaxation.  ``spatial_diagonal`` is the diagonal of the
+        unrelaxed spatial operator.  Pressure/cell corrections use the former,
+        while the base Rhie-Chow stabilization must use the latter so that the
+        converged discrete continuity equation is independent of the
+        relaxation factor.
         """
         if not 0.0 < relaxation <= 1.0:
             raise ValueError("momentum equation relaxation alpha must be in (0, 1].")
         if matrix_policy not in {"shared", "per_component"}:
             raise ValueError("matrix_policy must be 'shared' or 'per_component'.")
 
-        previous_dofs = (
-            previous_velocity
-            if previous_velocity.ndim == 1
-            else self.cell_vector_to_dofs(previous_velocity)
-        )
-        boundary_rhs = self.velocity_dirichlet_bc.apply_diffusion_rhs(
+        if previous_velocity.shape != (self.NC, self.GD):
+            raise ValueError("previous velocity must have shape (NC, GD).")
+        previous_dofs = self.cell_vector_to_dofs(previous_velocity)
+        boundary_rhs = self.dirichlet_velocity_bc.apply_diffusion_rhs(
             rhs,
             coef=diffusion_coef,
-            threshold=self.velocity_dirichlet_threshold,
+            threshold=self.dirichlet_velocity_threshold,
         )
         if convection_face_velocity is not None:
-            boundary_rhs = self.velocity_dirichlet_bc.apply_convection(
+            boundary_rhs = self.dirichlet_velocity_bc.apply_convection(
                 boundary_rhs,
                 convection_face_velocity,
-                threshold=self.velocity_dirichlet_threshold,
+                threshold=self.dirichlet_velocity_threshold,
             )
 
         shared_matrix = None
         shared_relaxed_diagonal = None
         shared_relax_delta = None
         if matrix_policy == "shared":
-            shared_bc = DirichletBC(
-                self.mesh,
-                self.velocity_dirichlet,
-                threshold=self.velocity_dirichlet_threshold,
-                geometry=self.fvm_geometry,
-                component=0,
-            )
-            shared_matrix = shared_bc.apply_diffusion_matrix(
+            shared_matrix = self.dirichlet_velocity_bc.apply_diffusion_matrix(
                 matrix,
                 coef=diffusion_coef,
-                threshold=self.velocity_dirichlet_threshold,
+                threshold=self.dirichlet_velocity_threshold,
             )
             shared_base_diagonal = shared_matrix.diags().values
             if relaxation < 1.0:
@@ -380,21 +452,23 @@ class CollocatedMomentumEquation:
         matrices = [] if matrix_policy == "per_component" else [shared_matrix] * self.GD
         rhs_parts = []
         diagonal_parts = []
+        spatial_diagonal_parts = []
         for component in range(self.GD):
             start = component * self.NC
             stop = start + self.NC
             component_rhs = boundary_rhs[start:stop]
             if matrix_policy == "per_component":
-                component_matrix = self.velocity_dirichlet_bc.apply_diffusion_matrix(
+                component_matrix = self.dirichlet_velocity_bc.apply_diffusion_matrix(
                     matrix,
                     coef=diffusion_coef,
-                    threshold=self.velocity_dirichlet_threshold,
+                    threshold=self.dirichlet_velocity_threshold,
                 )
             else:
                 component_matrix = shared_matrix
 
             if matrix_policy == "shared":
                 diagonal = shared_relaxed_diagonal
+                spatial_diagonal = shared_base_diagonal
                 if shared_relax_delta is not None:
                     component_rhs = (
                         component_rhs
@@ -402,6 +476,7 @@ class CollocatedMomentumEquation:
                     )
             else:
                 diagonal = component_matrix.diags().values
+                spatial_diagonal = diagonal
                 if relaxation < 1.0:
                     delta = (1.0 / relaxation - 1.0) * diagonal
                     component_matrix = component_matrix + spdiags(
@@ -419,11 +494,13 @@ class CollocatedMomentumEquation:
 
             rhs_parts.append(component_rhs)
             diagonal_parts.append(diagonal)
+            spatial_diagonal_parts.append(spatial_diagonal)
 
-        return (
-            matrices,
-            bm.concatenate(rhs_parts, axis=0),
-            bm.concatenate(diagonal_parts, axis=0),
+        return ComponentMomentumSystems(
+            matrices=matrices,
+            rhs=bm.concatenate(rhs_parts, axis=0),
+            relaxed_diagonal=bm.concatenate(diagonal_parts, axis=0),
+            spatial_diagonal=bm.concatenate(spatial_diagonal_parts, axis=0),
         )
 
     def solve_component_momentum_systems(self, matrices, rhs):
@@ -455,10 +532,14 @@ class CollocatedMomentumEquation:
     def momentum_pressure_response_denominator(self, matrix, diagonal, *, scheme: str):
         """Return the cell denominator used by pressure-velocity correction.
 
-        SIMPLE uses the relaxed momentum diagonal ``a_P``.  SIMPLEC uses the
-        row sum of the same relaxed momentum matrix, which corresponds to
+        This function constructs the algebraic correction response.  SIMPLE
+        uses the relaxed momentum diagonal ``a_P``.  SIMPLEC uses the row sum
+        of the same relaxed momentum matrix, which corresponds to
         ``a_P - sum_N a_N`` under the finite-volume sign convention
         ``A_PP u_P - sum_N a_N u_N = rhs``.
+
+        The unrelaxed spatial diagonal used by the base Rhie-Chow flux is kept
+        separate by the steady momentum predictor.
         """
         if scheme == "simple":
             return diagonal
@@ -477,15 +558,20 @@ class CollocatedMomentumEquation:
         previous_velocity,
         *,
         pressure_gradient=None,
+        nonorthogonal_tol=None,
     ):
-        """Solve the steady SIMPLE momentum predictor equation."""
+        """Return the named steady predictor and its two response diagonals."""
         if self.controls.momentum_solve_strategy == "component":
             return self.solve_component_steady_momentum_predictor(
                 pressure,
                 face_velocity,
                 previous_velocity,
                 pressure_gradient=pressure_gradient,
+                nonorthogonal_tol=nonorthogonal_tol,
             )
+
+        if nonorthogonal_tol is None:
+            nonorthogonal_tol = self.controls.momentum_nonorthogonal_tol
 
         convection_face_velocity = self.convection_coef * face_velocity
         matrix = self.momentum_diffusion_matrix(self.diffusion_coef)
@@ -494,36 +580,36 @@ class CollocatedMomentumEquation:
                 convection_face_velocity,
                 self.controls.face_interpolation("momentum_face_interpolation"),
             )
-            matrix = self.add_velocity_natural_convection_diagonal(
+            matrix = self.add_natural_velocity_convection_diagonal(
                 matrix,
                 self.convection_coef * face_velocity,
-                self.velocity_natural_threshold,
+                self.natural_velocity_threshold,
             )
         rhs = self.steady_momentum_source_vector()
-        rhs = rhs + self.velocity_neumann_diffusion_source(self.diffusion_coef)
-        matrix, rhs = self.velocity_dirichlet_bc.apply_diffusion(
+        rhs = rhs + self.neumann_velocity_diffusion_source(self.diffusion_coef)
+        matrix, rhs = self.dirichlet_velocity_bc.apply_diffusion(
             matrix,
             rhs,
             coef=self.diffusion_coef,
-            threshold=self.velocity_dirichlet_threshold,
+            threshold=self.dirichlet_velocity_threshold,
         )
         if self.convection_coef != 0.0:
-            rhs = self.velocity_dirichlet_bc.apply_convection(
+            rhs = self.dirichlet_velocity_bc.apply_convection(
                 rhs,
                 convection_face_velocity,
-                threshold=self.velocity_dirichlet_threshold,
+                threshold=self.dirichlet_velocity_threshold,
             )
         rhs = rhs - self.pressure_gradient_source(
             pressure,
             pressure_gradient=pressure_gradient,
         )
-        matrix, rhs, diagonal = self.relax_momentum_equation(
+        matrix, rhs, diagonal, spatial_diagonal = self.relax_momentum_equation(
             matrix,
             rhs,
-            previous_velocity,
+            self.cell_vector_to_dofs(previous_velocity),
             self.controls.momentum_equation_relaxation,
         )
-        response_denominator = self.momentum_pressure_response_denominator(
+        correction_denominator = self.momentum_pressure_response_denominator(
             matrix,
             diagonal,
             scheme=self.controls.pressure_response_scheme,
@@ -533,12 +619,18 @@ class CollocatedMomentumEquation:
             matrix,
             rhs,
             velocity,
-            previous_velocity,
+            relaxation_diagonal=diagonal - spatial_diagonal,
+            previous_velocity=self.cell_vector_to_dofs(previous_velocity),
             max_iter=self.controls.momentum_nonorthogonal_max_iter,
-            tol=self.controls.momentum_nonorthogonal_tol,
-            iteration_attr="last_nonorthogonal_iterations",
+            tol=nonorthogonal_tol,
+            atol=self.controls.momentum_nonorthogonal_atol,
+            iteration_attr="last_momentum_nonorthogonal_iterations",
         )
-        return response_denominator, velocity
+        return MomentumPredictorResult(
+            correction_denominator=correction_denominator,
+            spatial_diagonal=spatial_diagonal,
+            velocity=self.dofs_to_cell_vector(velocity),
+        )
 
     def solve_component_steady_momentum_predictor(
         self,
@@ -547,8 +639,11 @@ class CollocatedMomentumEquation:
         previous_velocity,
         *,
         pressure_gradient=None,
+        nonorthogonal_tol=None,
     ):
-        """Solve the steady SIMPLE momentum predictor as scalar component systems."""
+        """Return the named component predictor and its two responses."""
+        if nonorthogonal_tol is None:
+            nonorthogonal_tol = self.controls.momentum_nonorthogonal_tol
         convection_face_velocity = self.convection_coef * face_velocity
         matrix = self.scalar_momentum_diffusion_matrix(self.diffusion_coef)
         boundary_convection_velocity = None
@@ -557,20 +652,20 @@ class CollocatedMomentumEquation:
                 convection_face_velocity,
                 self.controls.face_interpolation("momentum_face_interpolation"),
             )
-            matrix = self.add_velocity_natural_convection_diagonal(
+            matrix = self.add_natural_velocity_convection_diagonal(
                 matrix,
                 convection_face_velocity,
-                self.velocity_natural_threshold,
+                self.natural_velocity_threshold,
             )
             boundary_convection_velocity = convection_face_velocity
 
         rhs = self.steady_momentum_source_vector()
-        rhs = rhs + self.velocity_neumann_diffusion_source(self.diffusion_coef)
+        rhs = rhs + self.neumann_velocity_diffusion_source(self.diffusion_coef)
         rhs = rhs - self.pressure_gradient_source(
             pressure,
             pressure_gradient=pressure_gradient,
         )
-        matrices, rhs, diagonal = self.component_momentum_linear_systems(
+        systems = self.component_momentum_linear_systems(
             matrix,
             rhs,
             previous_velocity,
@@ -579,22 +674,224 @@ class CollocatedMomentumEquation:
             relaxation=self.controls.momentum_equation_relaxation,
             matrix_policy=self.controls.momentum_component_matrix_policy,
         )
-        response_denominator = self.momentum_pressure_response_denominator(
-            matrices,
-            diagonal,
+        correction_denominator = self.momentum_pressure_response_denominator(
+            systems.matrices,
+            systems.relaxed_diagonal,
             scheme=self.controls.pressure_response_scheme,
         )
-        velocity = self.solve_component_momentum_systems(matrices, rhs)
-        velocity = self.correct_component_momentum_nonorthogonal_diffusion(
-            matrices,
-            rhs,
-            velocity,
-            previous_velocity,
-            max_iter=self.controls.momentum_nonorthogonal_max_iter,
-            tol=self.controls.momentum_nonorthogonal_tol,
-            iteration_attr="last_nonorthogonal_iterations",
+        velocity = self.solve_component_momentum_systems(
+            systems.matrices,
+            systems.rhs,
         )
-        return response_denominator, velocity
+        velocity = self.correct_component_momentum_nonorthogonal_diffusion(
+            systems.matrices,
+            systems.rhs,
+            velocity,
+            relaxation_diagonal=(
+                systems.relaxed_diagonal - systems.spatial_diagonal
+            ),
+            previous_velocity=self.cell_vector_to_dofs(previous_velocity),
+            max_iter=self.controls.momentum_nonorthogonal_max_iter,
+            tol=nonorthogonal_tol,
+            atol=self.controls.momentum_nonorthogonal_atol,
+            iteration_attr="last_momentum_nonorthogonal_iterations",
+        )
+        return MomentumPredictorResult(
+            correction_denominator=correction_denominator,
+            spatial_diagonal=systems.spatial_diagonal,
+            velocity=self.dofs_to_cell_vector(velocity),
+        )
+
+    def steady_momentum_balance(
+        self,
+        pressure,
+        velocity,
+        face_velocity,
+        *,
+        pressure_gradient=None,
+    ):
+        """Return the unrelaxed steady momentum ``lhs`` and effective ``rhs``.
+
+        This diagnostic reassembles the selected spatial discretization at the
+        supplied final fields.  Algebraic momentum relaxation is deliberately
+        excluded, while enabled non-orthogonal diffusion remains part of the
+        effective RHS.
+        """
+        if velocity.shape != (self.NC, self.GD):
+            raise ValueError("cell velocity must have shape (NC, GD).")
+        velocity_vector = velocity
+        velocity_dofs = self.cell_vector_to_dofs(velocity_vector)
+        convection_face_velocity = self.convection_coef * face_velocity
+        pressure_gradient = (
+            self.pressure_gradient.cell_gradient(pressure)
+            if pressure_gradient is None
+            else pressure_gradient
+        )
+
+        if self.controls.momentum_solve_strategy == "component":
+            matrix = self.scalar_momentum_diffusion_matrix(self.diffusion_coef)
+            boundary_convection_velocity = None
+            if self.convection_coef != 0.0:
+                matrix = matrix + self.scalar_momentum_convection_matrix(
+                    convection_face_velocity,
+                    self.controls.face_interpolation("momentum_face_interpolation"),
+                )
+                matrix = self.add_natural_velocity_convection_diagonal(
+                    matrix,
+                    convection_face_velocity,
+                    self.natural_velocity_threshold,
+                )
+                boundary_convection_velocity = convection_face_velocity
+
+            rhs = self.steady_momentum_source_vector()
+            rhs = rhs + self.neumann_velocity_diffusion_source(self.diffusion_coef)
+            rhs = rhs - self.pressure_gradient_source(
+                pressure,
+                pressure_gradient=pressure_gradient,
+            )
+            systems = self.component_momentum_linear_systems(
+                matrix,
+                rhs,
+                velocity_vector,
+                diffusion_coef=self.diffusion_coef,
+                convection_face_velocity=boundary_convection_velocity,
+                relaxation=1.0,
+                matrix_policy=self.controls.momentum_component_matrix_policy,
+            )
+            rhs = systems.rhs
+            lhs = self.momentum_matrix_action(systems.matrices, velocity_dofs)
+        else:
+            matrix = self.momentum_diffusion_matrix(self.diffusion_coef)
+            if self.convection_coef != 0.0:
+                matrix = matrix + self.momentum_convection_matrix(
+                    convection_face_velocity,
+                    self.controls.face_interpolation("momentum_face_interpolation"),
+                )
+                matrix = self.add_natural_velocity_convection_diagonal(
+                    matrix,
+                    convection_face_velocity,
+                    self.natural_velocity_threshold,
+                )
+            rhs = self.steady_momentum_source_vector()
+            rhs = rhs + self.neumann_velocity_diffusion_source(self.diffusion_coef)
+            matrix, rhs = self.dirichlet_velocity_bc.apply_diffusion(
+                matrix,
+                rhs,
+                coef=self.diffusion_coef,
+                threshold=self.dirichlet_velocity_threshold,
+            )
+            if self.convection_coef != 0.0:
+                rhs = self.dirichlet_velocity_bc.apply_convection(
+                    rhs,
+                    convection_face_velocity,
+                    threshold=self.dirichlet_velocity_threshold,
+                )
+            rhs = rhs - self.pressure_gradient_source(
+                pressure,
+                pressure_gradient=pressure_gradient,
+            )
+            lhs = matrix @ velocity_dofs
+
+        if self.controls.momentum_nonorthogonal_max_iter > 0:
+            rhs = rhs + self.momentum_nonorthogonal_rhs(velocity_vector)
+        return {"lhs": lhs, "rhs": rhs, "residual": lhs - rhs}
+
+    def steady_momentum_terms(
+        self,
+        pressure,
+        velocity,
+        face_velocity,
+        *,
+        pressure_gradient=None,
+    ):
+        """Return named terms of the unrelaxed production momentum residual.
+
+        The returned component-major vectors satisfy
+
+        ``residual = diffusion + convection + pressure - source``.
+
+        Diffusion includes its Dirichlet and Neumann boundary contributions
+        and the enabled non-orthogonal correction.  Convection is recovered
+        from the complete production residual after the other independently
+        assembled terms are removed, so its boundary closure is exactly the
+        one used by the production momentum equation.
+        """
+        if velocity.shape != (self.NC, self.GD):
+            raise ValueError("cell velocity must have shape (NC, GD).")
+        velocity_vector = velocity
+        velocity_dofs = self.cell_vector_to_dofs(velocity_vector)
+        pressure_gradient = (
+            self.pressure_gradient.cell_gradient(pressure)
+            if pressure_gradient is None
+            else pressure_gradient
+        )
+        balance = self.steady_momentum_balance(
+            pressure,
+            velocity_vector,
+            face_velocity,
+            pressure_gradient=pressure_gradient,
+        )
+
+        zero_rhs = bm.zeros(self.GD * self.NC, dtype=velocity_dofs.dtype)
+        neumann_source = self.neumann_velocity_diffusion_source(
+            self.diffusion_coef
+        )
+        if self.controls.momentum_solve_strategy == "component":
+            diffusion_matrix = self.scalar_momentum_diffusion_matrix(
+                self.diffusion_coef
+            )
+            diffusion_systems = self.component_momentum_linear_systems(
+                diffusion_matrix,
+                zero_rhs,
+                velocity_vector,
+                diffusion_coef=self.diffusion_coef,
+                relaxation=1.0,
+                matrix_policy=self.controls.momentum_component_matrix_policy,
+            )
+            diffusion = (
+                self.momentum_matrix_action(
+                    diffusion_systems.matrices,
+                    velocity_dofs,
+                )
+                - diffusion_systems.rhs
+                - neumann_source
+            )
+        else:
+            diffusion_matrix = self.momentum_diffusion_matrix(self.diffusion_coef)
+            diffusion_matrix, diffusion_rhs = self.dirichlet_velocity_bc.apply_diffusion(
+                diffusion_matrix,
+                zero_rhs,
+                coef=self.diffusion_coef,
+                threshold=self.dirichlet_velocity_threshold,
+            )
+            diffusion = (
+                diffusion_matrix @ velocity_dofs
+                - diffusion_rhs
+                - neumann_source
+            )
+
+        if self.controls.momentum_nonorthogonal_max_iter > 0:
+            diffusion = diffusion - self.momentum_nonorthogonal_rhs(
+                velocity_vector
+            )
+
+        pressure_term = self.pressure_gradient_source(
+            pressure,
+            pressure_gradient=pressure_gradient,
+        )
+        source_term = self.steady_momentum_source_vector()
+        convection = (
+            balance["residual"] - diffusion - pressure_term + source_term
+        )
+        return {
+            "diffusion": diffusion,
+            "convection": convection,
+            "pressure": pressure_term,
+            "source": source_term,
+            "lhs": balance["lhs"],
+            "rhs": balance["rhs"],
+            "residual": balance["residual"],
+        }
 
     def solve_transient_momentum_predictor(
         self,
@@ -613,61 +910,56 @@ class CollocatedMomentumEquation:
             )
 
         controls = self.controls
-        matrix = self.momentum_diffusion_matrix(self.mu)
+        matrix = self.momentum_diffusion_matrix(self.diffusion_coef)
         matrix = matrix + self.momentum_convection_matrix(
-            self.rho * previous_face_velocity,
+            self.convection_coef * previous_face_velocity,
             controls.face_interpolation_method,
         )
-        matrix = self.add_velocity_natural_convection_diagonal(
+        matrix = self.add_natural_velocity_convection_diagonal(
             matrix,
-            self.rho * previous_face_velocity,
-            self.velocity_natural_threshold,
+            self.convection_coef * previous_face_velocity,
+            self.natural_velocity_threshold,
         )
 
         @cartesian
         def src(points):
             return self.source(points, time)
 
-        matrix = matrix + self.momentum_time_matrix(self.rho, controls.tau)
+        matrix = matrix + self.momentum_time_matrix(
+            self.convection_coef,
+            controls.tau,
+        )
         rhs = self.momentum_source_vector(src)
-        rhs = rhs + self.momentum_time_source(previous_velocity, self.rho, controls.tau)
-        rhs = rhs + self.velocity_neumann_diffusion_source(self.mu)
+        rhs = rhs + self.momentum_time_source(
+            previous_velocity,
+            self.convection_coef,
+            controls.tau,
+        )
+        rhs = rhs + self.neumann_velocity_diffusion_source(self.diffusion_coef)
         rhs = rhs - self.pressure_gradient_source(pressure)
-        matrix, rhs = self.velocity_dirichlet_bc.apply_diffusion(
+        matrix, rhs = self.dirichlet_velocity_bc.apply_diffusion(
             matrix,
             rhs,
-            coef=self.mu,
-            threshold=self.velocity_dirichlet_threshold,
+            coef=self.diffusion_coef,
+            threshold=self.dirichlet_velocity_threshold,
         )
-        rhs = self.velocity_dirichlet_bc.apply_convection(
+        rhs = self.dirichlet_velocity_bc.apply_convection(
             rhs,
-            self.rho * previous_face_velocity,
-            threshold=self.velocity_dirichlet_threshold,
+            self.convection_coef * previous_face_velocity,
+            threshold=self.dirichlet_velocity_threshold,
         )
         diagonal = matrix.diags().values
-        if controls.momentum_nonorthogonal_max_iter == 0:
-            solution = self.solve_momentum_system(matrix, rhs)
-            self.last_momentum_nonorthogonal_iterations = 0
-            return self.dofs_to_cell_vector(solution), diagonal, matrix
-
-        correction_velocity = previous_velocity
-        velocity = previous_velocity
-        for iteration in range(1, controls.momentum_nonorthogonal_max_iter + 1):
-            corrected_rhs = rhs + self.boundary_corrected_momentum_explicit_source(
-                correction_velocity
-            )
-            old_velocity = velocity
-            solution = self.solve_momentum_system(matrix, corrected_rhs)
-            velocity = self.dofs_to_cell_vector(solution)
-            self.last_momentum_nonorthogonal_iterations = iteration
-            if (
-                iteration > 1
-                and bm.max(bm.abs(velocity - old_velocity))
-                < controls.momentum_nonorthogonal_tol
-            ):
-                break
-            correction_velocity = velocity
-        return velocity, diagonal, matrix
+        solution = self.solve_momentum_system(matrix, rhs)
+        solution = self.correct_momentum_nonorthogonal_diffusion(
+            matrix,
+            rhs,
+            solution,
+            max_iter=controls.momentum_nonorthogonal_max_iter,
+            tol=controls.momentum_nonorthogonal_tol,
+            atol=controls.momentum_nonorthogonal_atol,
+            iteration_attr="last_momentum_nonorthogonal_iterations",
+        )
+        return self.dofs_to_cell_vector(solution), diagonal, matrix
 
     def solve_component_transient_momentum_predictor(
         self,
@@ -678,74 +970,77 @@ class CollocatedMomentumEquation:
     ):
         """Solve the transient PISO momentum predictor as scalar component systems."""
         controls = self.controls
-        matrix = self.scalar_momentum_diffusion_matrix(self.mu)
-        convection_face_velocity = self.rho * previous_face_velocity
+        matrix = self.scalar_momentum_diffusion_matrix(self.diffusion_coef)
+        convection_face_velocity = self.convection_coef * previous_face_velocity
         matrix = matrix + self.scalar_momentum_convection_matrix(
             convection_face_velocity,
             controls.face_interpolation_method,
         )
-        matrix = self.add_velocity_natural_convection_diagonal(
+        matrix = self.add_natural_velocity_convection_diagonal(
             matrix,
             convection_face_velocity,
-            self.velocity_natural_threshold,
+            self.natural_velocity_threshold,
         )
-        matrix = matrix + self.scalar_momentum_time_matrix(self.rho, controls.tau)
+        matrix = matrix + self.scalar_momentum_time_matrix(
+            self.convection_coef,
+            controls.tau,
+        )
 
         @cartesian
         def src(points):
             return self.source(points, time)
 
         rhs = self.momentum_source_vector(src)
-        rhs = rhs + self.momentum_time_source(previous_velocity, self.rho, controls.tau)
-        rhs = rhs + self.velocity_neumann_diffusion_source(self.mu)
+        rhs = rhs + self.momentum_time_source(
+            previous_velocity,
+            self.convection_coef,
+            controls.tau,
+        )
+        rhs = rhs + self.neumann_velocity_diffusion_source(self.diffusion_coef)
         rhs = rhs - self.pressure_gradient_source(pressure)
-        matrices, rhs, diagonal = self.component_momentum_linear_systems(
+        systems = self.component_momentum_linear_systems(
             matrix,
             rhs,
             previous_velocity,
-            diffusion_coef=self.mu,
+            diffusion_coef=self.diffusion_coef,
             convection_face_velocity=convection_face_velocity,
             matrix_policy=controls.momentum_component_matrix_policy,
         )
 
-        if controls.momentum_nonorthogonal_max_iter == 0:
-            solution = self.solve_component_momentum_systems(matrices, rhs)
-            self.last_momentum_nonorthogonal_iterations = 0
-            return self.dofs_to_cell_vector(solution), diagonal, matrices
-
-        correction_velocity = previous_velocity
-        velocity = previous_velocity
-        for iteration in range(1, controls.momentum_nonorthogonal_max_iter + 1):
-            corrected_rhs = rhs + self.boundary_corrected_momentum_explicit_source(
-                correction_velocity
-            )
-            old_velocity = velocity
-            solution = self.solve_component_momentum_systems(matrices, corrected_rhs)
-            velocity = self.dofs_to_cell_vector(solution)
-            self.last_momentum_nonorthogonal_iterations = iteration
-            if (
-                iteration > 1
-                and bm.max(bm.abs(velocity - old_velocity))
-                < controls.momentum_nonorthogonal_tol
-            ):
-                break
-            correction_velocity = velocity
-        return velocity, diagonal, matrices
+        solution = self.solve_component_momentum_systems(
+            systems.matrices,
+            systems.rhs,
+        )
+        solution = self.correct_component_momentum_nonorthogonal_diffusion(
+            systems.matrices,
+            systems.rhs,
+            solution,
+            max_iter=controls.momentum_nonorthogonal_max_iter,
+            tol=controls.momentum_nonorthogonal_tol,
+            atol=controls.momentum_nonorthogonal_atol,
+            iteration_attr="last_momentum_nonorthogonal_iterations",
+        )
+        return (
+            self.dofs_to_cell_vector(solution),
+            systems.relaxed_diagonal,
+            systems.matrices,
+        )
 
     def relax_momentum_equation(self, matrix, rhs, previous_velocity, alpha):
         """Apply matrix-level under-relaxation to a momentum equation.
 
         For an assembled system ``A U = b``, the relaxed system is
         ``(A + diag(delta)) U = b + diag(delta) U_old`` with
-        ``delta = (1 / alpha - 1) diag(A)``.  The returned diagonal is the
-        relaxed momentum diagonal used by pressure response.
+        ``delta = (1 / alpha - 1) diag(A)``.  Both the relaxed correction
+        diagonal and the original spatial diagonal are returned because they
+        have different roles in the SIMPLE/Rhie-Chow coupling.
         """
         if not 0.0 < alpha <= 1.0:
             raise ValueError("momentum equation relaxation alpha must be in (0, 1].")
 
         diagonal = matrix.diags().values
         if alpha == 1.0:
-            return matrix, rhs, diagonal
+            return matrix, rhs, diagonal, diagonal
 
         delta = (1.0 / alpha - 1.0) * diagonal
         relaxed_matrix = matrix + spdiags(
@@ -756,17 +1051,19 @@ class CollocatedMomentumEquation:
             index_dtype=matrix.itype,
         )
         relaxed_rhs = rhs + delta * previous_velocity
-        return relaxed_matrix, relaxed_rhs, relaxed_matrix.diags().values
+        return relaxed_matrix, relaxed_rhs, relaxed_matrix.diags().values, diagonal
 
     def correct_momentum_nonorthogonal_diffusion(
         self,
         matrix,
         rhs,
         velocity,
-        previous_velocity,
         *,
+        relaxation_diagonal=None,
+        previous_velocity=None,
         max_iter: int,
         tol: float,
+        atol: float,
         iteration_attr: str,
     ):
         """Picard-correct a vector momentum system for non-orthogonal diffusion."""
@@ -774,33 +1071,64 @@ class CollocatedMomentumEquation:
             setattr(self, iteration_attr, 0)
             return velocity
 
-        correction_velocity = (
-            self.dofs_to_cell_vector(previous_velocity)
-            if previous_velocity.ndim == 1
-            else previous_velocity
-        )
-        cross = self.momentum_nonorthogonal_rhs(correction_velocity)
         corrected_velocity = velocity
+        norm_weights = 1.0 / bm.tile(self.cm, (self.GD,))
         setattr(self, iteration_attr, 0)
-        for iteration in range(1, max_iter + 1):
+        self.last_momentum_nonorthogonal_residual = None
+        self.last_momentum_nonorthogonal_relative_update = 0.0
+        for correction in range(max_iter + 1):
+            cell_velocity = self.dofs_to_cell_vector(corrected_velocity)
+            cross = self.momentum_nonorthogonal_rhs(cell_velocity)
+            lhs = matrix @ corrected_velocity
+            corrected_rhs = rhs + cross
+            if relaxation_diagonal is None:
+                metrics = normalized_equation_residual(
+                    lhs,
+                    corrected_rhs,
+                    norm_weights=norm_weights,
+                )
+            else:
+                metrics = normalized_relaxed_equation_residual(
+                    lhs,
+                    corrected_rhs,
+                    corrected_velocity,
+                    previous_velocity,
+                    relaxation_diagonal,
+                    norm_weights=norm_weights,
+                )
+            self.last_momentum_nonorthogonal_residual = metrics
+            if equation_residual_converged(metrics, rtol=tol, atol=atol):
+                return corrected_velocity
+            if correction == max_iter:
+                break
+
             next_velocity = self.solve_momentum_system(matrix, rhs + cross)
-            setattr(self, iteration_attr, iteration)
-            if bm.max(bm.abs(next_velocity - corrected_velocity)) < tol:
-                return next_velocity
+            update = float(
+                bm.to_numpy(bm.linalg.norm(next_velocity - corrected_velocity))
+            )
+            scale = float(bm.to_numpy(bm.linalg.norm(next_velocity)))
+            self.last_momentum_nonorthogonal_relative_update = (
+                update / max(scale, 1.0e-30)
+            )
             corrected_velocity = next_velocity
-            correction_velocity = self.dofs_to_cell_vector(corrected_velocity)
-            cross = self.momentum_nonorthogonal_rhs(correction_velocity)
-        return corrected_velocity
+            setattr(self, iteration_attr, correction + 1)
+
+        raise RuntimeError(
+            "momentum non-orthogonal correction did not converge before "
+            "momentum_nonorthogonal_max_iter"
+        )
 
     def correct_component_momentum_nonorthogonal_diffusion(
         self,
         matrices,
         rhs,
         velocity,
-        previous_velocity,
         *,
+        relaxation_diagonal=None,
+        previous_velocity=None,
         max_iter: int,
         tol: float,
+        atol: float,
         iteration_attr: str,
     ):
         """Picard-correct component momentum systems for non-orthogonal diffusion."""
@@ -808,23 +1136,59 @@ class CollocatedMomentumEquation:
             setattr(self, iteration_attr, 0)
             return velocity
 
-        correction_velocity = (
-            self.dofs_to_cell_vector(previous_velocity)
-            if previous_velocity.ndim == 1
-            else previous_velocity
-        )
-        cross = self.momentum_nonorthogonal_rhs(correction_velocity)
         corrected_velocity = velocity
+        norm_weights = 1.0 / bm.tile(self.cm, (self.GD,))
         setattr(self, iteration_attr, 0)
-        for iteration in range(1, max_iter + 1):
-            next_velocity = self.solve_component_momentum_systems(matrices, rhs + cross)
-            setattr(self, iteration_attr, iteration)
-            if bm.max(bm.abs(next_velocity - corrected_velocity)) < tol:
-                return next_velocity
+        self.last_momentum_nonorthogonal_residual = None
+        self.last_momentum_nonorthogonal_relative_update = 0.0
+        for correction in range(max_iter + 1):
+            cell_velocity = self.dofs_to_cell_vector(corrected_velocity)
+            cross = self.momentum_nonorthogonal_rhs(cell_velocity)
+            lhs_parts = []
+            for component, matrix in enumerate(matrices):
+                start = component * self.NC
+                stop = start + self.NC
+                lhs_parts.append(matrix @ corrected_velocity[start:stop])
+            lhs = bm.concatenate(lhs_parts, axis=0)
+            corrected_rhs = rhs + cross
+            if relaxation_diagonal is None:
+                metrics = normalized_equation_residual(
+                    lhs,
+                    corrected_rhs,
+                    norm_weights=norm_weights,
+                )
+            else:
+                metrics = normalized_relaxed_equation_residual(
+                    lhs,
+                    corrected_rhs,
+                    corrected_velocity,
+                    previous_velocity,
+                    relaxation_diagonal,
+                    norm_weights=norm_weights,
+                )
+            self.last_momentum_nonorthogonal_residual = metrics
+            if equation_residual_converged(metrics, rtol=tol, atol=atol):
+                return corrected_velocity
+            if correction == max_iter:
+                break
+
+            next_velocity = self.solve_component_momentum_systems(
+                matrices, rhs + cross
+            )
+            update = float(
+                bm.to_numpy(bm.linalg.norm(next_velocity - corrected_velocity))
+            )
+            scale = float(bm.to_numpy(bm.linalg.norm(next_velocity)))
+            self.last_momentum_nonorthogonal_relative_update = (
+                update / max(scale, 1.0e-30)
+            )
             corrected_velocity = next_velocity
-            correction_velocity = self.dofs_to_cell_vector(corrected_velocity)
-            cross = self.momentum_nonorthogonal_rhs(correction_velocity)
-        return corrected_velocity
+            setattr(self, iteration_attr, correction + 1)
+
+        raise RuntimeError(
+            "momentum non-orthogonal correction did not converge before "
+            "momentum_nonorthogonal_max_iter"
+        )
 
     def momentum_time_source(self, previous_velocity, density, time_step):
         """Return the old-time RHS contribution ``rho * V_C / dt * U^n``."""
@@ -842,7 +1206,7 @@ class CollocatedMomentumEquation:
 
         return self.cell_vector_to_dofs(previous_velocity * cell_diagonal[:, None])
 
-    def add_velocity_natural_convection_diagonal(
+    def add_natural_velocity_convection_diagonal(
         self,
         matrix,
         convection_face_velocity,
@@ -880,13 +1244,17 @@ class CollocatedMomentumEquation:
     def momentum_source_vector(self, source):
         """Assemble the shared cell-integrated momentum source vector."""
         return LinearForm(self.velocity_space).add_integrator(
-            ScalarSourceIntegrator(source, q=self.p + 2)
+            ScalarSourceIntegrator(
+                source,
+                q=self.p + 2,
+                geometry=self.fvm_geometry,
+            )
         ).assembly()
 
-    def velocity_neumann_boundary_data(self):
+    def neumann_velocity_boundary_data(self):
         """Return velocity Neumann boundary faces and normal derivatives."""
-        threshold = getattr(self, "velocity_neumann_threshold", None)
-        value = getattr(self, "velocity_neumann_data", None)
+        threshold = getattr(self, "neumann_velocity_threshold", None)
+        value = getattr(self, "neumann_velocity_data", None)
         if threshold is None or value is None:
             return None, None
 
@@ -896,15 +1264,15 @@ class CollocatedMomentumEquation:
         points = self.fvm_geometry.face_center[boundary_faces]
         return boundary_faces, bm.array(value(points), dtype=self.cm.dtype)
 
-    def velocity_neumann_diffusion_source(self, diffusion_coef):
+    def neumann_velocity_diffusion_source(self, diffusion_coef):
         r"""Return cell-integrated velocity Neumann diffusion RHS.
 
-        ``velocity_neumann_data(points)`` is interpreted as the outward normal
+        ``neumann_velocity_data(points)`` is interpreted as the outward normal
         derivative density ``dU/dn`` on selected boundary faces.  The finite
         volume contribution is ``mu_f * dU/dn * |S_f|`` scattered to owner
         cells and returned in component-major momentum-vector layout.
         """
-        boundary_faces, sn_grad = self.velocity_neumann_boundary_data()
+        boundary_faces, sn_grad = self.neumann_velocity_boundary_data()
         if boundary_faces is None or boundary_faces.shape[0] == 0:
             return bm.zeros((self.GD * self.NC,), dtype=self.cm.dtype)
 
@@ -941,7 +1309,7 @@ class CollocatedMomentumEquation:
         neumann_values = []
         natural_faces = selected_boundary_faces(
             self.fvm_geometry,
-            getattr(self, "velocity_natural_threshold", None),
+            getattr(self, "natural_velocity_threshold", None),
         )
         if natural_faces is not None and natural_faces.shape[0] > 0:
             neumann_faces.append(natural_faces)
@@ -949,10 +1317,10 @@ class CollocatedMomentumEquation:
                 bm.zeros((natural_faces.shape[0], velocity.shape[1]), dtype=velocity.dtype)
             )
 
-        velocity_neumann_faces, velocity_neumann_values = self.velocity_neumann_boundary_data()
-        if velocity_neumann_faces is not None and velocity_neumann_faces.shape[0] > 0:
-            neumann_faces.append(velocity_neumann_faces)
-            neumann_values.append(bm.array(velocity_neumann_values, dtype=velocity.dtype))
+        neumann_velocity_faces, neumann_velocity_values = self.neumann_velocity_boundary_data()
+        if neumann_velocity_faces is not None and neumann_velocity_faces.shape[0] > 0:
+            neumann_faces.append(neumann_velocity_faces)
+            neumann_values.append(bm.array(neumann_velocity_values, dtype=velocity.dtype))
 
         if neumann_faces:
             kwargs["neumann_faces"] = bm.concatenate(neumann_faces, axis=0)
@@ -983,11 +1351,13 @@ class CollocatedMomentumEquation:
             assembler = CrossDiffusionRHSAssembler(
                 self.velocity_space,
                 geometry=self.fvm_geometry,
+                method=self.diffusion_method,
+                nonorthogonal_eps=self.diffusion_nonorthogonal_eps,
             )
             self._cross_diffusion_rhs_assembler = assembler
         return assembler.assembly(
             grad_f=grad_f,
-            coef=getattr(self, "diffusion_coef", getattr(self, "mu", 1.0)),
+            coef=self.diffusion_coef,
             boundary_policy="all",
         )
 
@@ -1003,35 +1373,85 @@ class CollocatedFaceFluxAlgebra:
 
     def face_interpolate_cell_scalar(self, cell_values, method: str = "linear"):
         """Linearly interpolate a cell scalar to faces using face geometry."""
-        face_to_cell = self.face_to_cell[:, :2]
-        if method == "linear":
-            owner_weight = self.fvm_geometry.linear_owner_weight()
-        elif method == "average":
-            owner_weight = 0.5 * bm.ones_like(self.fvm_geometry.mag_S_f)
-            owner_weight = bm.where(self.fvm_geometry.is_internal, owner_weight, 1.0)
-        else:
-            raise ValueError("method must be 'average' or 'linear'.")
-        return (
-            owner_weight * cell_values[face_to_cell[:, 0]]
-            + (1.0 - owner_weight) * cell_values[face_to_cell[:, 1]]
+        return interpolate_cell_to_face(
+            cell_values,
+            geometry=self.fvm_geometry,
+            method=method,
         )
 
     def face_interpolate_cell_vector(self, cell_vectors, method: str = "linear"):
         """Linearly interpolate a cell vector to faces using face geometry."""
-        face_to_cell = self.face_to_cell[:, :2]
-        if method == "linear":
-            owner_weight = self.fvm_geometry.linear_owner_weight()
-        elif method == "average":
-            owner_weight = 0.5 * bm.ones_like(self.fvm_geometry.mag_S_f)
-            owner_weight = bm.where(self.fvm_geometry.is_internal, owner_weight, 1.0)
-        else:
-            raise ValueError("method must be 'average' or 'linear'.")
-        return (
-            owner_weight[:, None] * cell_vectors[face_to_cell[:, 0]]
-            + (1.0 - owner_weight)[:, None] * cell_vectors[face_to_cell[:, 1]]
+        return interpolate_cell_to_face(
+            cell_vectors,
+            geometry=self.fvm_geometry,
+            method=method,
         )
 
-    def face_flux(self, face_velocity):
+    def spatial_face_velocity(
+        self,
+        cell_velocity,
+        *,
+        boundary_faces=None,
+        boundary_face_average=None,
+    ):
+        """Construct the configured spatial face velocity before pressure coupling."""
+        if cell_velocity.shape != (self.NC, self.GD):
+            raise ValueError("cell velocity must have shape (NC, GD).")
+        if self.controls.rhie_chow_velocity_scheme == "interpolated":
+            face_velocity = self.face_interpolate_cell_vector(
+                cell_velocity,
+                method=self.controls.face_interpolation_method,
+            )
+        else:
+            face_velocity = self.second_order_reconstructed_face_velocity(
+                cell_velocity
+            )
+
+        if self.controls.face_flux_correction_scheme == "none":
+            return face_velocity
+
+        flux_defect = self.face_flux_reconstruct.correction(
+            cell_velocity,
+            face_velocity,
+            boundary_face_average=boundary_face_average,
+            boundary_faces=boundary_faces,
+        )
+        return self.enforce_face_flux(
+            face_velocity,
+            self.compute_face_flux(face_velocity) + flux_defect,
+        )
+
+    def second_order_reconstructed_face_velocity(self, cell_velocity):
+        """Blend owner/neighbour linear reconstructions at face centres."""
+        if cell_velocity.shape != (self.NC, self.GD):
+            raise ValueError("cell velocity must have shape (NC, GD).")
+        gradient = self.velocity_gradient.cell_gradient(cell_velocity)
+        owner = self.fvm_geometry.owner
+        neighbour = self.fvm_geometry.neighbour
+        owner_delta = (
+            self.fvm_geometry.face_center - self.fvm_geometry.cell_center[owner]
+        )
+        neighbour_delta = (
+            self.fvm_geometry.face_center
+            - self.fvm_geometry.cell_center[neighbour]
+        )
+        owner_value = cell_velocity[owner] + bm.einsum(
+            "ncd,nd->nc", gradient[owner], owner_delta
+        )
+        neighbour_value = cell_velocity[neighbour] + bm.einsum(
+            "ncd,nd->nc", gradient[neighbour], neighbour_delta
+        )
+        owner_weight = face_interpolation_owner_weight(
+            self.mesh,
+            method="linear",
+            geometry=self.fvm_geometry,
+        )
+        return (
+            owner_weight[:, None] * owner_value
+            + (1.0 - owner_weight[:, None]) * neighbour_value
+        )
+
+    def compute_face_flux(self, face_velocity):
         """Return the signed surface flux ``phi_f = u_f dot S_f``."""
         return bm.einsum("ij,ij->i", face_velocity, self.fvm_geometry.S_f)
 
@@ -1042,7 +1462,7 @@ class CollocatedFaceFluxAlgebra:
     def enforce_face_flux(self, face_velocity, target_flux):
         """Adjust only the normal component of a vector face velocity."""
         Sf = self.fvm_geometry.S_f
-        current_flux = self.face_flux(face_velocity)
+        current_flux = self.compute_face_flux(face_velocity)
         Sf_dot_Sf = bm.einsum("ij,ij->i", Sf, Sf)
         return face_velocity + ((target_flux - current_flux) / Sf_dot_Sf)[:, None] * Sf
 
@@ -1068,18 +1488,22 @@ class PressureGaugeMatrixAssembler:
         *,
         geometry: Optional[FVMGeometry] = None,
         cell_measure: Optional[TensorLike] = None,
+        diffusion_method: str = "over_relaxed",
+        diffusion_nonorthogonal_eps: float = 0.05,
     ) -> None:
         self.space = space
         self.mesh = getattr(space, "mesh", None)
         self.geometry = geometry if geometry is not None else FVMGeometry(self.mesh)
-        self.NC = self.mesh.number_of_cells()
+        self.NC = self.geometry.NC
         self.sparse_shape = (self.NC + 1, self.NC + 1)
         self.cell_measure = (
-            self.mesh.entity_measure("cell") if cell_measure is None else cell_measure
+            self.geometry.cell_measure if cell_measure is None else cell_measure
         )
         self.pressure_diffusion = ScalarDiffusionMatrixAssembler(
             space,
             geometry=self.geometry,
+            method=diffusion_method,
+            nonorthogonal_eps=diffusion_nonorthogonal_eps,
         )
 
         base_counts = (
@@ -1178,14 +1602,29 @@ class CollocatedPressureEquation:
         response = self.cm / a_p[: self.NC]
         return self.face_interpolate_cell_scalar(response, method=interpolation_method)
 
+    @variantmethod("over_relaxed")
+    def pressure_diffusion_decomposition(self):
+        """Return the active complete pressure-Laplacian decomposition."""
+        return self.fvm_geometry.diffusion_face_decomposition("over_relaxed")
+
+    @pressure_diffusion_decomposition.register("bounded_over_relaxed")
+    def pressure_diffusion_decomposition(self):
+        return self.fvm_geometry.diffusion_face_decomposition(
+            "bounded_over_relaxed", eps=self.diffusion_nonorthogonal_eps
+        )
+
+    @pressure_diffusion_decomposition.register("uncorrected")
+    def pressure_diffusion_decomposition(self):
+        return self.fvm_geometry.diffusion_face_decomposition("uncorrected")
+
     def pressure_orthogonal_flux(self, pressure, response_coef):
         """Return the implicit orthogonal pressure-Laplacian flux."""
-        _, mag_E_f, _ = self.fvm_geometry.over_relaxed_decomposition()
-        coefficient = response_coef * mag_E_f / self.fvm_geometry.mag_d_f
+        decomposition = self.pressure_diffusion_decomposition()
+        coefficient = response_coef * decomposition.orthogonal_factor
         jump = pressure[self.face_to_cell[:, 0]] - pressure[self.face_to_cell[:, 1]]
         return coefficient * jump
 
-    def add_pressure_dirichlet_flux(
+    def add_dirichlet_pressure_flux(
         self,
         flux,
         pressure,
@@ -1197,23 +1636,20 @@ class CollocatedPressureEquation:
         if threshold is None or boundary_value is None:
             return flux
 
-        boundary_faces = bm.nonzero(self.fvm_geometry.is_boundary)[0]
-        face_centers = self.fvm_geometry.face_center[boundary_faces]
-        flag = threshold(face_centers)
-        if not bool(bm.to_numpy(bm.any(flag))):
+        selected = selected_boundary_faces(self.fvm_geometry, threshold)
+        if selected is None or selected.shape[0] == 0:
             return flux
 
-        selected = boundary_faces[flag]
-        _, mag_E_f, _ = self.fvm_geometry.over_relaxed_decomposition()
+        face_centers = self.fvm_geometry.face_center[selected]
+        decomposition = self.pressure_diffusion_decomposition()
         coefficient = (
             response_coef[selected]
-            * mag_E_f[selected]
-            / self.fvm_geometry.mag_d_f[selected]
+            * decomposition.orthogonal_factor[selected]
         )
         owner = self.fvm_geometry.owner[selected]
-        boundary_pressure = boundary_value(face_centers[flag])
+        boundary_pressure = boundary_value(face_centers)
         boundary_flux = coefficient * (pressure[owner] - boundary_pressure)
-        return bm.set_at(flux, selected, boundary_flux)
+        return bm.set_at(flux, selected, flux[selected] + boundary_flux)
 
     def pressure_nonorthogonal_cross_flux(
         self,
@@ -1222,15 +1658,19 @@ class CollocatedPressureEquation:
         *,
         interpolation_method: str,
         pressure_gradient=None,
+        boundary_threshold=None,
     ) -> TensorLike:
         """Return the explicit non-orthogonal flux induced by a pressure field.
 
         The face-gradient interpolation follows the active face-interpolation
         setting used by the collocated pressure-correction route.  Pressure
-        boundary cross flux remains zero on non-coupled boundary faces,
-        matching the pressure Laplacian correction route.
+        Boundary cross flux is retained only on selected pressure Dirichlet
+        faces.  The supplied or reconstructed gradient must satisfy the same
+        Dirichlet data as the pressure field being corrected.
         """
-        T_f = self.fvm_geometry.bounded_over_relaxed_decomposition()[2]
+        if self.diffusion_method == "uncorrected":
+            return bm.zeros_like(response_coef)
+        T_f = self.pressure_diffusion_decomposition().T_f
         if float(bm.to_numpy(bm.max(bm.abs(T_f)))) == 0.0:
             return bm.zeros_like(response_coef)
         grad_p = (
@@ -1245,7 +1685,14 @@ class CollocatedPressureEquation:
             interpolation_method=interpolation_method,
         )
         cross_flux = response_coef * bm.einsum("ij,ij->i", T_f, grad_f)
-        return bm.where(self.fvm_geometry.is_boundary, 0.0, cross_flux)
+        active_faces = bm.copy(self.fvm_geometry.is_internal)
+        selected = selected_boundary_faces(
+            self.fvm_geometry,
+            boundary_threshold,
+        )
+        if selected is not None and selected.shape[0] > 0:
+            active_faces = bm.set_at(active_faces, selected, True)
+        return bm.where(active_faces, cross_flux, 0.0)
 
     def pressure_gauge_matrix(self, coef):
         """Assemble the pressure Laplacian with a volume-weighted gauge row."""
@@ -1255,6 +1702,8 @@ class CollocatedPressureEquation:
                 self.space,
                 geometry=self.fvm_geometry,
                 cell_measure=self.cm,
+                diffusion_method=self.diffusion_method,
+                diffusion_nonorthogonal_eps=self.diffusion_nonorthogonal_eps,
             )
             self._pressure_gauge_matrix_assembler = assembler
         return assembler.assembly(coef)
@@ -1266,6 +1715,8 @@ class CollocatedPressureEquation:
             assembler = ScalarDiffusionMatrixAssembler(
                 self.space,
                 geometry=self.fvm_geometry,
+                method=self.diffusion_method,
+                nonorthogonal_eps=self.diffusion_nonorthogonal_eps,
             )
             self._scalar_diffusion_matrix_assembler = assembler
         return assembler.assembly(coef)

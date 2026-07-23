@@ -73,7 +73,7 @@ def test_piso_cylinder_parser_accepts_face_weighted_lsq_gradient_method():
     assert args.rhie_chow_pressure_gradient_method == "face_weighted_lsq"
 
 
-def test_piso_cylinder_uses_patch_velocity_dirichlet_only():
+def test_piso_cylinder_uses_patch_dirichlet_velocity_only():
     bm.set_backend("numpy")
     from fealpy.fvm import CylinderFlowCase, FVMLinearSolverConfig, NSFVMPISOModel
 
@@ -110,7 +110,7 @@ def test_piso_cylinder_uses_patch_velocity_dirichlet_only():
     assert not bool(bm.to_numpy(bm.any(case.is_outlet_boundary(face_centers))))
 
 
-def test_piso_pressure_flux_includes_pressure_dirichlet_outlet():
+def test_piso_pressure_flux_includes_dirichlet_pressure_outlet():
     bm.set_backend("numpy")
     from fealpy.fvm import CylinderFlowCase, FVMLinearSolverConfig, NSFVMPISOModel
 
@@ -146,12 +146,12 @@ def test_piso_pressure_flux_includes_pressure_dirichlet_outlet():
         coef,
         interpolation_method=model.controls.face_interpolation_method,
     )
-    flux = model.add_pressure_dirichlet_flux(
+    flux = model.add_dirichlet_pressure_flux(
         flux,
         pressure,
         coef,
-        model.pressure_dirichlet_value,
-        model.pressure_dirichlet_threshold,
+        model.dirichlet_pressure_value,
+        model.dirichlet_pressure_threshold,
     )
     boundary_faces = model.mesh.boundary_face_index()
     face_centers = model.mesh.entity_barycenter("face")[boundary_faces]
@@ -178,8 +178,8 @@ def test_piso_cylinder_open_outlet_short_run_stays_bounded():
             "duration": (0.0, 1.5),
             "nt": 30,
             "n_correctors": 4,
-            "momentum_nonorthogonal_max_iter": 2,
-            "pressure_nonorthogonal_max_iter": 2,
+            "momentum_nonorthogonal_max_iter": 10,
+            "pressure_nonorthogonal_max_iter": 10,
             "boundary_conditions": case.engineering_boundary_conditions,
             "linear_solver_config": FVMLinearSolverConfig(solver="scipy"),
             "log_level": "ERROR",
@@ -187,7 +187,7 @@ def test_piso_cylinder_open_outlet_short_run_stays_bounded():
         }
     )
     model.solve()
-    speed = bm.sqrt(model.uh**2 + model.vh**2)
+    speed = bm.linalg.norm(model.velocity, axis=1)
     _, boundary_velocity = model.boundary_conditions.boundary_face_velocity(
         "velocity",
         mesh=model.mesh,

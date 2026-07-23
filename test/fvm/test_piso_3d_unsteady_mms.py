@@ -21,15 +21,15 @@ def test_piso_model_accepts_3d_unsteady_mms_and_nz():
     model = NSFVMPISOModel(
         {
             "pde": 13,
-            "mesh_type": "uniform_hex",
+            "mesh_type": "uniform_tet",
             "nx": 2,
             "ny": 2,
             "nz": 3,
             "duration": (0.0, 0.01),
             "nt": 1,
             "n_correctors": 2,
-            "momentum_nonorthogonal_max_iter": 1,
-            "pressure_nonorthogonal_max_iter": 1,
+            "momentum_nonorthogonal_max_iter": 50,
+            "pressure_nonorthogonal_max_iter": 50,
             "pressure_constraint": "gauge",
             "linear_solver_config": FVMLinearSolverConfig(solver="scipy"),
             "log_level": "ERROR",
@@ -38,11 +38,15 @@ def test_piso_model_accepts_3d_unsteady_mms_and_nz():
     )
 
     assert model.GD == 3
-    assert model.mesh.number_of_cells() == 12
+    assert model.NC == 72
 
     result = model.solve()
     errors = model.compute_error()
 
-    assert len(result) == 3
+    assert len(result) == 2
+    assert result[0].shape == (model.NC, model.GD)
+    assert result[1].shape == (model.NC,)
+    assert model.face_velocity.shape == (model.mesh.number_of_faces(), model.GD)
+    assert model.face_flux.shape == (model.mesh.number_of_faces(),)
     assert len(errors) == 4
     assert all(float(error) < 10.0 for error in errors)

@@ -77,9 +77,6 @@ class LidDrivenCavityCase(BoxMesher2d):
         return bm.stack([u, v], axis=-1)
 
     @cartesian
-    def velocity_dirichlet(self, p: TensorLike) -> TensorLike:
-        return self.dirichlet_velocity(p)
-
     @cartesian
     def velocity_0(self, p: TensorLike, t: float = 0.0) -> TensorLike:
         return bm.zeros(p.shape, dtype=p.dtype)

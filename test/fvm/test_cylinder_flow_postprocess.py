@@ -1,5 +1,6 @@
 from pathlib import Path
 import math
+from types import SimpleNamespace
 
 from fealpy.backend import backend_manager as bm
 
@@ -36,37 +37,21 @@ def test_zero_cylinder_fields_have_zero_force_coefficients():
         def is_cylinder_boundary(self, points):
             return bm.ones(points.shape[0], dtype=bm.bool)
 
-    class FakeMesh:
-        def boundary_face_index(self):
-            return bm.array([0, 1], dtype=bm.int64)
-
-        def entity_barycenter(self, entity):
-            if entity == "face":
-                return bm.array([[0.0, 0.0], [1.0, 0.0]])
-            if entity == "cell":
-                return bm.array([[0.0, 0.5], [1.0, 0.5]])
-            raise KeyError(entity)
-
-        def edge_to_cell(self):
-            return bm.array([[0, 0], [1, 1]], dtype=bm.int64)
-
-        def edge_normal(self):
-            return bm.array([[0.0, -1.0], [0.0, -1.0]])
-
-        def entity_measure(self, entity):
-            if entity == "cell":
-                return bm.array([1.0, 1.0])
-            if entity == "face":
-                return bm.array([1.0, 1.0])
-            raise KeyError(entity)
+    geometry = SimpleNamespace(
+        is_boundary=bm.array([True, True]),
+        face_center=bm.array([[0.0, 0.0], [1.0, 0.0]]),
+        cell_center=bm.array([[0.0, 0.5], [1.0, 0.5]]),
+        owner=bm.array([0, 1], dtype=bm.int64),
+        S_f=bm.array([[0.0, -1.0], [0.0, -1.0]]),
+    )
 
     result = cylinder_force_coefficients(
-        FakeMesh(),
+        object(),
         FakeCase(),
-        uh=bm.zeros(2),
-        vh=bm.zeros(2),
+        velocity=bm.zeros((2, 2)),
         pressure=bm.zeros(2),
         velocity_gradient=None,
+        geometry=geometry,
     )
 
     assert result["force_x"] == 0.0
@@ -88,36 +73,20 @@ def test_cylinder_viscous_force_uses_wall_normal_sn_grad_by_default():
         def is_cylinder_boundary(self, points):
             return bm.ones(points.shape[0], dtype=bm.bool)
 
-    class FakeMesh:
-        def boundary_face_index(self):
-            return bm.array([0], dtype=bm.int64)
-
-        def entity_barycenter(self, entity):
-            if entity == "face":
-                return bm.array([[1.0, 0.0]])
-            if entity == "cell":
-                return bm.array([[0.0, 0.0]])
-            raise KeyError(entity)
-
-        def edge_to_cell(self):
-            return bm.array([[0, 0]], dtype=bm.int64)
-
-        def edge_normal(self):
-            return bm.array([[2.0, 0.0]])
-
-        def entity_measure(self, entity):
-            if entity == "cell":
-                return bm.array([1.0])
-            if entity == "face":
-                return bm.array([2.0])
-            raise KeyError(entity)
+    geometry = SimpleNamespace(
+        is_boundary=bm.array([True]),
+        face_center=bm.array([[1.0, 0.0]]),
+        cell_center=bm.array([[0.0, 0.0]]),
+        owner=bm.array([0], dtype=bm.int64),
+        S_f=bm.array([[2.0, 0.0]]),
+    )
 
     result = cylinder_force_coefficients(
-        FakeMesh(),
+        object(),
         FakeCase(),
-        uh=bm.array([2.0]),
-        vh=bm.array([0.0]),
+        velocity=bm.array([[2.0, 0.0]]),
         pressure=bm.zeros(1),
+        geometry=geometry,
     )
 
     assert abs(result["viscous_force_x"] - 8.0 / 3.0) < 1.0e-12

@@ -216,13 +216,10 @@ class CavitySnapshotWriter:
         pressure=None,
         flux=None,
     ) -> None:
-        uh = cell_velocity[:, 0]
-        vh = cell_velocity[:, 1]
-        velocity = bm.stack([uh, vh], axis=-1)
-        speed = bm.sqrt(uh**2 + vh**2)
+        speed = bm.linalg.norm(cell_velocity, axis=1)
         vortex = primary_vortex_summary(
-            model.mesh.entity_barycenter("cell"),
-            velocity,
+            model.fvm_geometry.cell_center,
+            cell_velocity,
             domain=self.domain,
             boundary_margin=self.boundary_margin,
         )
@@ -261,12 +258,9 @@ class CavitySnapshotWriter:
     def write_snapshot(self, model, step: int, cell_velocity, pressure) -> None:
         snapshot_dir = self.config.output_dir / f"{int(step):06d}"
         snapshot_dir.mkdir(parents=True, exist_ok=True)
-        uh = cell_velocity[:, 0]
-        vh = cell_velocity[:, 1]
         write_solution_vtk(
             model.mesh,
-            uh,
-            vh,
+            cell_velocity,
             pressure,
             snapshot_dir / "solution.vtu",
             fields=self.config.fields,
@@ -291,12 +285,11 @@ def write_benchmark_outputs(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    points = model.mesh.entity_barycenter("cell")
-    velocity = bm.stack([model.uh, model.vh], axis=-1)
-    u_profile, v_profile = centerline_velocity_profiles(points, velocity)
+    points = model.fvm_geometry.cell_center
+    u_profile, v_profile = centerline_velocity_profiles(points, model.velocity)
     vortex = primary_vortex_summary(
         points,
-        velocity,
+        model.velocity,
         domain=domain,
         boundary_margin=boundary_margin,
     )
@@ -306,9 +299,8 @@ def write_benchmark_outputs(
     write_dict_csv(output_dir / "vortex_summary.csv", [vortex])
     write_solution_vtk(
         model.mesh,
-        model.uh,
-        model.vh,
-        model.ph,
+        model.velocity,
+        model.pressure,
         output_dir / "solution.vtu",
         fields=fields,
         velocity_gradient=getattr(model, "velocity_gradient", None),

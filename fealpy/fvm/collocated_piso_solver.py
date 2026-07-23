@@ -11,6 +11,7 @@ from .collocated_ns_components import CollocatedNSFVMComponents
 from .deviatoric_stress_source import DeviatoricStressSourceIntegrator
 from .dirichlet_bc import DirichletBC
 from .engineering_boundary_conditions import (
+    PDEBoundaryConditions,
     apply_boundary_flux_constraint,
     apply_face_velocity_constraint,
 )
@@ -19,6 +20,8 @@ from .collocated_face_velocity_reconstruct import RhieChowInterpolation
 from .scalar_cross_diffusion_integrator import ScalarCrossDiffusionIntegrator
 from .fvm_linear_solver import init_fvm_linear_solver
 from .solver_diagnostics import (
+    equation_residual_converged,
+    normalized_equation_residual,
     pressure_correction_diagnostics,
     record_piso_corrector_diagnostics,
 )
@@ -56,57 +59,43 @@ class CollocatedPisoSolver(CollocatedNSFVMComponents):
             log_level=log_level,
         )
         self.corrector_diagnostics = []
-        self.mu = positive_scalar(diffusion_coef, "diffusion_coef")
-        self.rho = positive_scalar(convection_coef, "convection_coef")
-        self.diffusion_coef = self.mu
-        self.convection_coef = self.rho
+        self.diffusion_coef = positive_scalar(diffusion_coef, "diffusion_coef")
+        self.convection_coef = positive_scalar(convection_coef, "convection_coef")
         self.source = source
         self.mesh = mesh
-        self.cm = self.mesh.entity_measure("cell")
-        self.cell_center = self.mesh.entity_barycenter("cell")
-        self.face_center = self.mesh.entity_barycenter("face")
-        self.NC = self.mesh.number_of_cells()
-        required = (
-            "conditions_for",
-            "dirichlet_threshold",
-            "dirichlet_value",
-            "natural_threshold",
-            "neumann_threshold",
-            "neumann_value",
-            "has_pressure_dirichlet",
-            "boundary_face_velocity",
-        )
-        missing = [name for name in required if not hasattr(boundary_conditions, name)]
-        if missing:
-            raise TypeError("boundary_conditions must provide " + ", ".join(required))
+        if not isinstance(boundary_conditions, PDEBoundaryConditions):
+            raise TypeError(
+                "boundary_conditions must be PDEBoundaryConditions; convert "
+                "engineering boundary data before constructing the solver."
+            )
         self.boundary_conditions = boundary_conditions
-        self.velocity_dirichlet_value = self.boundary_conditions.dirichlet_value("velocity")
-        self.velocity_dirichlet_threshold = self.boundary_conditions.dirichlet_threshold(
+        self.dirichlet_velocity_value = self.boundary_conditions.dirichlet_value("velocity")
+        self.dirichlet_velocity_threshold = self.boundary_conditions.dirichlet_threshold(
             "velocity"
         )
-        self.velocity_natural_threshold = (
+        self.natural_velocity_threshold = (
             self.boundary_conditions.natural_threshold("velocity")
-            if self.boundary_conditions.conditions_for("velocity", "natural")
+            if self.boundary_conditions.has_natural("velocity")
             else None
         )
-        self.velocity_neumann_data = (
+        self.neumann_velocity_data = (
             self.boundary_conditions.neumann_value("velocity")
-            if self.boundary_conditions.conditions_for("velocity", "neumann")
+            if self.boundary_conditions.has_neumann("velocity")
             else None
         )
-        self.velocity_neumann_threshold = (
+        self.neumann_velocity_threshold = (
             self.boundary_conditions.neumann_threshold("velocity")
-            if self.boundary_conditions.conditions_for("velocity", "neumann")
+            if self.boundary_conditions.has_neumann("velocity")
             else None
         )
-        self.pressure_dirichlet_value = None
-        self.pressure_dirichlet_threshold = None
-        if self.boundary_conditions.has_pressure_dirichlet():
-            self.pressure_dirichlet_value = (
-                self.boundary_conditions.pressure_dirichlet_value()
+        self.dirichlet_pressure_value = None
+        self.dirichlet_pressure_threshold = None
+        if self.boundary_conditions.has_dirichlet("pressure"):
+            self.dirichlet_pressure_value = (
+                self.boundary_conditions.dirichlet_value("pressure")
             )
-            self.pressure_dirichlet_threshold = (
-                self.boundary_conditions.pressure_dirichlet_threshold()
+            self.dirichlet_pressure_threshold = (
+                self.boundary_conditions.dirichlet_threshold("pressure")
             )
         self.initial_solution_callback = initial_solution
         self._init_discretization(self.controls.space_degree)
@@ -136,7 +125,7 @@ class CollocatedPisoSolver(CollocatedNSFVMComponents):
     def __str__(self) -> str:
         return (
             f"{self.__class__.__name__}:\n"
-            f"  Mesh shape: {self.mesh.number_of_cells()} cells\n"
+            f"  Mesh shape: {self.NC} cells\n"
             f"  Time steps: {self.controls.nt}\n"
             f"  PISO correctors: {self.controls.n_correctors}\n"
             f"  Momentum nonorthogonal corrections: "
@@ -152,20 +141,40 @@ class CollocatedPisoSolver(CollocatedNSFVMComponents):
     def _init_discretization(self, degree: int) -> None:
         self.init_collocated_discretization(
             degree,
-            self.velocity_dirichlet_value,
+            self.dirichlet_velocity_value,
             pressure_gradient_method=self.controls.pressure_gradient_method,
             velocity_gradient_method=self.controls.velocity_gradient_method,
-            velocity_dirichlet_threshold=self.velocity_dirichlet_threshold,
-            pressure_dirichlet=self.pressure_dirichlet_value,
-            pressure_dirichlet_threshold=self.pressure_dirichlet_threshold,
-            with_velocity_dirichlet_bc=True,
+            gradient_layer_weights=self.controls.gradient_layer_weights,
+            gradient_boundary_weight=self.controls.gradient_boundary_weight,
+            diffusion_method=self.controls.diffusion_method,
+            diffusion_nonorthogonal_eps=self.controls.diffusion_nonorthogonal_eps,
+            dirichlet_velocity_threshold=self.dirichlet_velocity_threshold,
+            dirichlet_pressure=self.dirichlet_pressure_value,
+            dirichlet_pressure_threshold=self.dirichlet_pressure_threshold,
+            with_dirichlet_velocity_bc=True,
+            geometry=self.boundary_conditions.geometry,
         )
+        self.pressure_state_bc = None
+        if (
+            self.dirichlet_pressure_value is not None
+            and self.dirichlet_pressure_threshold is not None
+        ):
+            self.pressure_state_bc = DirichletBC(
+                self.mesh,
+                self.dirichlet_pressure_value,
+                threshold=self.dirichlet_pressure_threshold,
+                geometry=self.fvm_geometry,
+                diffusion_method=self.controls.diffusion_method,
+                nonorthogonal_eps=self.controls.diffusion_nonorthogonal_eps,
+            )
         self.rhie_chow = RhieChowInterpolation(
             self.mesh,
             pressure_gradient_method=self.controls.rhie_chow_pressure_gradient_method,
+            gradient_layer_weights=self.controls.gradient_layer_weights,
+            gradient_boundary_weight=self.controls.gradient_boundary_weight,
             velocity_interpolation=self.controls.face_interpolation_method,
-            pressure_dirichlet=self.pressure_dirichlet_value,
-            pressure_dirichlet_threshold=self.pressure_dirichlet_threshold,
+            dirichlet_pressure=self.dirichlet_pressure_value,
+            dirichlet_pressure_threshold=self.dirichlet_pressure_threshold,
             geometry=self.fvm_geometry,
         )
 
@@ -190,15 +199,17 @@ class CollocatedPisoSolver(CollocatedNSFVMComponents):
         cross_source = LinearForm(self.velocity_space).add_integrator(
             ScalarCrossDiffusionIntegrator(
                 grad_f=face_gradient,
-                coef=self.mu,
+                coef=self.diffusion_coef,
                 geometry=self.fvm_geometry,
+                method=self.diffusion_method,
+                nonorthogonal_eps=self.diffusion_nonorthogonal_eps,
                 boundary_policy="zero",
             )
         ).assembly()
         stress_source = LinearForm(self.velocity_space).add_integrator(
             DeviatoricStressSourceIntegrator(
                 face_gradient,
-                coef=self.mu,
+                coef=self.diffusion_coef,
                 geometry=self.fvm_geometry,
             )
         ).assembly()
@@ -220,21 +231,16 @@ class CollocatedPisoSolver(CollocatedNSFVMComponents):
     def assemble_pressure_state_system(self, rhs, coef, cross_rhs):
         """Assemble the pressure-state linear system for one nonOrth solve."""
         has_dirichlet = (
-            self.pressure_dirichlet_value is not None
-            and self.pressure_dirichlet_threshold is not None
+            self.dirichlet_pressure_value is not None
+            and self.dirichlet_pressure_threshold is not None
         )
         if has_dirichlet:
             matrix = self.pressure_diffusion_matrix(coef)
-            pressure_bc = DirichletBC(
-                self.mesh,
-                self.pressure_dirichlet_value,
-                geometry=self.fvm_geometry,
-            )
-            return pressure_bc.apply_diffusion(
+            return self.pressure_state_bc.apply_diffusion(
                 matrix,
                 rhs + cross_rhs,
                 coef=coef,
-                threshold=self.pressure_dirichlet_threshold,
+                threshold=self.dirichlet_pressure_threshold,
             )
 
         if self.controls.pressure_constraint == "nullspace":
@@ -253,21 +259,34 @@ class CollocatedPisoSolver(CollocatedNSFVMComponents):
         if max_iter < 0:
             raise ValueError("pressure_nonorthogonal_max_iter must be non-negative.")
 
-        explicit_cross_flux = bm.zeros(self.mesh.number_of_faces(), dtype=rhs.dtype)
+        explicit_cross_flux = bm.zeros(self.NF, dtype=rhs.dtype)
         cross_rhs = bm.zeros_like(rhs)
-        has_pressure_dirichlet = (
-            self.pressure_dirichlet_value is not None
-            and self.pressure_dirichlet_threshold is not None
+        has_dirichlet_pressure = (
+            self.dirichlet_pressure_value is not None
+            and self.dirichlet_pressure_threshold is not None
         )
         use_nullspace = (
             self.controls.pressure_constraint == "nullspace"
-            and not has_pressure_dirichlet
+            and not has_dirichlet_pressure
         )
-        if max_iter == 0:
-            matrix, matrix_rhs = self.assemble_pressure_state_system(rhs, coef, cross_rhs)
+        def pressure_system(current_cross_rhs):
+            matrix, matrix_rhs = self.assemble_pressure_state_system(
+                rhs, coef, current_cross_rhs
+            )
             if use_nullspace:
                 matrix_rhs = self.project_pressure_rhs_to_range(matrix_rhs)
-                pressure = self.zero_mean_pressure(
+            return matrix, matrix_rhs
+
+        def algebraic_solution(pressure):
+            if has_dirichlet_pressure or use_nullspace:
+                return pressure
+            return bm.concatenate(
+                [pressure, bm.zeros(1, dtype=pressure.dtype)], axis=0
+            )
+
+        def solve_system(matrix, matrix_rhs):
+            if use_nullspace:
+                return self.zero_mean_pressure(
                     self.linear_solver.solve_constant_nullspace(
                         matrix,
                         matrix_rhs,
@@ -275,75 +294,87 @@ class CollocatedPisoSolver(CollocatedNSFVMComponents):
                         solver=self.pressure_nullspace_linear_solver,
                     )
                 )
-            else:
-                solver = (
-                    self.pressure_linear_solver
-                    if has_pressure_dirichlet
-                    else self.pressure_gauge_linear_solver
-                )
-                solution = self.solve_linear_system(
-                    matrix,
-                    matrix_rhs,
-                    solver=solver,
-                )
-                pressure = solution[: self.NC]
-            self.last_pressure_nonorthogonal_iterations = 0
-        else:
-            correction_pressure = initial_pressure_state
-            pressure = initial_pressure_state
-            for iteration in range(1, max_iter + 1):
-                if correction_pressure is not None:
-                    explicit_cross_flux = self.pressure_nonorthogonal_cross_flux(
-                        correction_pressure,
-                        coef,
-                        interpolation_method=self.controls.face_interpolation_method,
-                    )
-                    cross_rhs = self.divergence_from_flux(explicit_cross_flux)
+            solver = (
+                self.pressure_linear_solver
+                if has_dirichlet_pressure
+                else self.pressure_gauge_linear_solver
+            )
+            solution = self.solve_linear_system(
+                matrix,
+                matrix_rhs,
+                solver=solver,
+            )
+            return solution[: self.NC]
 
-                matrix, matrix_rhs = self.assemble_pressure_state_system(rhs, coef, cross_rhs)
-                if use_nullspace:
-                    matrix_rhs = self.project_pressure_rhs_to_range(matrix_rhs)
-                    pressure = self.zero_mean_pressure(
-                        self.linear_solver.solve_constant_nullspace(
-                            matrix,
-                            matrix_rhs,
-                            self.cm,
-                            solver=self.pressure_nullspace_linear_solver,
-                        )
-                    )
-                else:
-                    solver = (
-                        self.pressure_linear_solver
-                        if has_pressure_dirichlet
-                        else self.pressure_gauge_linear_solver
-                    )
-                    solution = self.solve_linear_system(
-                        matrix,
-                        matrix_rhs,
-                        solver=solver,
-                    )
-                    pressure = solution[: self.NC]
-                self.last_pressure_nonorthogonal_iterations = iteration
-                if iteration == max_iter:
+        if max_iter > 0 and initial_pressure_state is not None:
+            explicit_cross_flux = self.pressure_nonorthogonal_cross_flux(
+                initial_pressure_state,
+                coef,
+                interpolation_method=self.controls.face_interpolation_method,
+                boundary_threshold=self.dirichlet_pressure_threshold,
+            )
+            cross_rhs = self.divergence_from_flux(explicit_cross_flux)
+
+        matrix, matrix_rhs = pressure_system(cross_rhs)
+        pressure = solve_system(matrix, matrix_rhs)
+        self.last_pressure_nonorthogonal_iterations = 0
+        self.last_pressure_nonorthogonal_residual = None
+        self.last_pressure_nonorthogonal_relative_update = 0.0
+
+        if max_iter > 0:
+            for correction in range(max_iter + 1):
+                explicit_cross_flux = self.pressure_nonorthogonal_cross_flux(
+                    pressure,
+                    coef,
+                    interpolation_method=self.controls.face_interpolation_method,
+                    boundary_threshold=self.dirichlet_pressure_threshold,
+                )
+                next_cross_rhs = self.divergence_from_flux(explicit_cross_flux)
+                residual_matrix, residual_rhs = pressure_system(next_cross_rhs)
+                metrics = normalized_equation_residual(
+                    residual_matrix @ algebraic_solution(pressure),
+                    residual_rhs,
+                )
+                self.last_pressure_nonorthogonal_residual = metrics
+                if equation_residual_converged(
+                    metrics,
+                    rtol=self.controls.pressure_nonorthogonal_tol,
+                    atol=self.controls.pressure_nonorthogonal_atol,
+                ):
                     break
+                if correction == max_iter:
+                    raise RuntimeError(
+                        "pressure non-orthogonal correction did not converge before "
+                        "pressure_nonorthogonal_max_iter"
+                    )
 
-                correction_pressure = pressure
+                previous = pressure
+                matrix, matrix_rhs = pressure_system(next_cross_rhs)
+                pressure = solve_system(matrix, matrix_rhs)
+                update = float(
+                    bm.to_numpy(bm.linalg.norm(pressure - previous))
+                )
+                scale = float(bm.to_numpy(bm.linalg.norm(pressure)))
+                self.last_pressure_nonorthogonal_relative_update = (
+                    update / max(scale, 1.0e-30)
+                )
+                self.last_pressure_nonorthogonal_iterations = correction + 1
 
         orthogonal_flux = self.pressure_orthogonal_flux(pressure, coef)
         flux_without_boundary = orthogonal_flux - explicit_cross_flux
-        boundary_pressure_flux = self.add_pressure_dirichlet_flux(
+        boundary_pressure_flux = self.add_dirichlet_pressure_flux(
             bm.zeros_like(orthogonal_flux),
             pressure,
             coef,
-            self.pressure_dirichlet_value,
-            self.pressure_dirichlet_threshold,
+            self.dirichlet_pressure_value,
+            self.dirichlet_pressure_threshold,
         )
-        pressure_flux = self.add_pressure_dirichlet_flux(
+        pressure_flux = self.add_dirichlet_pressure_flux(
             flux_without_boundary,
             pressure,
             coef,
-            self.pressure_dirichlet_value,
-            self.pressure_dirichlet_threshold,
+            self.dirichlet_pressure_value,
+            self.dirichlet_pressure_threshold,
         )
         flux_parts = {
             "orthogonal_flux": orthogonal_flux,
@@ -380,8 +411,8 @@ class CollocatedPisoSolver(CollocatedNSFVMComponents):
                 a_p,
                 self.controls.face_interpolation_method,
             )
-        face_velocity = self.rhie_chow.Interpolation(
-            self.cell_vector_to_dofs(cell_velocity),
+        face_velocity = self.rhie_chow.reconstruct(
+            cell_velocity,
             a_p,
             pressure,
             face_response_coefficient=face_response_coefficient,
@@ -405,7 +436,7 @@ class CollocatedPisoSolver(CollocatedNSFVMComponents):
             pressure_free_velocity,
             method=self.controls.face_interpolation_method,
         )
-        return pressure_free_velocity, self.face_flux(face_velocity)
+        return pressure_free_velocity, self.compute_face_flux(face_velocity)
 
     def transient_face_flux_correction(self, previous_cell_velocity, previous_face_velocity, a_p):
         """Return the Euler ``rAU_f * ddtCorr(U, face_flux)`` correction."""
@@ -414,10 +445,10 @@ class CollocatedPisoSolver(CollocatedNSFVMComponents):
             or previous_cell_velocity is None
             or previous_face_velocity is None
         ):
-            return bm.zeros(self.mesh.number_of_faces(), dtype=self.cm.dtype)
+            return bm.zeros(self.NF, dtype=self.cm.dtype)
 
-        previous_face_flux = self.face_flux(previous_face_velocity)
-        previous_cell_flux = self.face_flux(
+        previous_face_flux = self.compute_face_flux(previous_face_velocity)
+        previous_cell_flux = self.compute_face_flux(
             self.face_interpolate_cell_vector(
                 previous_cell_velocity,
                 method=self.controls.face_interpolation_method,
@@ -605,7 +636,7 @@ class CollocatedPisoSolver(CollocatedNSFVMComponents):
                         self.controls.face_interpolation_method,
                     ),
                     rhie_chow_face_velocity=self.rhie_chow_face_velocity,
-                    face_flux_operator=self.face_flux,
+                    face_flux_operator=self.compute_face_flux,
                 )
 
             previous_corrector_velocity = velocity
@@ -674,7 +705,7 @@ class CollocatedPisoSolver(CollocatedNSFVMComponents):
         snapshot_interval=None,
         snapshot_start_step=None,
         corrector_callback=None,
-    ) -> Tuple[TensorLike, TensorLike, TensorLike]:
+    ) -> Tuple[TensorLike, TensorLike]:
         if U0 is None or Uf0 is None or p0 is None:
             U0, Uf0, p0 = self.initial_solution()
         self.corrector_diagnostics = []
@@ -730,14 +761,7 @@ class CollocatedPisoSolver(CollocatedNSFVMComponents):
                 )
 
         self.velocity = current_velocity
-        self.velocity_components = [
-            current_velocity[:, component] for component in range(self.GD)
-        ]
-        self.uh = self.velocity_components[0]
-        self.vh = (
-            self.velocity_components[1]
-            if self.GD > 1
-            else bm.zeros_like(self.uh)
-        )
-        self.ph = current_pressure
-        return self.uh, self.vh, self.ph
+        self.pressure = current_pressure
+        self.face_velocity = Uf0
+        self.face_flux = face_flux
+        return self.velocity, self.pressure
