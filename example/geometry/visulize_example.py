@@ -1,16 +1,8 @@
-"""示例: 使用 fealpy.geometry.visualize.visulizer 可视化 CAD 文件."""
+"""示例: 使用 fealpy.geometry.visualize 可视化 CAD 文件."""
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
-# 直接运行时确保 src/ 在 sys.path 中
-_SRC = Path(__file__).resolve().parents[1]
-if str(_SRC) not in sys.path:
-    sys.path.insert(0, str(_SRC))
-
-from fealpy.geometry.visualize.visulizer import show_file
+from fealpy.geometry.visualize import show_file
 
 # show_file("/path/to/file.step")  # STEP 文件可视化
 # show_file("/path/to/file.dxf")   # DXF 文件可视化
