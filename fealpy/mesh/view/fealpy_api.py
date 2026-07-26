@@ -1,6 +1,7 @@
 from collections.abc import Iterable, Callable
 from dataclasses import dataclass
-from typing import Literal
+from pathlib import Path
+from typing import Any, Literal, Self
 
 from ...backend import bm
 from ...backend import Tensor, Index
@@ -36,6 +37,44 @@ class Mesh(MeshView):
             self.itype = bm.int32
 
         self.device = getattr(self.block.positions, "device", None)
+
+    @classmethod
+    def read(cls, filename: str | Path, file_format: str | None = None) -> Self:
+        """Read a mesh from a file and return a new Mesh instance."""
+        from ..mesh_io import read
+        block = read(filename, file_format=file_format)
+        return cls(block)
+
+    def write(
+        self,
+        filename: str | Path,
+        entity: str | list[str] | None = None,
+        file_format: str | None = None,
+        **kwargs: Any
+    ) -> None:
+        """Write selected entity sectors to a mesh file.
+
+        Parameters:
+            filename (str | Path): Output file path.
+            entity (str | list[str] | None): Name or names of entity to write.
+                If ``None``, all top-dimensional entities (cells) are written.
+                Default is ``None``.
+            file_format (str | None): Format of the output file.
+            **kwargs: Additional keyword arguments passed to the meshio writer.
+        """
+        from ..mesh_io import write
+        if entity is None:
+            entity_names = _Reg.schema_name_multi_parser(
+                "cell", self.top_dimension(), self.block.sectors.keys()
+            )
+        elif not isinstance(entity, (list, tuple)):
+            entity = [entity]
+            entity_names: list[str] = []
+            for e in entity:
+                entity_names.extend(_Reg.schema_name_multi_parser(
+                    e, self.top_dimension(), self.block.sectors.keys()
+                ))
+        return write(filename, self.block, entity_names, file_format=file_format, **kwargs)
 
     @property
     def localEdge(self) -> Tensor:
