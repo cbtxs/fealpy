@@ -131,7 +131,11 @@ def scalar_diffusion_local_matrix(
             orthogonal_factor, fill_value=coef, dtype=space.ftype
         )
     else:
-        face_coef = bm.array(coef, dtype=space.ftype)
+        face_coef = bm.array(
+            coef,
+            dtype=space.ftype,
+            device=bm.get_device(orthogonal_factor),
+        )
         if face_coef.shape == ():
             face_coef = (
                 bm.ones_like(orthogonal_factor, dtype=space.ftype) * face_coef
@@ -145,7 +149,11 @@ def scalar_diffusion_local_matrix(
             )
 
     face_strength = orthogonal_factor * face_coef
-    direction_matrix = bm.array([[1.0, -1.0], [-1.0, 1.0]], dtype=space.ftype)
+    direction_matrix = bm.array(
+        [[1.0, -1.0], [-1.0, 1.0]],
+        dtype=space.ftype,
+        device=bm.get_device(orthogonal_factor),
+    )
     eye_D = bm.eye(D, dtype=space.ftype, device=bm.get_device(space))
     base_matrix = bm.einsum("ij,pq->ipjq", eye_D, direction_matrix).reshape(
         2 * D, 2 * D
@@ -265,7 +273,11 @@ class ScalarDiffusionMatrixAssembler:
         if isinstance(coef, (int, float)):
             coef_f = bm.full_like(self.face_factor, fill_value=coef)
         else:
-            coef = bm.array(coef, dtype=self.face_factor.dtype)
+            coef = bm.array(
+                coef,
+                dtype=self.face_factor.dtype,
+                device=bm.get_device(self.face_factor),
+            )
             if coef.shape == ():
                 coef_f = bm.full_like(self.face_factor, fill_value=coef)
             else:

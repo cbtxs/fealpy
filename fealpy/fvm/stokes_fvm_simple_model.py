@@ -4,11 +4,19 @@ from fealpy.model import ComputationalModel, PDEModelManager
 
 from .collocated_simple_solver import CollocatedSimpleSolver
 from .cell_average_error import cell_average_l2_error
-from .engineering_boundary_conditions import PDEBoundaryConditions
-from .solver_controls import SimpleSolverControls, positive_scalar
+from .engineering_boundary_conditions import (
+    PDEBoundaryConditions,
+    resolve_simple_boundary_conditions,
+)
+from .collocated_linear_solvers import CollocatedNSLinearSolvers
+from .solver_controls import positive_scalar
+from .steady_ns_solver_profiles import (
+    SteadyNSSimpleProfile,
+    steady_ns_high_accuracy_simple_profile,
+)
 
 
-class StokesFVMSimpleModel(ComputationalModel, CollocatedSimpleSolver):
+class StokesFVMSimpleModel(ComputationalModel):
     """Finite-volume SIMPLE model for Stokes PDE examples."""
 
     def __init__(self, options):
@@ -23,29 +31,49 @@ class StokesFVMSimpleModel(ComputationalModel, CollocatedSimpleSolver):
         self.error_quadrature_order = int(options.get("error_quadrature_order", 4))
         mesh = self._init_mesh(options)
         self.mu = self._init_diffusion_coef(options)
-        CollocatedSimpleSolver.__init__(
-            self,
-            mesh=mesh,
-            diffusion_coef=self.mu,
-            convection_coef=0.0,
-            source=self.pde.source,
-            boundary_conditions=PDEBoundaryConditions(
+        profile = options.get("profile")
+        if profile is None:
+            profile = steady_ns_high_accuracy_simple_profile()
+        if not isinstance(profile, SteadyNSSimpleProfile):
+            raise TypeError("profile must be a SteadyNSSimpleProfile.")
+        self.profile = profile
+        boundary_conditions = resolve_simple_boundary_conditions(
+            mesh,
+            PDEBoundaryConditions(
                 mesh,
                 dirichlet_velocity=self.pde.dirichlet_velocity,
             ),
-            controls=SimpleSolverControls.from_mapping({
-                "rhie_chow_velocity_scheme": "second_order_reconstructed",
-                **options,
-            }),
-            linear_solver=options.get("linear_solver"),
-            linear_solver_config=options.get("linear_solver_config"),
-            logger=self.logger,
-            pbar_log=options.get("pbar_log", False),
-            log_level=options.get("log_level", "WARNING"),
+            profile.discretization,
+            profile.pressure_system,
         )
+        linear_solvers = options.get("linear_solvers")
+        if linear_solvers is None:
+            linear_solvers = profile.build_linear_solvers()
+        if not isinstance(
+            linear_solvers,
+            CollocatedNSLinearSolvers,
+        ):
+            raise TypeError(
+                "linear_solvers must be CollocatedNSLinearSolvers."
+            )
+        self.linear_solvers = linear_solvers
+        self.solver = CollocatedSimpleSolver(
+            diffusion_coef=self.mu,
+            convection_coef=0.0,
+            source=self.pde.source,
+            boundary_conditions=boundary_conditions,
+            discretization_controls=profile.discretization,
+            iteration_controls=profile.iteration,
+            linear_solvers=linear_solvers,
+            logger=self.logger,
+        )
+        self.mesh = mesh
+        self.fvm_geometry = boundary_conditions.physical.geometry
+        self.NC = self.fvm_geometry.NC
+        self.GD = self.fvm_geometry.GD
 
     def _validate_options(self) -> None:
-        allowed = set(SimpleSolverControls.option_names()) | {
+        allowed = {
             "pde",
             "mesh_type",
             "mesh_refine",
@@ -54,8 +82,8 @@ class StokesFVMSimpleModel(ComputationalModel, CollocatedSimpleSolver):
             "nz",
             "mu",
             "error_quadrature_order",
-            "linear_solver",
-            "linear_solver_config",
+            "profile",
+            "linear_solvers",
             "pbar_log",
             "log_level",
         }
@@ -70,6 +98,10 @@ class StokesFVMSimpleModel(ComputationalModel, CollocatedSimpleSolver):
             f"  Mesh shape: {self.NC} cells\n"
             f"  PDE type: {type(self.pde).__name__}\n"
         )
+
+    def close(self) -> None:
+        """Release third-party linear-solver resources owned by this model."""
+        self.linear_solvers.close()
 
     @staticmethod
     def _resolve_stokes_pde(pde):
@@ -99,7 +131,8 @@ class StokesFVMSimpleModel(ComputationalModel, CollocatedSimpleSolver):
         if mesh_refine == 0:
             return mesh
         if hasattr(mesh, "uniform_refine"):
-            mesh.uniform_refine(mesh_refine)
+            for _ in range(mesh_refine):
+                mesh.uniform_refine()
             return mesh
         raise ValueError("mesh does not provide uniform_refine().")
 
@@ -111,36 +144,54 @@ class StokesFVMSimpleModel(ComputationalModel, CollocatedSimpleSolver):
                 return positive_scalar(getattr(self.pde, name), "mu")
         return 1.0
 
-    def compute_error(self) -> tuple[float, ...]:
+    def solve(self):
+        """Run one cold-start SIMPLE solve and return its immutable result."""
+        return self.solver.solve()
+
+    def compute_error(self, result) -> tuple[float, ...]:
         """Compute errors against exact control-volume averages."""
-        velocity_error, self.exact_velocity = cell_average_l2_error(
+        velocity_error, exact_velocity = cell_average_l2_error(
             self.mesh,
             self.pde.velocity,
-            self.velocity,
+            result.velocity,
             q=self.error_quadrature_order,
             geometry=self.fvm_geometry,
         )
-        pressure_error, self.exact_pressure = cell_average_l2_error(
+        pressure_error, exact_pressure = cell_average_l2_error(
             self.mesh,
             self.pde.pressure,
-            self.pressure,
+            result.pressure,
             q=self.error_quadrature_order,
             geometry=self.fvm_geometry,
         )
         return tuple(velocity_error[i] for i in range(self.GD)) + (pressure_error,)
 
-    def plot(self) -> None:
+    def plot(self, result) -> None:
         """Plot numerical and exact solution errors for u, v, and p."""
         import matplotlib.pyplot as plt
 
+        _, exact_velocity = cell_average_l2_error(
+            self.mesh,
+            self.pde.velocity,
+            result.velocity,
+            q=self.error_quadrature_order,
+            geometry=self.fvm_geometry,
+        )
+        _, exact_pressure = cell_average_l2_error(
+            self.mesh,
+            self.pde.pressure,
+            result.pressure,
+            q=self.error_quadrature_order,
+            geometry=self.fvm_geometry,
+        )
         cell_centers = self.fvm_geometry.cell_center
         x, y = cell_centers[:, 0], cell_centers[:, 1]
 
         fig = plt.figure(figsize=(15, 10))
         titles = [
-            ("Error u", self.velocity[:, 0] - self.exact_velocity[:, 0]),
-            ("Error v", self.velocity[:, 1] - self.exact_velocity[:, 1]),
-            ("Error p", self.pressure - self.exact_pressure),
+            ("Error u", result.velocity[:, 0] - exact_velocity[:, 0]),
+            ("Error v", result.velocity[:, 1] - exact_velocity[:, 1]),
+            ("Error p", result.pressure - exact_pressure),
         ]
         for i, (title, data) in enumerate(titles):
             ax = fig.add_subplot(2, 3, i + 1, projection="3d")
@@ -149,13 +200,17 @@ class StokesFVMSimpleModel(ComputationalModel, CollocatedSimpleSolver):
         plt.tight_layout()
         plt.show()
 
-    def plot_residual(self) -> None:
+    def plot_residual(self, result) -> None:
         """Plot residual decay curve."""
         import matplotlib.pyplot as plt
 
-        mass = [residual["mass"] for residual in self.residuals]
+        mass = [
+            residual.mass_relative_l2
+            for residual in result.residual_history
+        ]
         pressure_correction = [
-            residual["pressure_correction"] for residual in self.residuals
+            residual.pressure_correction_l2
+            for residual in result.residual_history
         ]
         plt.figure(figsize=(8, 5))
         plt.semilogy(mass, marker="o", linestyle="-", color="b", label="mass")

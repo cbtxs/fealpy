@@ -16,7 +16,11 @@ def test_exp0013_is_time_dependent_divergence_free_mms():
 
 def test_piso_model_accepts_3d_unsteady_mms_and_nz():
     bm.set_backend("numpy")
-    from fealpy.fvm import FVMLinearSolverConfig, NSFVMPISOModel
+    from fealpy.fvm import (
+        CollocatedPressureSystemControls,
+        NSFVMPISOModel,
+        PressureClosureKind,
+    )
 
     model = NSFVMPISOModel(
         {
@@ -26,12 +30,15 @@ def test_piso_model_accepts_3d_unsteady_mms_and_nz():
             "ny": 2,
             "nz": 3,
             "duration": (0.0, 0.01),
-            "nt": 1,
+            "time_steps": 1,
             "n_correctors": 2,
-            "momentum_nonorthogonal_max_iter": 50,
-            "pressure_nonorthogonal_max_iter": 50,
-            "pressure_constraint": "gauge",
-            "linear_solver_config": FVMLinearSolverConfig(solver="scipy"),
+            "momentum_nonorthogonal_max_iterations": 50,
+            "pressure_nonorthogonal_max_iterations": 50,
+            "pressure_system_controls": (
+                CollocatedPressureSystemControls(
+                    pure_neumann_closure=PressureClosureKind.GAUGE,
+                )
+            ),
             "log_level": "ERROR",
             "pbar_log": False,
         }
@@ -41,12 +48,14 @@ def test_piso_model_accepts_3d_unsteady_mms_and_nz():
     assert model.NC == 72
 
     result = model.solve()
-    errors = model.compute_error()
+    errors = model.compute_error(result)
 
-    assert len(result) == 2
-    assert result[0].shape == (model.NC, model.GD)
-    assert result[1].shape == (model.NC,)
-    assert model.face_velocity.shape == (model.mesh.number_of_faces(), model.GD)
-    assert model.face_flux.shape == (model.mesh.number_of_faces(),)
+    assert result.velocity.shape == (model.NC, model.GD)
+    assert result.pressure.shape == (model.NC,)
+    assert result.face_velocity.shape == (
+        model.mesh.number_of_faces(),
+        model.GD,
+    )
+    assert result.face_flux.shape == (model.mesh.number_of_faces(),)
     assert len(errors) == 4
     assert all(float(error) < 10.0 for error in errors)

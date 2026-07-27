@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
@@ -17,6 +18,12 @@ from .benchmark_postprocess import (
     write_solution_vtk,
 )
 from .fvm_geometry import FVMGeometry
+
+
+@dataclass(frozen=True)
+class CylinderSolutionFields:
+    velocity: TensorLike
+    pressure: TensorLike
 
 
 def _as_numpy(values: TensorLike) -> np.ndarray:
@@ -62,7 +69,11 @@ def _wall_velocity(case, points: TensorLike) -> TensorLike:
     """Return cylinder wall velocity for force post-processing."""
     if hasattr(case, "cylinder_wall_velocity"):
         return case.cylinder_wall_velocity(points)
-    return bm.zeros(points.shape, dtype=points.dtype)
+    return bm.zeros(
+        points.shape,
+        dtype=points.dtype,
+        device=bm.get_device(points),
+    )
 
 
 def _wall_sn_grad_viscous_force(
@@ -198,14 +209,15 @@ def cylinder_force_coefficients(
 def solution_summary(
     model,
     case,
+    solve_result,
     *,
     viscous_method: str = "wall_sn_grad",
     force: dict | None = None,
     probes: dict | None = None,
 ) -> dict[str, float | int | bool]:
     """Return scalar field diagnostics for a solved cylinder-flow model."""
-    velocity = model.velocity
-    pressure = model.pressure
+    velocity = solve_result.velocity
+    pressure = solve_result.pressure
     speed = bm.linalg.norm(velocity, axis=1)
     if force is None:
         force = cylinder_force_coefficients(
@@ -307,16 +319,21 @@ def strouhal_summary(
     return result
 
 
-def plot_cylinder_overview(model, case, output: str | Path) -> None:
+def plot_cylinder_overview(
+    model,
+    case,
+    solve_result,
+    output: str | Path,
+) -> None:
     """Write a compact PNG overview of speed, pressure, and velocity vectors."""
     import matplotlib.pyplot as plt
 
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
     points = _as_numpy(model.fvm_geometry.cell_center)
-    speed = _as_numpy(bm.linalg.norm(model.velocity, axis=1))
-    pressure = _as_numpy(model.pressure)
-    velocity = _as_numpy(model.velocity)
+    speed = _as_numpy(bm.linalg.norm(solve_result.velocity, axis=1))
+    pressure = _as_numpy(solve_result.pressure)
+    velocity = _as_numpy(solve_result.velocity)
 
     fig, axes = plt.subplots(2, 1, figsize=(12.0, 6.0), sharex=True)
     fields = ((speed, "speed", "viridis"), (pressure, "pressure", "coolwarm"))
@@ -357,8 +374,10 @@ def plot_cylinder_overview(model, case, output: str | Path) -> None:
 def write_cylinder_outputs(
     model,
     case,
+    solve_result,
     output_dir: str | Path,
     *,
+    velocity_gradient,
     residuals: Iterable[dict] | None = None,
     force_history: Iterable[dict] | None = None,
     strouhal_start_time: float | None = None,
@@ -373,14 +392,19 @@ def write_cylinder_outputs(
 
     write_solution_vtk(
         model.mesh,
-        model.velocity,
-        model.pressure,
+        solve_result.velocity,
+        solve_result.pressure,
         output_dir / "solution.vtu",
         fields=fields,
-        velocity_gradient=getattr(model, "velocity_gradient", None),
+        velocity_gradient=velocity_gradient,
         geometry=getattr(model, "fvm_geometry", None),
     )
-    plot_cylinder_overview(model, case, output_dir / "flow_overview.png")
+    plot_cylinder_overview(
+        model,
+        case,
+        solve_result,
+        output_dir / "flow_overview.png",
+    )
 
     if residuals is not None:
         write_dict_csv(output_dir / "residual_history.csv", scalarize_rows(residuals))
@@ -400,16 +424,20 @@ def write_cylinder_outputs(
     force = cylinder_force_coefficients(
         model.mesh,
         case,
-        velocity=model.velocity,
-        pressure=model.pressure,
-        velocity_gradient=getattr(model, "velocity_gradient", None),
+        velocity=solve_result.velocity,
+        pressure=solve_result.pressure,
+        velocity_gradient=velocity_gradient,
         viscous_method=viscous_method,
         geometry=getattr(model, "fvm_geometry", None),
     )
-    probes = pressure_drop(model.fvm_geometry.cell_center, model.pressure)
+    probes = pressure_drop(
+        model.fvm_geometry.cell_center,
+        solve_result.pressure,
+    )
     summary = solution_summary(
         model,
         case,
+        solve_result,
         viscous_method=viscous_method,
         force=force,
         probes=probes,
@@ -417,12 +445,17 @@ def write_cylinder_outputs(
     if residuals is not None:
         residual_rows = list(residuals)
         if residual_rows:
+            final_residual = scalarize_rows([residual_rows[-1]])[0]
             summary.update(
                 {
                     "iterations": len(residual_rows),
-                    "last_mass": residual_rows[-1].get("mass"),
-                    "last_pressure_correction": residual_rows[-1].get(
-                        "pressure_correction"
+                    "last_mass": final_residual.get(
+                        "mass",
+                        final_residual.get("mass_relative_l2"),
+                    ),
+                    "last_pressure_correction": final_residual.get(
+                        "pressure_correction",
+                        final_residual.get("pressure_correction_l2"),
                     ),
                 }
             )

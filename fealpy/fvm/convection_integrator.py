@@ -87,10 +87,8 @@ class ConvectionIntegrator(LinearInt, OpInt, FaceInt):
         D = getattr(space, "dof_numel", 1)
         eye_D = bm.eye(D, dtype=space.ftype, device=bm.get_device(space))
         owner_weight = face_interpolation_owner_weight(
-            mesh,
+            geometry,
             method=self.interpolation,
-            index=self.index,
-            geometry=geometry if self.geometry is not None else None,
         )
         neighbour_weight = 1.0 - owner_weight
         direction_matrix = bm.stack(
@@ -155,9 +153,8 @@ class ConvectionMatrixAssembler:
             )
 
         owner_weight = face_interpolation_owner_weight(
-            self.mesh,
+            self.geometry,
             method=self.interpolation,
-            geometry=self.geometry,
         )
         neighbour_weight = 1.0 - owner_weight
         direction_matrix = bm.stack(

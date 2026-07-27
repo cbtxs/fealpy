@@ -28,38 +28,34 @@ class DiffusionFaceDecomposition:
     orthogonal_factor: TensorLike
 
 
-def boundary_face_flag(points, threshold):
-    """Evaluate a boundary-face threshold on face centers.
+def boundary_face_flag(points, selector):
+    """Evaluate a boundary selector on Cartesian points.
 
-    The selector always receives the complete ``(N, GD)`` face-center array.
+    ``points`` has shape ``(..., GD)`` and the selector returns one boolean
+    value for every point, with shape ``(...)``.
     """
-    if not callable(threshold):
-        raise ValueError("threshold must be a callable boundary face selector.")
+    if not callable(selector):
+        raise ValueError("selector must be callable.")
 
-    flag = bm.array(threshold(points), dtype=bm.bool)
-    if flag.shape == (points.shape[0],):
+    flag = bm.array(
+        selector(points),
+        dtype=bm.bool,
+        device=bm.get_device(points),
+    )
+    if flag.shape == points.shape[:-1]:
         return flag
     raise ValueError(
-        "threshold must return a boolean array with one entry per boundary face."
+        "selector must return a boolean array with shape points.shape[:-1]."
     )
 
 
-def selected_boundary_faces(geometry, threshold=None, *, default_all=False):
-    """Return boundary faces selected by a face-center threshold callable.
-
-    ``threshold=None`` returns ``None`` by default, matching solver boundary
-    conditions where the absence of a selector means no patch.  Low-level
-    reconstruction operators can pass ``default_all=True`` when boundary data
-    without a selector should apply to all boundary faces.
-    """
-    boundary_faces = bm.nonzero(geometry.is_boundary)[0]
-    if threshold is None:
-        return boundary_faces if default_all else None
-
-    face_centers = geometry.face_center[boundary_faces]
-    flag = boundary_face_flag(face_centers, threshold)
-    if not bool(bm.to_numpy(bm.any(flag))):
-        return boundary_faces[:0]
+def select_boundary_faces(geometry, selector):
+    """Return global boundary-face indices selected at face centers."""
+    boundary_faces = geometry.boundary_faces
+    flag = boundary_face_flag(
+        geometry.face_center[boundary_faces],
+        selector,
+    )
     return boundary_faces[flag]
 
 
@@ -75,6 +71,7 @@ class FVMGeometry:
         self.mesh = mesh
         self.index = index
         self._diffusion_decomposition_cache = {}
+        self._linear_owner_weight_cache = None
 
         if not hasattr(mesh, "Entities"):
             raise RuntimeError(
@@ -245,6 +242,7 @@ class FVMGeometry:
         self.neighbour = self.face_to_cell[:, 1]
         self.is_internal = self.owner != self.neighbour
         self.is_boundary = ~self.is_internal
+        self.boundary_faces = bm.nonzero(self.is_boundary)[0]
 
         self.face_center = full_face_center[index]
         self.face_measure = full_face_measure[index]
@@ -384,11 +382,28 @@ class FVMGeometry:
         area vector direction.  Boundary faces return one because no real
         neighbour cell participates in the interpolation.
         """
-        owner_dist = bm.abs(bm.einsum("ij,ij->i", self.S_f, self.face_center - self.cell_center[self.owner]))
-        neighbour_dist = bm.abs(bm.einsum("ij,ij->i", self.S_f, self.cell_center[self.neighbour] - self.face_center))
+        weight = self._linear_owner_weight_cache
+        if weight is not None:
+            return weight
+        owner_dist = bm.abs(
+            bm.einsum(
+                "ij,ij->i",
+                self.S_f,
+                self.face_center - self.cell_center[self.owner],
+            )
+        )
+        neighbour_dist = bm.abs(
+            bm.einsum(
+                "ij,ij->i",
+                self.S_f,
+                self.cell_center[self.neighbour] - self.face_center,
+            )
+        )
         total_dist = owner_dist + neighbour_dist
         weight = bm.where(total_dist > 0.0, neighbour_dist / total_dist, 0.5)
-        return bm.where(self.is_internal, weight, 1.0)
+        weight = bm.where(self.is_internal, weight, 1.0)
+        self._linear_owner_weight_cache = weight
+        return weight
 
     def scatter_face_flux_to_cells(self, face_flux):
         """Scatter owner-oriented face fluxes to cell flux sums.
@@ -405,7 +420,6 @@ class FVMGeometry:
         it is not divided by cell volume and should not be interpreted as a
         cell-average divergence.
         """
-        face_flux = bm.array(face_flux)
         if face_flux.ndim == 0:
             raise ValueError("face_flux must have at least one dimension.")
         if face_flux.shape[0] != self.owner.shape[0]:
@@ -417,6 +431,7 @@ class FVMGeometry:
         result = bm.zeros(
             (self.NC,) + tuple(face_flux.shape[1:]),
             dtype=face_flux.dtype,
+            device=bm.get_device(face_flux),
         )
         result = bm.index_add(result, self.owner, face_flux, axis=0)
         return bm.index_add(
@@ -429,11 +444,9 @@ class FVMGeometry:
 
 
 def face_interpolation_owner_weight(
-    mesh,
+    geometry: FVMGeometry,
     *,
     method: str = "linear",
-    index: Index = _S,
-    geometry: FVMGeometry | None = None,
 ) -> TensorLike:
     """Return owner-side face interpolation weights.
 
@@ -444,7 +457,6 @@ def face_interpolation_owner_weight(
     if method not in {"average", "linear"}:
         raise ValueError("method must be 'average' or 'linear'.")
 
-    geometry = geometry if geometry is not None else FVMGeometry(mesh, index=index)
     if method == "linear":
         return geometry.linear_owner_weight()
 
@@ -464,7 +476,6 @@ def interpolate_cell_to_face(
     axes are preserved, so the same operation applies to scalar, vector, and
     tensor fields.  Boundary faces use their owner value.
     """
-    cell_values = bm.array(cell_values)
     if cell_values.ndim == 0:
         raise ValueError("cell_values must have a control-volume axis.")
     if cell_values.shape[0] != geometry.NC:
@@ -474,9 +485,8 @@ def interpolate_cell_to_face(
         )
 
     owner_weight = face_interpolation_owner_weight(
-        geometry.mesh,
+        geometry,
         method=method,
-        geometry=geometry,
     )
     weight_shape = (owner_weight.shape[0],) + (1,) * (cell_values.ndim - 1)
     owner_weight = bm.reshape(owner_weight, weight_shape)

@@ -3,11 +3,15 @@ import pytest
 
 from fealpy.backend import backend_manager as bm
 from fealpy.fvm import (
+    CollocatedPressureSystemControls,
     CollocatedSimpleSolver,
     FVMGeometry,
-    FVMLinearSolverConfig,
     PDEBoundaryConditions,
-    SimpleSolverControls,
+    PressureClosureKind,
+    SimpleDiscretizationControls,
+    SimpleIterationControls,
+    build_collocated_ns_linear_solvers,
+    resolve_simple_boundary_conditions,
 )
 from fealpy.mesh.storage import EntitySector, MeshBlock
 from fealpy.mesh.topology.builder import TopologyBuilder
@@ -52,28 +56,42 @@ def test_collocated_simple_zero_solution_on_mixed_tri_quad_mesh():
     def zero_velocity(points):
         return bm.zeros_like(points)
 
+    discretization = SimpleDiscretizationControls()
+    iteration = SimpleIterationControls(
+        max_iterations=1,
+        pressure_relaxation=0.3,
+        momentum_relative_tolerance=1.0e-12,
+        mass_relative_tolerance=1.0e-12,
+    )
+    pressure_system = CollocatedPressureSystemControls(
+        pure_neumann_closure=PressureClosureKind.GAUGE,
+    )
+    boundary = PDEBoundaryConditions(
+        mesh,
+        dirichlet_velocity=zero_velocity,
+    )
     solver = CollocatedSimpleSolver(
-        mesh=mesh,
         diffusion_coef=1.0,
         convection_coef=0.0,
         source=zero_velocity,
-        boundary_conditions=PDEBoundaryConditions(
+        boundary_conditions=resolve_simple_boundary_conditions(
             mesh,
-            dirichlet_velocity=zero_velocity,
+            boundary,
+            discretization,
+            pressure_system,
         ),
-        controls=SimpleSolverControls(
-            pressure_constraint="gauge",
-            rhie_chow_velocity_scheme="second_order_reconstructed",
-        ),
-        linear_solver_config=FVMLinearSolverConfig(solver="scipy"),
-        log_level="ERROR",
+        discretization_controls=discretization,
+        iteration_controls=iteration,
+        linear_solvers=build_collocated_ns_linear_solvers(),
     )
 
-    velocity, pressure = solver.solve(max_iter=1, tol=1.0e-12, relax=0.3)
+    result = solver.solve()
+    velocity = result.velocity
+    pressure = result.pressure
 
     assert velocity.shape == (3, 2)
     assert pressure.shape == (3,)
-    assert solver.face_velocity.shape == (8, 2)
+    assert result.face_velocity.shape == (8, 2)
     np.testing.assert_allclose(velocity, 0.0, atol=1.0e-13)
     np.testing.assert_allclose(pressure, 0.0, atol=1.0e-13)
 

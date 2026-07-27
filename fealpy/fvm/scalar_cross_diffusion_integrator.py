@@ -183,7 +183,11 @@ def scalar_cross_diffusion_face_flux(
         raise ValueError(f"Unsupported boundary_policy: {boundary_policy!r}")
 
     if face_flux_correction is not None:
-        face_flux = bm.array(face_flux_correction, dtype=space.ftype)
+        face_flux = bm.array(
+            face_flux_correction,
+            dtype=space.ftype,
+            device=bm.get_device(geometry.cell_center),
+        )
     else:
         if grad_f is None:
             raise ValueError("grad_f is required when face_flux_correction is not provided.")
@@ -191,7 +195,11 @@ def scalar_cross_diffusion_face_flux(
             raise ValueError(
                 "correction_vector is required when face_flux_correction is not provided."
             )
-        correction_vector = bm.array(correction_vector, dtype=space.ftype)
+        correction_vector = bm.array(
+            correction_vector,
+            dtype=space.ftype,
+            device=bm.get_device(grad_f),
+        )
 
         if grad_f.ndim == 2:
             face_flux = bm.einsum("ij,ij->i", correction_vector, grad_f)
@@ -206,7 +214,11 @@ def scalar_cross_diffusion_face_flux(
         elif isinstance(coef, (int, float)):
             face_coef = bm.full_like(shape_source, fill_value=coef, dtype=space.ftype)
         else:
-            face_coef = bm.array(coef, dtype=space.ftype)
+            face_coef = bm.array(
+                coef,
+                dtype=space.ftype,
+                device=bm.get_device(face_flux),
+            )
         if face_flux.ndim == 1:
             face_flux = bm.einsum("i,i->i", face_coef, face_flux)
         else:
@@ -240,7 +252,11 @@ def limit_cross_diffusion_face_flux(
         raise ValueError(
             "uh is required with cross_flux_limiter='orthogonal_flux_ratio'."
         )
-    uh = bm.array(uh, dtype=face_flux.dtype)
+    uh = bm.array(
+        uh,
+        dtype=face_flux.dtype,
+        device=bm.get_device(face_flux),
+    )
     if uh.ndim != 1:
         raise ValueError("cross-flux limiting currently supports scalar cell values only.")
     if not 0.0 <= limit_coeff <= 1.0:
@@ -251,7 +267,11 @@ def limit_cross_diffusion_face_flux(
     internal = geometry.is_internal
     owner = geometry.owner
     neighbour = geometry.neighbour
-    orthogonal_factor = bm.array(orthogonal_factor, dtype=face_flux.dtype)
+    orthogonal_factor = bm.array(
+        orthogonal_factor,
+        dtype=face_flux.dtype,
+        device=bm.get_device(face_flux),
+    )
     if orthogonal_factor.shape != face_flux.shape:
         raise ValueError("orthogonal_factor must have one value per face.")
     if coef is None:
@@ -259,7 +279,11 @@ def limit_cross_diffusion_face_flux(
     elif isinstance(coef, (int, float)):
         face_coef = bm.full_like(face_flux, fill_value=coef)
     else:
-        face_coef = bm.array(coef, dtype=face_flux.dtype)
+        face_coef = bm.array(
+            coef,
+            dtype=face_flux.dtype,
+            device=bm.get_device(face_flux),
+        )
         if face_coef.shape == ():
             face_coef = bm.full_like(face_flux, fill_value=face_coef)
         elif face_coef.shape != face_flux.shape:

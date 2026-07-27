@@ -69,7 +69,10 @@ class DeviatoricStressSourceIntegrator(LinearInt, OpInt, FaceInt):
         region = self.get_region()
         if region is not None:
             if isinstance(region, slice) and indices is not None:
-                index = bm.arange(total_faces)[region][indices]
+                index = bm.arange(
+                    total_faces,
+                    device=bm.get_device(full_geometry.owner),
+                )[region][indices]
             else:
                 index = self.entity_selection(indices, mesh=mesh)
         elif indices is None:
@@ -77,7 +80,10 @@ class DeviatoricStressSourceIntegrator(LinearInt, OpInt, FaceInt):
         elif isinstance(self.index, slice) and self.index == _S:
             index = indices
         elif isinstance(self.index, slice):
-            index = bm.arange(total_faces)[self.index][indices]
+            index = bm.arange(
+                total_faces,
+                device=bm.get_device(full_geometry.owner),
+            )[self.index][indices]
         elif bm.is_tensor(self.index):
             if self.index.dtype == bm.bool:
                 index = bm.nonzero(self.index)[0][indices]
@@ -103,13 +109,21 @@ class DeviatoricStressSourceIntegrator(LinearInt, OpInt, FaceInt):
     def assembly(self, space: _FS, /, indices=None) -> TensorLike:
         geometry, index, total_faces = self.fetch(space, indices)
 
-        grad_f = bm.array(self.grad_f)
+        grad_f = bm.array(
+            self.grad_f,
+            dtype=geometry.cell_center.dtype,
+            device=bm.get_device(geometry.cell_center),
+        )
         if grad_f.shape[0] == total_faces:
             grad_f = grad_f[index]
 
         coef = self.coef
         if coef is not None and not isinstance(coef, (int, float)):
-            coef = bm.array(coef)
+            coef = bm.array(
+                coef,
+                dtype=grad_f.dtype,
+                device=bm.get_device(grad_f),
+            )
             if coef.shape != () and coef.shape[0] == total_faces:
                 coef = coef[index]
 
@@ -129,8 +143,15 @@ def deviatoric_stress_face_flux(
 
         mu_f [grad(U)_f^T - 2/3 div(U)_f I] S_f,
     """
-    grad_f = bm.array(grad_f)
-    face_normal = bm.array(face_normal, dtype=grad_f.dtype)
+    grad_f = bm.array(
+        grad_f,
+        device=bm.get_device(grad_f),
+    )
+    face_normal = bm.array(
+        face_normal,
+        dtype=grad_f.dtype,
+        device=bm.get_device(grad_f),
+    )
 
     if grad_f.ndim != 3 or grad_f.shape[1] != grad_f.shape[2]:
         raise ValueError(f"grad_f must have shape (NF, GD, GD), got {grad_f.shape}.")
@@ -145,7 +166,11 @@ def deviatoric_stress_face_flux(
     elif isinstance(coef, (int, float)):
         coef_f = bm.full_like(face_normal[:, 0], fill_value=coef, dtype=grad_f.dtype)
     else:
-        coef_f = bm.array(coef, dtype=grad_f.dtype)
+        coef_f = bm.array(
+            coef,
+            dtype=grad_f.dtype,
+            device=bm.get_device(grad_f),
+        )
         if coef_f.shape == ():
             coef_f = bm.full_like(face_normal[:, 0], fill_value=float(coef_f), dtype=grad_f.dtype)
         elif coef_f.shape[0] != face_normal.shape[0]:

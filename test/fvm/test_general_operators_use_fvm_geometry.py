@@ -1,3 +1,6 @@
+import ast
+from pathlib import Path
+
 import numpy as np
 
 from fealpy.backend import backend_manager as bm
@@ -76,17 +79,26 @@ def _quad_mesh():
 
 def test_gradient_reconstruct_boundary_data_uses_fvm_geometry(monkeypatch):
     import fealpy.fvm.gradient_reconstruct as gradient_module
-    from fealpy.fvm import GradientReconstruct
+    from fealpy.fvm import GradientReconstruct, ResolvedGradientBoundary
 
     mesh = _quad_mesh()
     monkeypatch.setattr(gradient_module, "FVMGeometry", ShiftedOperatorGeometry)
     geometry = ShiftedOperatorGeometry(mesh)
     field = bm.zeros(mesh.number_of_cells())
     gd = lambda p: p[:, 0] - 0.5 * p[:, 1]
-
-    grad = GradientReconstruct(mesh, boundary_value=gd).cell_gradient(field)
-
     boundary_faces = np.flatnonzero(np.asarray(geometry.is_boundary))
+    empty_faces = boundary_faces[:0]
+    boundary = ResolvedGradientBoundary(
+        dirichlet_faces=boundary_faces,
+        dirichlet_values=gd(geometry.face_center[boundary_faces]),
+        neumann_faces=empty_faces,
+        neumann_sn_grad=bm.zeros(0, dtype=field.dtype),
+    )
+    grad = GradientReconstruct(
+        geometry,
+        boundary,
+    ).cell_gradient(field)
+
     owner = np.asarray(geometry.owner)[boundary_faces]
     nonzero_owner = set(np.where(np.linalg.norm(np.asarray(grad), axis=1) > 1.0e-12)[0])
 
@@ -113,7 +125,9 @@ def test_convection_integrator_uses_fvm_geometry_face_area_vector(monkeypatch):
         np.ones((mesh.number_of_faces(), mesh.geo_dimension())),
         np.asarray(geometry.S_f),
     )
-    owner_weight = np.asarray(face_interpolation_owner_weight(mesh, method="linear"))
+    owner_weight = np.asarray(
+        face_interpolation_owner_weight(geometry, method="linear")
+    )
     expected = flux[:, None, None] * np.array(
         [
             [[weight, 1.0 - weight], [-weight, weight - 1.0]]
@@ -124,28 +138,68 @@ def test_convection_integrator_uses_fvm_geometry_face_area_vector(monkeypatch):
     np.testing.assert_allclose(np.asarray(local), expected, rtol=1.0e-13, atol=1.0e-13)
 
 
-def test_collocated_divergence_and_mass_residual_use_fvm_geometry(monkeypatch):
-    import fealpy.fvm.simple_residual as residual_module
+def test_collocated_divergence_and_mass_residual_use_fvm_geometry():
     from fealpy.fvm import collocated_mass_residual
 
     mesh = _quad_mesh()
-    monkeypatch.setattr(residual_module, "FVMGeometry", ShiftedOperatorGeometry)
     face_velocity = bm.ones((mesh.number_of_faces(), mesh.geo_dimension()))
 
     geometry = ShiftedOperatorGeometry(mesh)
     face_flux = np.einsum("ij,ij->i", np.ones_like(np.asarray(geometry.S_f)), np.asarray(geometry.S_f))
     div = geometry.scatter_face_flux_to_cells(face_flux)
-    residual = collocated_mass_residual(mesh, face_velocity)
+    residual = collocated_mass_residual(
+        face_velocity,
+        geometry=geometry,
+    )
     expected_div = np.asarray(geometry.scatter_face_flux_to_cells(face_flux))
 
     np.testing.assert_allclose(np.asarray(div), expected_div, rtol=1.0e-13, atol=1.0e-13)
     assert residual >= 0.0
 
 
-def test_rhie_chow_pressure_gradient_reuses_instance_geometry():
-    from fealpy.fvm import RhieChowInterpolation
+def test_rhie_chow_consumes_the_solver_pressure_gradient():
+    from fealpy.fvm import NSFVMSimpleModel
 
-    mesh = _quad_mesh()
-    rhie_chow = RhieChowInterpolation(mesh)
+    model = NSFVMSimpleModel({
+        "pde": 6,
+        "nx": 2,
+        "ny": 2,
+        "pbar_log": False,
+        "log_level": "ERROR",
+    })
+    rhie_chow = model.solver.rhie_chow
 
-    assert rhie_chow.gradient_reconstruct.fvm_geometry is rhie_chow.fvm_geometry
+    assert not hasattr(rhie_chow, "gradient_reconstruct")
+    assert (
+        model.solver.pressure_gradient.geometry
+        is rhie_chow.geometry
+    )
+
+
+def test_core_geometry_work_arrays_declare_their_device():
+    """Backend-created arrays must follow an existing tensor explicitly."""
+    repository = Path(__file__).resolve().parents[2]
+    sources = (
+        repository / "fealpy/fvm/fvm_geometry.py",
+        repository / "fealpy/fvm/gradient_reconstruct.py",
+    )
+
+    missing = []
+    for source in sources:
+        tree = ast.parse(source.read_text())
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            function = node.func
+            if not (
+                isinstance(function, ast.Attribute)
+                and isinstance(function.value, ast.Name)
+                and function.value.id == "bm"
+                and function.attr in {"array", "arange", "zeros"}
+            ):
+                continue
+            if any(keyword.arg == "device" for keyword in node.keywords):
+                continue
+            missing.append(f"{source.name}:{node.lineno}:{function.attr}")
+
+    assert missing == []

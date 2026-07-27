@@ -1,18 +1,34 @@
 """Reusable scalar diagnostics for FVM solver loops."""
 
+import logging
+from dataclasses import dataclass
+from typing import Literal
+
 from fealpy.backend import backend_manager as bm
+from fealpy.typing import TensorLike
+
+from .simple_result import SimpleIterationResidual
+
+
+@dataclass(frozen=True)
+class EquationResidual:
+    """Norms of one complete discrete equation balance."""
+
+    absolute: float
+    relative: float
+    scale: float
 
 
 def normalized_equation_residual(
-    lhs,
-    rhs,
-    eps=1.0e-30,
+    lhs: TensorLike,
+    rhs: TensorLike,
+    eps: float = 1.0e-30,
     *,
-    normalization_lhs=None,
-    normalization_rhs=None,
-    norm_weights=None,
-    scale_mode="sum",
-):
+    normalization_lhs: TensorLike | None = None,
+    normalization_rhs: TensorLike | None = None,
+    norm_weights: TensorLike | None = None,
+    scale_mode: Literal["sum", "max"] = "sum",
+) -> EquationResidual:
     """Return norms of the complete discrete balance ``lhs - rhs``.
 
     The residual vector always uses ``lhs - rhs``.  By default its relative
@@ -43,23 +59,23 @@ def normalized_equation_residual(
         scale = max(lhs_norm, rhs_norm)
     else:
         raise ValueError("scale_mode must be 'sum' or 'max'.")
-    return {
-        "absolute": absolute,
-        "relative": absolute / max(scale, float(eps)),
-        "scale": scale,
-    }
+    return EquationResidual(
+        absolute=absolute,
+        relative=absolute / max(scale, float(eps)),
+        scale=scale,
+    )
 
 
 def normalized_relaxed_equation_residual(
-    lhs,
-    rhs,
-    solution,
-    previous_solution,
-    relaxation_diagonal,
-    eps=1.0e-30,
+    lhs: TensorLike,
+    rhs: TensorLike,
+    solution: TensorLike,
+    previous_solution: TensorLike,
+    relaxation_diagonal: TensorLike,
+    eps: float = 1.0e-30,
     *,
-    norm_weights=None,
-):
+    norm_weights: TensorLike | None = None,
+) -> EquationResidual:
     """Normalize a relaxed-system defect by its unrelaxed physical balance.
 
     For ``A_alpha = A + Delta`` and
@@ -82,12 +98,12 @@ def normalized_relaxed_equation_residual(
 
 
 def inexact_inner_tolerance(
-    configured_tolerance,
-    target_tolerance,
-    outer_residual=None,
+    configured_tolerance: float,
+    target_tolerance: float,
+    outer_residual: float | None = None,
     *,
-    forcing_factor=0.1,
-):
+    forcing_factor: float = 0.1,
+) -> float:
     """Return a residual-driven tolerance for an inexact inner solve.
 
     ``configured_tolerance`` is the loose early-iteration limit and
@@ -118,7 +134,12 @@ def inexact_inner_tolerance(
     )
 
 
-def equation_residual_converged(metrics, *, rtol, atol):
+def equation_residual_converged(
+    metrics: EquationResidual,
+    *,
+    rtol: float,
+    atol: float,
+) -> bool:
     """Return whether a complete equation residual meets mixed tolerances."""
     if rtol < 0.0:
         raise ValueError("rtol must be non-negative.")
@@ -126,10 +147,10 @@ def equation_residual_converged(metrics, *, rtol, atol):
         raise ValueError("atol must be non-negative.")
     if rtol == 0.0 and atol == 0.0:
         raise ValueError("at least one of rtol or atol must be positive.")
-    return metrics["absolute"] <= atol + rtol * metrics["scale"]
+    return metrics.absolute <= atol + rtol * metrics.scale
 
 
-def linf_norm(value):
+def linf_norm(value: TensorLike) -> float:
     """Return the infinity norm as a Python float."""
     return float(bm.to_numpy(bm.max(bm.abs(value))))
 
@@ -155,35 +176,6 @@ def format_pressure_correction_log(
     )
 
 
-def pressure_correction_diagnostics(
-    *,
-    free_divergence,
-    corrected_divergence,
-    free_flux,
-    corrected_flux,
-    pressure_flux,
-    pressure_flux_parts,
-    transient_flux,
-    pressure_nonorthogonal_iterations,
-):
-    """Return scalar diagnostics for one pressure-correction solve."""
-    orthogonal_flux = pressure_flux_parts["orthogonal_flux"]
-    cross_flux = pressure_flux_parts["cross_flux"]
-    boundary_pressure_flux = pressure_flux_parts["boundary_pressure_flux"]
-    return {
-        "pressure_free_divergence_linf": linf_norm(free_divergence),
-        "pressure_corrected_divergence_linf": linf_norm(corrected_divergence),
-        "pressure_free_flux_linf": linf_norm(free_flux),
-        "pressure_corrected_flux_linf": linf_norm(corrected_flux),
-        "pressure_flux_linf": linf_norm(pressure_flux),
-        "pressure_orthogonal_flux_linf": linf_norm(orthogonal_flux),
-        "pressure_cross_flux_linf": linf_norm(cross_flux),
-        "pressure_boundary_flux_linf": linf_norm(boundary_pressure_flux),
-        "transient_flux_correction_linf": linf_norm(transient_flux),
-        "pressure_nonorthogonal_iterations": int(pressure_nonorthogonal_iterations),
-    }
-
-
 def simple_iteration_log_message(
     *,
     simple_iteration: int,
@@ -205,66 +197,21 @@ def simple_iteration_log_message(
     )
 
 
-def log_simple_iteration(logger, iteration, residual):
+def log_simple_iteration(
+    logger: logging.Logger,
+    iteration: int,
+    residual: SimpleIterationResidual,
+) -> None:
     """Log one SIMPLE pressure-correction diagnostic record."""
     logger.info(
         simple_iteration_log_message(
             simple_iteration=iteration,
-            nonorthogonal_iterations=residual["nonorthogonal_iterations"],
-            pressure_criterion=residual["pressure_criterion"],
-            momentum_residual=residual["momentum_residual_relative"],
-            mass_residual=residual["mass"],
-            pressure_correction=residual["pressure_correction"],
+            nonorthogonal_iterations=(
+                residual.pressure_nonorthogonal_iterations
+            ),
+            pressure_criterion=residual.pressure_correction_l2,
+            momentum_residual=residual.momentum_relative_l2,
+            mass_residual=residual.mass_relative_l2,
+            pressure_correction=residual.pressure_correction_l2,
         )
     )
-
-
-def record_piso_corrector_diagnostics(
-    storage,
-    callback,
-    diagnostics,
-    *,
-    step,
-    time,
-    correction,
-    n_correctors,
-    splitting_linf,
-    current_velocity,
-    next_velocity,
-    current_pressure,
-    next_pressure,
-    a_p,
-    current_face_flux,
-    boundary_faces,
-    boundary_velocity,
-    face_response_coefficient,
-    rhie_chow_face_velocity,
-    face_flux_operator,
-):
-    """Store one PISO corrector diagnostics row and call the optional callback."""
-    target_face_velocity = rhie_chow_face_velocity(
-        next_velocity,
-        a_p,
-        next_pressure,
-        current_face_flux,
-        boundary_faces=boundary_faces,
-        boundary_velocity=boundary_velocity,
-        face_response_coefficient=face_response_coefficient,
-    )
-    target_flux_error = face_flux_operator(target_face_velocity) - current_face_flux
-    row = dict(diagnostics)
-    row.update(
-        {
-            "step": int(step),
-            "time": float(time),
-            "corrector": int(correction),
-            "n_correctors": int(n_correctors),
-            "operator_splitting_compensation_linf": float(splitting_linf),
-            "velocity_update_linf": linf_norm(next_velocity - current_velocity),
-            "pressure_update_linf": linf_norm(next_pressure - current_pressure),
-            "rhie_chow_flux_error_linf": linf_norm(target_flux_error),
-        }
-    )
-    storage.append(row)
-    if callback is not None:
-        callback(**row)

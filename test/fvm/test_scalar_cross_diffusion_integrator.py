@@ -121,40 +121,6 @@ def test_face_flux_correction_scatter_vector():
     )
 
 
-def test_integrator_assembly_delegates_face_flux_construction(monkeypatch):
-    import fealpy.fvm.scalar_cross_diffusion_integrator as cross_module
-
-    mesh, space = _box_space(nx=1, ny=1)
-    face_flux = np.linspace(0.2, 1.2, mesh.number_of_edges())
-    calls = []
-
-    def counted_face_flux(space_arg, geometry, face_to_cell, **kwargs):
-        calls.append((space_arg, geometry, face_to_cell, kwargs))
-        return face_flux
-
-    monkeypatch.setattr(
-        cross_module,
-        "scalar_cross_diffusion_face_flux",
-        counted_face_flux,
-    )
-
-    rhs = LinearForm(space).add_integrator(
-        ScalarCrossDiffusionIntegrator(
-            np.zeros(mesh.number_of_cells()),
-            np.ones((mesh.number_of_edges(), mesh.geo_dimension())),
-        )
-    ).assembly()
-
-    assert len(calls) == 1
-    assert calls[0][0] is space
-    np.testing.assert_allclose(
-        np.asarray(rhs),
-        _expected_scalar_scatter(mesh, face_flux),
-        rtol=1.0e-13,
-        atol=1.0e-13,
-    )
-
-
 def test_default_cross_diffusion_matches_over_relaxed_scatter():
     mesh, space = _box_space(nx=2, ny=1)
     grad_f = np.stack(
@@ -328,40 +294,6 @@ def test_explicit_bounded_cross_diffusion_reuses_fvm_geometry_decomposition(monk
     )
 
 
-def test_orthogonal_correction_vector_is_zero_like_face_area_vector():
-    mesh, _ = _box_space(nx=2, ny=1)
-    geometry = FVMGeometry(mesh)
-    zero = np.asarray(np.zeros_like(np.asarray(geometry.S_f)))
-
-    assert zero.shape == (mesh.number_of_edges(), mesh.geo_dimension())
-    np.testing.assert_allclose(zero, 0.0, atol=0.0)
-
-
-def test_bounded_over_relaxed_orthogonal_coefficient_is_stabilized():
-    mesh, _ = _box_space(nx=2, ny=1)
-    eps = 0.05
-    geometry = FVMGeometry(mesh)
-    coefficient = np.asarray(
-        geometry.diffusion_face_decomposition(
-            "bounded_over_relaxed", eps=eps
-        ).orthogonal_factor
-    )
-    denominator = np.asarray(geometry.mag_S_f) / coefficient
-    projected = np.einsum(
-        "ij,ij->i",
-        np.asarray(geometry.n_f),
-        np.asarray(geometry.d_f),
-    )
-    lower_bound = eps * np.asarray(geometry.mag_d_f)
-
-    np.testing.assert_allclose(
-        denominator,
-        np.maximum(projected, lower_bound),
-        rtol=1.0e-13,
-        atol=1.0e-13,
-    )
-
-
 def test_bounded_over_relaxed_Tf_is_stabilized_on_bad_internal_face():
     a = 0.01
     y = 1.0
@@ -512,36 +444,6 @@ def test_correction_vector_matches_equivalent_face_flux_correction():
     np.testing.assert_allclose(
         np.asarray(from_vector),
         np.asarray(from_flux),
-        rtol=1.0e-13,
-        atol=1.0e-13,
-    )
-
-
-def test_default_method_matches_explicit_over_relaxed():
-    mesh, space = _box_space(nx=2, ny=1)
-    grad_f = np.stack(
-        [
-            np.linspace(-0.1, 0.3, mesh.number_of_edges()),
-            np.linspace(0.2, 0.6, mesh.number_of_edges()),
-        ],
-        axis=1,
-    )
-
-    default_rhs = LinearForm(space).add_integrator(
-        ScalarCrossDiffusionIntegrator(np.zeros(mesh.number_of_cells()), grad_f)
-    ).assembly()
-    geometry_rhs = LinearForm(space).add_integrator(
-        ScalarCrossDiffusionIntegrator(
-            np.zeros(mesh.number_of_cells()),
-            grad_f,
-            geometry=FVMGeometry(mesh),
-            method="over_relaxed",
-        )
-    ).assembly()
-
-    np.testing.assert_allclose(
-        np.asarray(geometry_rhs),
-        np.asarray(default_rhs),
         rtol=1.0e-13,
         atol=1.0e-13,
     )

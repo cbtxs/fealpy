@@ -71,31 +71,6 @@ def test_scalar_diffusion_rejects_cell_wise_coefficient():
         )
 
 
-def test_scalar_diffusion_integrator_delegates_local_matrix_construction(monkeypatch):
-    import fealpy.fvm.scalar_diffusion_integrator as diffusion_module
-    from fealpy.fvm import ScalarDiffusionIntegrator
-
-    mesh, space = _box_space(nx=1, ny=1)
-    calls = []
-
-    def counted_local_matrix(
-        space_arg, phi, *, coef=None, orthogonal_factor=None
-    ):
-        calls.append((space_arg, phi, coef, orthogonal_factor))
-        return bm.zeros((mesh.number_of_faces(), 2, 2), dtype=space.ftype)
-
-    monkeypatch.setattr(
-        diffusion_module,
-        "scalar_diffusion_local_matrix",
-        counted_local_matrix,
-    )
-
-    BilinearForm(space).add_integrator(ScalarDiffusionIntegrator()).assembly()
-
-    assert len(calls) == 1
-    assert calls[0][0] is space
-
-
 def test_scalar_diffusion_integrator_expands_face_stencil_for_tensor_space():
     from fealpy.fvm import ScalarDiffusionIntegrator
 

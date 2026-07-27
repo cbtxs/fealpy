@@ -1,3 +1,5 @@
+import inspect
+
 import numpy as np
 import pytest
 
@@ -7,6 +9,22 @@ from fealpy.mesh import HexahedronMesh, TetrahedronMesh
 from fealpy.mesh.storage import EntitySector, MeshBlock
 from fealpy.mesh.topology.builder import TopologyBuilder
 from fealpy.mesh.view import Mesh
+
+
+def test_face_flux_correction_requires_explicit_boundary_tensors():
+    from fealpy.fvm.face_flux_reconstruct import FaceFluxReconstruct
+
+    variants = FaceFluxReconstruct.__dict__["correction"].virtual_table
+    for variant in variants.values():
+        parameters = inspect.signature(variant).parameters
+        assert (
+            parameters["boundary_face_average"].default
+            is inspect.Parameter.empty
+        )
+        assert (
+            parameters["boundary_faces"].default
+            is inspect.Parameter.empty
+        )
 
 
 def _vector_quadratic(points):
@@ -20,6 +38,17 @@ def _vector_quadratic(points):
             2.0 - y + z + y**2 + x * z,
         ],
         axis=-1,
+    )
+
+
+def _empty_boundary_values(geometry):
+    return (
+        bm.zeros(
+            (0, geometry.GD),
+            dtype=geometry.cell_center.dtype,
+            device=bm.get_device(geometry.cell_center),
+        ),
+        geometry.boundary_faces[:0],
     )
 
 
@@ -95,16 +124,17 @@ def test_cell_anchored_quadratic_face_flux_recovers_quadratic_face_average():
     exact_face_average = _entity_average(mesh, "face", _vector_quadratic)
 
     reconstruct = CellAnchoredQuadraticFaceFluxReconstruct(
-        mesh,
         geometry=geometry,
     )
     face_average = reconstruct.face_average(
         cell_average,
         boundary_face_average=exact_face_average[geometry.is_boundary],
+        boundary_faces=geometry.boundary_faces,
     )
     flux = reconstruct.reconstruct(
         cell_average,
         boundary_face_average=exact_face_average[geometry.is_boundary],
+        boundary_faces=geometry.boundary_faces,
     )
 
     np.testing.assert_allclose(
@@ -149,15 +179,16 @@ def test_face_flux_reconstruct_rejects_invalid_condition_limit(max_condition):
         ny=1,
         nz=1,
     )
+    geometry = FVMGeometry(mesh)
 
     with pytest.raises(ValueError, match="max_condition"):
         CellAnchoredQuadraticFaceFluxReconstruct(
-            mesh,
+            geometry=geometry,
             max_condition=max_condition,
         )
     with pytest.raises(ValueError, match="max_condition"):
         FaceFluxReconstruct(
-            mesh,
+            geometry=geometry,
             method="none",
             max_condition=max_condition,
         )
@@ -179,13 +210,18 @@ def test_cell_anchored_quadratic_falls_back_when_full_rank_stencil_remains_ill_c
         cell_velocity[geometry.owner] + cell_velocity[geometry.neighbour]
     )
     reconstruct = FaceFluxReconstruct(
-        mesh,
-        method="cell_anchored_quadratic",
         geometry=geometry,
+        method="cell_anchored_quadratic",
         max_condition=1.0,
     )
 
-    correction = reconstruct.correction(cell_velocity, base_face_velocity)
+    empty_values, empty_faces = _empty_boundary_values(geometry)
+    correction = reconstruct.correction(
+        cell_velocity,
+        base_face_velocity,
+        empty_values,
+        empty_faces,
+    )
     diagnostics = reconstruct.diagnostics()
 
     np.testing.assert_allclose(bm.to_numpy(correction), 0.0)
@@ -219,7 +255,6 @@ def test_cell_anchored_quadratic_expands_full_rank_stencil_until_condition_is_ac
     cell_average = _entity_average(mesh, "cell", _vector_quadratic)
     exact_face_average = _entity_average(mesh, "face", _vector_quadratic)
     reconstruct = CellAnchoredQuadraticFaceFluxReconstruct(
-        mesh,
         geometry=geometry,
         max_condition=25.0,
     )
@@ -227,6 +262,7 @@ def test_cell_anchored_quadratic_expands_full_rank_stencil_until_condition_is_ac
     face_average = reconstruct.face_average(
         cell_average,
         boundary_face_average=exact_face_average[geometry.is_boundary],
+        boundary_faces=geometry.boundary_faces,
     )
     diagnostics = reconstruct.diagnostics()
 
@@ -263,15 +299,15 @@ def test_face_flux_reconstruct_closes_divergence_free_quadratic_field():
         cell_average[geometry.owner] + cell_average[geometry.neighbour]
     )
     reconstruct = FaceFluxReconstruct(
-        mesh,
-        method="cell_anchored_quadratic",
         geometry=geometry,
+        method="cell_anchored_quadratic",
     )
 
     correction = reconstruct.correction(
         cell_average,
         base_face_velocity,
         boundary_face_average=exact_face_average[geometry.is_boundary],
+        boundary_faces=geometry.boundary_faces,
     )
     base_flux = bm.einsum("fi,fi->f", base_face_velocity, geometry.S_f)
     divergence = geometry.scatter_face_flux_to_cells(base_flux + correction)
@@ -304,9 +340,18 @@ def test_face_flux_reconstruct_none_variant_returns_zero_correction():
         (mesh.number_of_faces(), mesh.geo_dimension()),
         dtype=geometry.cell_center.dtype,
     )
-    reconstruct = FaceFluxReconstruct(mesh, method="none", geometry=geometry)
+    reconstruct = FaceFluxReconstruct(
+        geometry=geometry,
+        method="none",
+    )
 
-    correction = reconstruct.correction(cell_velocity, face_velocity)
+    empty_values, empty_faces = _empty_boundary_values(geometry)
+    correction = reconstruct.correction(
+        cell_velocity,
+        face_velocity,
+        empty_values,
+        empty_faces,
+    )
 
     np.testing.assert_allclose(bm.to_numpy(correction), 0.0)
 
@@ -331,12 +376,17 @@ def test_cell_anchored_quadratic_falls_back_to_zero_defect_when_stencil_is_rank_
         cell_velocity[geometry.owner] + cell_velocity[geometry.neighbour]
     )
     reconstruct = FaceFluxReconstruct(
-        mesh,
-        method="cell_anchored_quadratic",
         geometry=geometry,
+        method="cell_anchored_quadratic",
     )
 
-    correction = reconstruct.correction(cell_velocity, base_face_velocity)
+    empty_values, empty_faces = _empty_boundary_values(geometry)
+    correction = reconstruct.correction(
+        cell_velocity,
+        base_face_velocity,
+        empty_values,
+        empty_faces,
+    )
     diagnostics = reconstruct.diagnostics()
 
     np.testing.assert_allclose(bm.to_numpy(correction), 0.0)
@@ -353,13 +403,13 @@ def test_cell_anchored_quadratic_recovers_mixed_tri_quad_face_averages():
     cell_average = _cell_average(geometry, _vector_quadratic_2d)
     exact_face_average = _face_average(geometry, _vector_quadratic_2d)
     reconstruct = CellAnchoredQuadraticFaceFluxReconstruct(
-        mesh,
         geometry=geometry,
     )
 
     face_average = reconstruct.face_average(
         cell_average,
         boundary_face_average=exact_face_average[geometry.is_boundary],
+        boundary_faces=geometry.boundary_faces,
     )
 
     np.testing.assert_allclose(
