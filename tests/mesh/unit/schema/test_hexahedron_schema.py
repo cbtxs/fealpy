@@ -182,16 +182,16 @@ class TestHexahedronSchema:
 
         _assert_shape(
             points,
-            (1, 2, 2, 2, 3),
-            "Tensor-product barycentric coordinates map to a tensor grid of points",
+            (1, 8, 3),
+            "Tensor-product barycentric coordinates map to flattened (NC, NQ, GD) points",
         )
         _assert_allclose(
-            points[0, 0, 0, 0],
+            points[0, 0],
             bm.asarray([0.8, 0.3, 0.6], dtype=bm.float64),
             "Non-symmetric tensor-product coordinates should map as (u1, v1, w1)",
         )
         _assert_allclose(
-            points[0, 1, 1, 1],
+            points[0, 7],
             bm.asarray([0.35, 0.9, 0.25], dtype=bm.float64),
             "Second tensor-product sample should preserve each coordinate direction",
         )
@@ -218,7 +218,7 @@ class TestHexahedronSchema:
         )
         points = hex_view.schema.bc_to_point(ctx, bcs, None)
         _assert_allclose(
-            points[0, 0, 0, 0],
+            points[0, 0],
             bm.asarray([11.6, -0.1, 5.0], dtype=bm.float64),
             "Tensor-product coordinates should scale and translate in physical space",
         )

@@ -28,6 +28,7 @@ class QuadrilateralSchema(ShapedEntitySchema):
         (2, 3, 0, 1), (0, 2, 1, 3), (1, 0, 3, 2), (3, 1, 2, 0),
     ]
     ccw = [0, 1, 3, 2]
+    _tp_to_contract = [0, 1, 3, 2]
 
     @classmethod
     def multi_index(cls, order: tuple[int, ...], *, internal: bool = False, tensorprod: bool = True) -> Tensor:
@@ -205,8 +206,9 @@ class QuadrilateralSchema(ShapedEntitySchema):
     ) -> Tensor:
         bcs = _require_bcs_tuple(bcs, "quadrilateral jacobi_matrix", 2)
         node = ctx.block.positions
-        cell = ctx.sector.indices
+        cell = ctx.sector.indices if index is None else ctx.sector.indices[index]
         gphi = cls.grad_shape_function_reference(bcs, p=(1, 1)) # (NQ, num_shape, ref_dim)
+        cell = cell[:, cls._tp_to_contract]
         J = bm.einsum('cim, qin -> cqmn', node[cell], gphi) # (NC, NQ, GD, ref_dim)
 
         return J

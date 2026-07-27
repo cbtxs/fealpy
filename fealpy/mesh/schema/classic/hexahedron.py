@@ -66,7 +66,8 @@ class HexahedronSchema(ShapedEntitySchema):
         points = ctx.block.positions[cell[:, [0, 1, 3, 2, 4, 5, 7, 6]]]
         points = bm.reshape(points, (-1, 2, 2, 2, cls.geo_dimension(ctx)))
         u, v, w = bcs
-        return bm.einsum("ia,jb,kc,ncbae->nkjie", u, v, w, points)
+        result = bm.einsum("ia,jb,kc,ncbae->nkjie", u, v, w, points)
+        return bm.reshape(result, (result.shape[0], -1, result.shape[-1]))
 
     @classmethod
     def shape_function(
@@ -153,12 +154,12 @@ class HexahedronSchema(ShapedEntitySchema):
         index: Index | None,
     ) -> Tensor:
         bcs = _require_bcs_tuple(bcs, "hexahedron jacobi_matrix", 3)
+        node = ctx.block.positions
         cell = ctx.sector.indices if index is None else ctx.sector.indices[index]
         if len(cell.shape) == 1:
             cell = bm.reshape(cell, (1, -1))
-
         gphi = cls.grad_shape_function_reference(bcs, p=(1, 1, 1))
-        return bm.einsum("cim,qin->cqmn", ctx.block.positions[cell], gphi)
+        return bm.einsum("cim,qin->cqmn", node[cell], gphi)
 
     @classmethod
     def multi_index(cls, order: tuple[int, ...], *, internal: bool = False, tensorprod: bool = True) -> Tensor:
