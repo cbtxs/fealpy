@@ -301,7 +301,11 @@ class CylinderFlowCase:
 
     @cartesian
     def source(self, p: TensorLike, t: float | None = None) -> TensorLike:
-        return bm.zeros(p.shape, dtype=p.dtype)
+        return bm.zeros(
+            p.shape,
+            dtype=p.dtype,
+            device=bm.get_device(p),
+        )
 
     @cartesian
     def inlet_velocity(self, p: TensorLike) -> TensorLike:
@@ -314,7 +318,11 @@ class CylinderFlowCase:
 
     @cartesian
     def dirichlet_velocity(self, p: TensorLike) -> TensorLike:
-        result = bm.zeros(p.shape, dtype=p.dtype)
+        result = bm.zeros(
+            p.shape,
+            dtype=p.dtype,
+            device=bm.get_device(p),
+        )
         profile = self.inlet_velocity(p)
         inlet = self.is_inlet_boundary(p)
         result = bm.set_at(result, inlet, profile[inlet])
@@ -326,19 +334,35 @@ class CylinderFlowCase:
     @cartesian
     @cartesian
     def velocity_0(self, p: TensorLike, t: float = 0.0) -> TensorLike:
-        return bm.zeros(p.shape, dtype=p.dtype)
+        return bm.zeros(
+            p.shape,
+            dtype=p.dtype,
+            device=bm.get_device(p),
+        )
 
     @cartesian
     def pressure_0(self, p: TensorLike, t: float = 0.0) -> TensorLike:
-        return bm.zeros(p.shape[:-1], dtype=p.dtype)
+        return bm.zeros(
+            p.shape[:-1],
+            dtype=p.dtype,
+            device=bm.get_device(p),
+        )
 
     @cartesian
     def velocity(self, p: TensorLike, t: float | None = None) -> TensorLike:
-        return bm.zeros(p.shape, dtype=p.dtype)
+        return bm.zeros(
+            p.shape,
+            dtype=p.dtype,
+            device=bm.get_device(p),
+        )
 
     @cartesian
     def pressure(self, p: TensorLike, t: float | None = None) -> TensorLike:
-        return bm.zeros(p.shape[:-1], dtype=p.dtype)
+        return bm.zeros(
+            p.shape[:-1],
+            dtype=p.dtype,
+            device=bm.get_device(p),
+        )
 
     @cartesian
     def is_inlet_boundary(self, p: TensorLike) -> TensorLike:
@@ -374,7 +398,11 @@ class CylinderFlowCase:
         )
 
         def zero_velocity(p):
-            return bm.zeros(p.shape, dtype=p.dtype)
+            return bm.zeros(
+                p.shape,
+                dtype=p.dtype,
+                device=bm.get_device(p),
+            )
 
         patches = [
             BoundaryPatch("inlet", self.is_inlet_boundary),

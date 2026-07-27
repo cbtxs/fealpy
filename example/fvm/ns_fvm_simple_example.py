@@ -1,7 +1,11 @@
 import argparse
+from dataclasses import replace
 
 from fealpy.backend import backend_manager as bm
-from fealpy.fvm import FVMLinearSolverConfig, NSFVMSimpleModel
+from fealpy.fvm import (
+    NSFVMSimpleModel,
+    steady_ns_high_accuracy_simple_profile,
+)
 
 
 def main(argv=None):
@@ -21,7 +25,7 @@ def main(argv=None):
     )
     parser.add_argument(
         "--mesh-refine",
-        default=1,
+        default=2,
         type=int,
         help="Uniform refinement levels applied to the PDE mesh.",
     )
@@ -35,12 +39,6 @@ def main(argv=None):
         default="cpu",
         choices=("cpu", "cuda"),
         help="Device used by the selected backend.",
-    )
-    parser.add_argument(
-        "--linear-solver",
-        default="auto",
-        choices=("auto", "mumps", "scipy", "cupy"),
-        help="Sparse linear solver backend.",
     )
     parser.add_argument("--max-iter", default=2000, type=int)
     parser.add_argument("--tol", default=1.0e-6, type=float)
@@ -70,16 +68,23 @@ def main(argv=None):
     if args.backend == "pytorch":
         bm.set_default_device(args.device)
 
+    base_profile = steady_ns_high_accuracy_simple_profile()
+    profile = replace(
+        base_profile,
+        iteration=replace(
+            base_profile.iteration,
+            max_iterations=args.max_iter,
+            pressure_relaxation=args.relax,
+            momentum_equation_relaxation=args.momentum_relaxation,
+            momentum_relative_tolerance=args.tol,
+            mass_relative_tolerance=args.tol,
+        ),
+    )
     model_options = {
         "pde": args.pde,
         "mesh_refine": args.mesh_refine,
-        "momentum_equation_relaxation": args.momentum_relaxation,
         "log_level": "WARNING" if args.quiet else "INFO",
-        "linear_solver_config": FVMLinearSolverConfig(
-            backend=args.backend,
-            device=args.device,
-            solver=args.linear_solver,
-        ),
+        "profile": profile,
     }
     if args.mesh_type is not None:
         model_options["mesh_type"] = args.mesh_type
@@ -87,21 +92,21 @@ def main(argv=None):
     model = NSFVMSimpleModel(model_options)
     print(model)
 
-    model.solve(max_iter=args.max_iter, tol=args.tol, relax=args.relax)
-    status = "converged" if model.converged else "not converged"
+    result = model.solve()
+    status = "converged" if result.converged else "not converged"
     print(
-        f"SIMPLE {status} after {model.outer_iterations} iterations "
-        f"({model.termination_reason})."
+        f"SIMPLE {status} after {result.outer_iterations} iterations "
+        f"({result.termination_reason})."
     )
 
-    errors = model.compute_error()
+    errors = model.compute_error(result)
     for name, error in zip(("u", "v", "w"), errors[:-1]):
         print(f"L2 error ({name}) = {error}")
     print(f"L2 error (p) = {errors[-1]}")
 
     if args.plot:
-        model.plot()
-        model.plot_residual()
+        model.plot(result)
+        model.plot_residual(result)
 
 
 if __name__ == "__main__":

@@ -76,15 +76,6 @@ def validate_diffusion_controls(method: str, nonorthogonal_eps: float) -> None:
         raise ValueError("diffusion_nonorthogonal_eps must be positive.")
 
 
-def validate_rhie_chow_velocity_scheme(method: str) -> None:
-    """Validate the cell-to-face velocity reconstruction used by Rhie--Chow."""
-    if method not in {"interpolated", "second_order_reconstructed"}:
-        raise ValueError(
-            "rhie_chow_velocity_scheme must be 'interpolated' or "
-            "'second_order_reconstructed'."
-        )
-
-
 def validate_face_flux_correction_controls(
     method: str,
     quadrature_order: int,
@@ -142,7 +133,6 @@ class PoissonSolverControls(SolverControlsMapping):
     nonorthogonal_rtol: float = 1.0e-10
     nonorthogonal_atol: float = 1.0e-12
     nonorthogonal_relaxation: float = 1.0
-    diffusion_linear_solver: str | None = None
 
     def __post_init__(self):
         if self.space_degree != 0:
@@ -178,126 +168,6 @@ class PoissonSolverControls(SolverControlsMapping):
 
 
 @dataclass(frozen=True)
-class SimpleSolverControls(SolverControlsMapping):
-    """Discretization controls for ``CollocatedSimpleSolver``."""
-
-    space_degree: int = 0
-    pressure_gradient_method: str = "layered_lsq"
-    velocity_gradient_method: str = "layered_lsq"
-    rhie_chow_pressure_gradient_method: str = "layered_lsq"
-    gradient_layer_weights: tuple[float, float] = (1.0, 0.25)
-    gradient_boundary_weight: float = 1.0
-    diffusion_method: str = "over_relaxed"
-    diffusion_nonorthogonal_eps: float = 0.05
-    pressure_response_scheme: str = "simple"
-    face_interpolation_method: str = "average"
-    momentum_face_interpolation: str | None = None
-    pressure_response_interpolation: str | None = None
-    rhie_chow_velocity_scheme: str = "interpolated"
-    face_flux_correction_scheme: str = "none"
-    face_flux_quadrature_order: int = 3
-    face_flux_max_stencil_layers: int = 4
-    face_flux_max_condition: float = 100.0
-    pressure_constraint: str = "nullspace"
-    momentum_solve_strategy: str = "component"
-    momentum_component_matrix_policy: str = "shared"
-    momentum_linear_solver: str | None = "scipy_bicgstab"
-    pressure_linear_solver: str | None = None
-    pressure_gauge_linear_solver: str | None = None
-    pressure_nullspace_linear_solver: str | None = "petsc_gmres_hypre"
-    momentum_equation_relaxation: float = 0.7
-    momentum_nonorthogonal_max_iter: int = 50
-    momentum_nonorthogonal_tol: float = 1.0e-4
-    momentum_nonorthogonal_atol: float = 1.0e-12
-    pressure_nonorthogonal_max_iter: int = 50
-    pressure_nonorthogonal_tol: float = 1.0e-5
-    pressure_nonorthogonal_atol: float = 1.0e-12
-    diagnostics_enabled: bool = False
-
-    def __post_init__(self):
-        if self.space_degree != 0:
-            raise ValueError("space_degree must be 0 for cell-centred FVM.")
-        layer_weights, boundary_weight = gradient_reconstruction_weights(
-            self.gradient_layer_weights,
-            self.gradient_boundary_weight,
-        )
-        object.__setattr__(self, "gradient_layer_weights", layer_weights)
-        object.__setattr__(self, "gradient_boundary_weight", boundary_weight)
-        validate_diffusion_controls(
-            self.diffusion_method,
-            self.diffusion_nonorthogonal_eps,
-        )
-        self._validate_face_interpolation("face_interpolation_method", self.face_interpolation_method)
-        for name in (
-            "momentum_face_interpolation",
-            "pressure_response_interpolation",
-        ):
-            value = getattr(self, name)
-            if value is not None:
-                self._validate_face_interpolation(name, value)
-
-        if self.momentum_nonorthogonal_max_iter < 0:
-            raise ValueError("momentum_nonorthogonal_max_iter must be non-negative.")
-        if self.pressure_nonorthogonal_max_iter < 0:
-            raise ValueError("pressure_nonorthogonal_max_iter must be non-negative.")
-        if not 0.0 < self.momentum_equation_relaxation <= 1.0:
-            raise ValueError("momentum_equation_relaxation must be in (0, 1].")
-        if self.momentum_nonorthogonal_tol <= 0.0:
-            raise ValueError("momentum_nonorthogonal_tol must be positive.")
-        if self.momentum_nonorthogonal_atol < 0.0:
-            raise ValueError("momentum_nonorthogonal_atol must be non-negative.")
-        if self.pressure_nonorthogonal_tol <= 0.0:
-            raise ValueError("pressure_nonorthogonal_tol must be positive.")
-        if self.pressure_nonorthogonal_atol < 0.0:
-            raise ValueError("pressure_nonorthogonal_atol must be non-negative.")
-        self.validate_pressure_constraint(self.pressure_constraint)
-        self.validate_pressure_response_scheme(self.pressure_response_scheme)
-        validate_rhie_chow_velocity_scheme(self.rhie_chow_velocity_scheme)
-        validate_face_flux_correction_controls(
-            self.face_flux_correction_scheme,
-            self.face_flux_quadrature_order,
-            self.face_flux_max_stencil_layers,
-            self.face_flux_max_condition,
-        )
-        self.validate_momentum_solve_strategy(self.momentum_solve_strategy)
-        self.validate_momentum_component_matrix_policy(
-            self.momentum_component_matrix_policy
-        )
-
-    @staticmethod
-    def _validate_face_interpolation(name: str, method: str) -> None:
-        if method not in {"average", "linear"}:
-            raise ValueError(f"{name} must be 'average' or 'linear'.")
-
-    def face_interpolation(self, key: str) -> str:
-        """Return a face interpolation choice with shared fallback."""
-        value = getattr(self, key)
-        return self.face_interpolation_method if value is None else value
-
-    @staticmethod
-    def validate_pressure_constraint(method: str) -> None:
-        if method not in {"gauge", "nullspace"}:
-            raise ValueError("pressure_constraint must be 'gauge' or 'nullspace'.")
-
-    @staticmethod
-    def validate_pressure_response_scheme(method: str) -> None:
-        if method not in {"simple", "simplec"}:
-            raise ValueError("pressure_response_scheme must be 'simple' or 'simplec'.")
-
-    @staticmethod
-    def validate_momentum_solve_strategy(method: str) -> None:
-        if method not in {"vector", "component"}:
-            raise ValueError("momentum_solve_strategy must be 'vector' or 'component'.")
-
-    @staticmethod
-    def validate_momentum_component_matrix_policy(method: str) -> None:
-        if method not in {"shared", "per_component"}:
-            raise ValueError(
-                "momentum_component_matrix_policy must be 'shared' or 'per_component'."
-            )
-
-
-@dataclass(frozen=True)
 class PisoSolverControls(SolverControlsMapping):
     """Discretization and iteration controls for ``CollocatedPisoSolver``.
 
@@ -306,39 +176,30 @@ class PisoSolverControls(SolverControlsMapping):
     the explicit cross correction while still solving the base equation once.
     """
 
-    space_degree: int = 0
     duration: tuple[float, float] = (0.0, 1.0)
-    nt: int = 20
+    time_steps: int = 20
     n_correctors: int = 2
     snapshot_interval: int = 1
     snapshot_start_step: int = 1
     pressure_gradient_method: str = "layered_lsq"
     velocity_gradient_method: str = "layered_lsq"
-    rhie_chow_pressure_gradient_method: str = "layered_lsq"
     gradient_layer_weights: tuple[float, float] = (1.0, 0.25)
     gradient_boundary_weight: float = 1.0
     diffusion_method: str = "over_relaxed"
     diffusion_nonorthogonal_eps: float = 0.05
-    face_interpolation_method: str = "average"
-    pressure_constraint: str = "nullspace"
-    momentum_solve_strategy: str = "component"
-    momentum_component_matrix_policy: str = "shared"
-    momentum_linear_solver: str | None = "scipy_bicgstab"
-    pressure_linear_solver: str | None = None
-    pressure_gauge_linear_solver: str | None = None
-    pressure_nullspace_linear_solver: str | None = "petsc_gmres_hypre"
+    momentum_face_interpolation: str = "average"
+    pressure_response_interpolation: str = "average"
+    rhie_chow_velocity_interpolation: str = "average"
     use_transient_flux_correction: bool = True
-    momentum_nonorthogonal_max_iter: int = 50
-    momentum_nonorthogonal_tol: float = 1.0e-5
+    momentum_nonorthogonal_max_iterations: int = 50
+    momentum_nonorthogonal_rtol: float = 1.0e-5
     momentum_nonorthogonal_atol: float = 1.0e-12
-    pressure_nonorthogonal_max_iter: int = 50
-    pressure_nonorthogonal_tol: float = 1.0e-5
+    pressure_nonorthogonal_max_iterations: int = 50
+    pressure_nonorthogonal_rtol: float = 1.0e-5
     pressure_nonorthogonal_atol: float = 1.0e-12
     diagnostics_enabled: bool = False
 
     def __post_init__(self):
-        if self.space_degree != 0:
-            raise ValueError("space_degree must be 0 for cell-centred FVM.")
         layer_weights, boundary_weight = gradient_reconstruction_weights(
             self.gradient_layer_weights,
             self.gradient_boundary_weight,
@@ -349,33 +210,36 @@ class PisoSolverControls(SolverControlsMapping):
             self.diffusion_method,
             self.diffusion_nonorthogonal_eps,
         )
-        self.validate_time_controls(self.duration, self.nt)
+        self.validate_time_controls(self.duration, self.time_steps)
         self.validate_piso_controls(self.n_correctors)
         self.validate_snapshot_controls(self.snapshot_interval, self.snapshot_start_step)
-        self.validate_face_interpolation_method(self.face_interpolation_method)
+        for name in (
+            "momentum_face_interpolation",
+            "pressure_response_interpolation",
+            "rhie_chow_velocity_interpolation",
+        ):
+            self.validate_face_interpolation(
+                getattr(self, name),
+                name,
+            )
         self.validate_nonorthogonal_controls(
-            self.momentum_nonorthogonal_max_iter,
-            self.momentum_nonorthogonal_tol,
+            self.momentum_nonorthogonal_max_iterations,
+            self.momentum_nonorthogonal_rtol,
             self.momentum_nonorthogonal_atol,
-            self.pressure_nonorthogonal_max_iter,
-            self.pressure_nonorthogonal_tol,
+            self.pressure_nonorthogonal_max_iterations,
+            self.pressure_nonorthogonal_rtol,
             self.pressure_nonorthogonal_atol,
-        )
-        self.validate_pressure_constraint(self.pressure_constraint)
-        self.validate_momentum_solve_strategy(self.momentum_solve_strategy)
-        self.validate_momentum_component_matrix_policy(
-            self.momentum_component_matrix_policy
         )
 
     @property
     def tau(self) -> float:
         """Return the uniform time-step size."""
-        return (self.duration[1] - self.duration[0]) / self.nt
+        return (self.duration[1] - self.duration[0]) / self.time_steps
 
     @staticmethod
-    def validate_time_controls(duration, nt: int) -> None:
-        if nt < 1:
-            raise ValueError("nt must be positive.")
+    def validate_time_controls(duration, time_steps: int) -> None:
+        if time_steps < 1:
+            raise ValueError("time_steps must be positive.")
         if len(duration) != 2 or duration[1] <= duration[0]:
             raise ValueError("duration must be an increasing pair.")
 
@@ -392,9 +256,11 @@ class PisoSolverControls(SolverControlsMapping):
             raise ValueError("snapshot_start_step must be positive.")
 
     @staticmethod
-    def validate_face_interpolation_method(method: str) -> str:
+    def validate_face_interpolation(method: str, name: str) -> str:
         if method not in {"average", "linear"}:
-            raise ValueError("face_interpolation_method must be 'average' or 'linear'.")
+            raise ValueError(
+                f"{name} must be 'average' or 'linear'."
+            )
         return method
 
     @staticmethod
@@ -407,31 +273,18 @@ class PisoSolverControls(SolverControlsMapping):
         pressure_atol: float,
     ) -> None:
         if momentum_max_iter < 0:
-            raise ValueError("momentum_nonorthogonal_max_iter must be non-negative.")
+            raise ValueError(
+                "momentum_nonorthogonal_max_iterations must be non-negative."
+            )
         if pressure_max_iter < 0:
-            raise ValueError("pressure_nonorthogonal_max_iter must be non-negative.")
+            raise ValueError(
+                "pressure_nonorthogonal_max_iterations must be non-negative."
+            )
         if momentum_tol <= 0.0:
-            raise ValueError("momentum_nonorthogonal_tol must be positive.")
+            raise ValueError("momentum_nonorthogonal_rtol must be positive.")
         if momentum_atol < 0.0:
             raise ValueError("momentum_nonorthogonal_atol must be non-negative.")
         if pressure_tol <= 0.0:
-            raise ValueError("pressure_nonorthogonal_tol must be positive.")
+            raise ValueError("pressure_nonorthogonal_rtol must be positive.")
         if pressure_atol < 0.0:
             raise ValueError("pressure_nonorthogonal_atol must be non-negative.")
-
-    @staticmethod
-    def validate_pressure_constraint(method: str) -> None:
-        if method not in {"gauge", "nullspace"}:
-            raise ValueError("pressure_constraint must be 'gauge' or 'nullspace'.")
-
-    @staticmethod
-    def validate_momentum_solve_strategy(method: str) -> None:
-        if method not in {"vector", "component"}:
-            raise ValueError("momentum_solve_strategy must be 'vector' or 'component'.")
-
-    @staticmethod
-    def validate_momentum_component_matrix_policy(method: str) -> None:
-        if method not in {"shared", "per_component"}:
-            raise ValueError(
-                "momentum_component_matrix_policy must be 'shared' or 'per_component'."
-            )

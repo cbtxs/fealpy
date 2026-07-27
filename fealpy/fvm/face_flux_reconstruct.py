@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
 
 from fealpy.backend import backend_manager as bm
 from fealpy.decorator.variantmethod import variantmethod
+from fealpy.typing import TensorLike
 
 from .fvm_geometry import FVMGeometry, face_interpolation_owner_weight
 
@@ -17,27 +20,16 @@ def _validate_max_condition(max_condition):
     return value
 
 
+@dataclass(frozen=True)
 class _CellAnchoredCache:
-    def __init__(
-        self,
-        *,
-        stencil,
-        coefficient_operator,
-        owner_feature,
-        neighbour_feature,
-        rank,
-        condition,
-        layer,
-        valid,
-    ):
-        self.stencil = stencil
-        self.coefficient_operator = coefficient_operator
-        self.owner_feature = owner_feature
-        self.neighbour_feature = neighbour_feature
-        self.rank = rank
-        self.condition = condition
-        self.layer = layer
-        self.valid = valid
+    stencil: TensorLike
+    coefficient_operator: TensorLike
+    owner_feature: TensorLike
+    neighbour_feature: TensorLike
+    rank: np.ndarray
+    condition: np.ndarray
+    layer: np.ndarray
+    valid: TensorLike
 
 
 class CellAnchoredQuadraticFaceFluxReconstruct:
@@ -57,22 +49,20 @@ class CellAnchoredQuadraticFaceFluxReconstruct:
 
     def __init__(
         self,
-        mesh,
         *,
-        geometry=None,
+        geometry: FVMGeometry,
         quadrature_order: int = 3,
         max_stencil_layers: int = 4,
         max_condition: float = 100.0,
         rank_tolerance: float = 1.0e-12,
-    ):
+    ) -> None:
         if quadrature_order < 2:
             raise ValueError("quadrature_order must integrate quadratic moments.")
         if max_stencil_layers < 1:
             raise ValueError("max_stencil_layers must be positive.")
         if not 0.0 < rank_tolerance < 1.0:
             raise ValueError("rank_tolerance must lie in (0, 1).")
-        self.mesh = mesh
-        self.geometry = geometry if geometry is not None else FVMGeometry(mesh)
+        self.geometry = geometry
         self.GD = self.geometry.cell_center.shape[1]
         self.quadrature_order = int(quadrature_order)
         self.max_stencil_layers = int(max_stencil_layers)
@@ -280,15 +270,37 @@ class CellAnchoredQuadraticFaceFluxReconstruct:
         )
 
         dtype = self.geometry.cell_center.dtype
+        float_device = bm.get_device(self.geometry.cell_center)
+        index_device = bm.get_device(self.geometry.owner)
         self._cache = _CellAnchoredCache(
-            stencil=bm.array(stencil, dtype=self.geometry.owner.dtype),
-            coefficient_operator=bm.array(coefficient_operator, dtype=dtype),
-            owner_feature=bm.array(owner_feature, dtype=dtype),
-            neighbour_feature=bm.array(neighbour_feature, dtype=dtype),
+            stencil=bm.array(
+                stencil,
+                dtype=self.geometry.owner.dtype,
+                device=index_device,
+            ),
+            coefficient_operator=bm.array(
+                coefficient_operator,
+                dtype=dtype,
+                device=float_device,
+            ),
+            owner_feature=bm.array(
+                owner_feature,
+                dtype=dtype,
+                device=float_device,
+            ),
+            neighbour_feature=bm.array(
+                neighbour_feature,
+                dtype=dtype,
+                device=float_device,
+            ),
             rank=rank,
             condition=condition,
             layer=layer,
-            valid=valid,
+            valid=bm.array(
+                valid,
+                dtype=bm.bool,
+                device=index_device,
+            ),
         )
 
     def clear_cache(self):
@@ -307,10 +319,10 @@ class CellAnchoredQuadraticFaceFluxReconstruct:
 
     def face_average(
         self,
-        cell_velocity,
-        boundary_face_average=None,
-        boundary_faces=None,
-    ):
+        cell_velocity: TensorLike,
+        boundary_face_average: TensorLike,
+        boundary_faces: TensorLike,
+    ) -> TensorLike:
         """Return one vector area average per face."""
         expected = (self.geometry.NC, self.GD)
         if cell_velocity.ndim != 2 or cell_velocity.shape != expected:
@@ -329,35 +341,34 @@ class CellAnchoredQuadraticFaceFluxReconstruct:
             coefficients[neighbour],
         )
         owner_weight = face_interpolation_owner_weight(
-            self.mesh,
+            self.geometry,
             method="linear",
-            geometry=self.geometry,
         )
         result = (
             owner_weight[:, None] * owner_value
             + (1.0 - owner_weight[:, None]) * neighbour_value
         )
-        if boundary_face_average is not None:
-            if boundary_faces is None:
-                boundary_faces = bm.nonzero(self.geometry.is_boundary)[0]
-            if boundary_face_average.shape != (boundary_faces.shape[0], self.GD):
-                raise ValueError(
-                    "boundary_face_average must have shape "
-                    "(number_of_selected_boundary_faces, GD)."
-                )
-            result = bm.set_at(
-                result,
-                boundary_faces,
-                boundary_face_average,
+        if boundary_face_average.shape != (
+            boundary_faces.shape[0],
+            self.GD,
+        ):
+            raise ValueError(
+                "boundary_face_average must have shape "
+                "(number_of_selected_boundary_faces, GD)."
             )
+        result = bm.set_at(
+            result,
+            boundary_faces,
+            boundary_face_average,
+        )
         return result
 
     def reconstruct(
         self,
-        cell_velocity,
-        boundary_face_average=None,
-        boundary_faces=None,
-    ):
+        cell_velocity: TensorLike,
+        boundary_face_average: TensorLike,
+        boundary_faces: TensorLike,
+    ) -> TensorLike:
         """Return one owner-oriented integrated velocity flux per face."""
         face_average = self.face_average(
             cell_velocity,
@@ -368,11 +379,11 @@ class CellAnchoredQuadraticFaceFluxReconstruct:
 
     def correction(
         self,
-        cell_velocity,
-        base_face_velocity,
-        boundary_face_average=None,
-        boundary_faces=None,
-    ):
+        cell_velocity: TensorLike,
+        base_face_velocity: TensorLike,
+        boundary_face_average: TensorLike,
+        boundary_faces: TensorLike,
+    ) -> TensorLike:
         """Return the integrated flux defect relative to a base face field.
 
         Faces touching a rank-deficient or ill-conditioned cell receive zero
@@ -384,11 +395,7 @@ class CellAnchoredQuadraticFaceFluxReconstruct:
             boundary_faces=boundary_faces,
         )
         base = bm.einsum("fi,fi->f", base_face_velocity, self.geometry.S_f)
-        valid_cell = bm.array(
-            self._cache.valid,
-            dtype=bm.bool,
-            device=bm.get_device(self.geometry.owner),
-        )
+        valid_cell = self._cache.valid
         valid_face = (
             valid_cell[self.geometry.owner]
             & valid_cell[self.geometry.neighbour]
@@ -399,7 +406,7 @@ class CellAnchoredQuadraticFaceFluxReconstruct:
         """Return rank and conditioning data for the cached cell stencils."""
         if self._cache is None:
             self._build_cache()
-        valid_cell = self._cache.valid
+        valid_cell = self._as_numpy(self._cache.valid).astype(bool)
         rank_deficient_cell = self._cache.rank < self.ncoeff
         ill_conditioned_cell = ~rank_deficient_cell & ~valid_cell
         rank_deficient_cell_count = int(np.count_nonzero(rank_deficient_cell))
@@ -441,21 +448,18 @@ class FaceFluxReconstruct:
 
     def __init__(
         self,
-        mesh,
         *,
+        geometry: FVMGeometry,
         method="none",
-        geometry=None,
         quadrature_order=3,
         max_stencil_layers=4,
         max_condition=100.0,
-    ):
-        self.mesh = mesh
-        self.geometry = geometry if geometry is not None else FVMGeometry(mesh)
+    ) -> None:
+        self.geometry = geometry
         max_condition = _validate_max_condition(max_condition)
         self.cell_anchored_quadratic = None
         if method == "cell_anchored_quadratic":
             self.cell_anchored_quadratic = CellAnchoredQuadraticFaceFluxReconstruct(
-                mesh,
                 geometry=self.geometry,
                 quadrature_order=quadrature_order,
                 max_stencil_layers=max_stencil_layers,
@@ -469,21 +473,21 @@ class FaceFluxReconstruct:
     @variantmethod("none")
     def correction(
         self,
-        cell_velocity,
-        base_face_velocity,
-        boundary_face_average=None,
-        boundary_faces=None,
-    ):
+        cell_velocity: TensorLike,
+        base_face_velocity: TensorLike,
+        boundary_face_average: TensorLike,
+        boundary_faces: TensorLike,
+    ) -> TensorLike:
         return bm.zeros_like(self.geometry.mag_S_f)
 
     @correction.register("cell_anchored_quadratic")
     def correction(
         self,
-        cell_velocity,
-        base_face_velocity,
-        boundary_face_average=None,
-        boundary_faces=None,
-    ):
+        cell_velocity: TensorLike,
+        base_face_velocity: TensorLike,
+        boundary_face_average: TensorLike,
+        boundary_faces: TensorLike,
+    ) -> TensorLike:
         return self.cell_anchored_quadratic.correction(
             cell_velocity,
             base_face_velocity,

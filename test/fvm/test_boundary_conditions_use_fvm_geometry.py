@@ -70,19 +70,26 @@ def _boundary_faces(geometry):
     return np.flatnonzero(np.asarray(geometry.is_boundary))
 
 
+def _dirichlet(geometry, value, **kwargs):
+    from fealpy.fvm import DirichletBC
+
+    faces = _boundary_faces(geometry)
+    values = value(geometry.face_center[faces])
+    return DirichletBC(geometry, faces, values, **kwargs)
+
+
 def test_dirichlet_diffusion_uses_selected_decomposition():
     from fealpy.fvm import DirichletBC, FVMGeometry
 
     mesh = _bad_two_triangle_mesh()
     geometry = FVMGeometry(mesh)
-    bc = DirichletBC(
-        mesh,
+    bc = _dirichlet(
+        geometry,
         lambda p: p[:, 0] + 2.0 * p[:, 1],
-        geometry=geometry,
         diffusion_method="bounded_over_relaxed",
         nonorthogonal_eps=0.05,
     )
-    _, coefficient, _ = bc.diffusion_boundary_data()
+    _, coefficient = bc.diffusion_boundary_data()
     boundary = np.asarray(geometry.is_boundary)
     expected = np.asarray(
         geometry.diffusion_face_decomposition(
@@ -93,12 +100,13 @@ def test_dirichlet_diffusion_uses_selected_decomposition():
 
 
 def test_dirichlet_diffusion_rejects_unknown_method():
-    from fealpy.fvm import DirichletBC
+    from fealpy.fvm import FVMGeometry
 
     mesh = _bad_two_triangle_mesh()
+    geometry = FVMGeometry(mesh)
     with pytest.raises(ValueError, match="unknown diffusion method"):
-        DirichletBC(
-            mesh,
+        _dirichlet(
+            geometry,
             lambda p: p[:, 0],
             diffusion_method="misspelled",
         )
@@ -133,22 +141,20 @@ def test_affine_dirichlet_full_flux_is_exact_on_skew_boundary(method):
     np.testing.assert_allclose(numerical_flux, exact_flux, atol=1.0e-12)
 
 
-def test_neumann_diffusion_uses_fvm_geometry_for_boundary_face_integral(monkeypatch):
-    import fealpy.fvm.neumann_bc as neumann_module
+def test_neumann_diffusion_uses_explicit_boundary_face_data():
     from fealpy.fvm import NeumannBC
 
     mesh = _mesh()
-    monkeypatch.setattr(
-        neumann_module,
-        "FVMGeometry",
-        ShiftedBoundaryGeometry,
-        raising=False,
-    )
     geometry = ShiftedBoundaryGeometry(mesh)
     boundary_faces = _boundary_faces(geometry)
     gd = lambda points: points[:, 0] - 0.5 * points[:, 1]
+    face_values = gd(geometry.face_center[boundary_faces])
 
-    actual = NeumannBC(mesh, gd).apply_diffusion(bm.zeros(mesh.number_of_cells()))
+    actual = NeumannBC(
+        geometry,
+        boundary_faces,
+        face_values,
+    ).apply_diffusion(bm.zeros(mesh.number_of_cells()))
 
     expected = np.zeros(mesh.number_of_cells())
     np.add.at(
@@ -159,28 +165,27 @@ def test_neumann_diffusion_uses_fvm_geometry_for_boundary_face_integral(monkeypa
     )
     np.testing.assert_allclose(np.asarray(actual), expected, rtol=1.0e-13, atol=1.0e-13)
 
-def test_neumann_diffusion_applies_boundary_face_threshold(monkeypatch):
-    import fealpy.fvm.neumann_bc as neumann_module
+def test_neumann_diffusion_applies_only_explicit_selected_faces():
     from fealpy.fvm import NeumannBC
 
     mesh = _mesh()
-    monkeypatch.setattr(
-        neumann_module,
-        "FVMGeometry",
-        ShiftedBoundaryGeometry,
-        raising=False,
-    )
     geometry = ShiftedBoundaryGeometry(mesh)
-    threshold = lambda points: points[:, 0] < 0.2
-    gd = lambda points: bm.ones(points.shape[0], dtype=points.dtype)
+    boundary_faces = _boundary_faces(geometry)
+    face_centers = geometry.face_center[boundary_faces]
+    selected_faces = boundary_faces[np.asarray(face_centers[:, 0] < 0.2)]
+    face_values = bm.ones(
+        selected_faces.shape[0],
+        dtype=geometry.cell_center.dtype,
+    )
 
-    actual = NeumannBC(mesh, gd, threshold=threshold).apply_diffusion(
+    actual = NeumannBC(
+        geometry,
+        selected_faces,
+        face_values,
+    ).apply_diffusion(
         bm.zeros(mesh.number_of_cells())
     )
 
-    boundary_faces = _boundary_faces(geometry)
-    face_centers = geometry.face_center[boundary_faces]
-    selected_faces = boundary_faces[np.asarray(threshold(face_centers))]
     expected = np.zeros(mesh.number_of_cells())
     np.add.at(
         expected,
@@ -204,10 +209,11 @@ def test_dirichlet_diffusion_rejects_boundary_face_wise_coef():
     )
 
     with pytest.raises(ValueError, match="scalar or face-wise"):
-        DirichletBC(mesh, lambda p: p[:, 0], geometry=geometry).apply_diffusion(
+        _dirichlet(geometry, lambda p: p[:, 0]).apply_diffusion(
             A,
             bm.zeros(mesh.number_of_cells()),
             coef=bm.ones(boundary_faces.shape[0]),
+            components=1,
         )
 
 
@@ -224,9 +230,10 @@ def test_dirichlet_convection_uses_fvm_geometry_for_boundary_flux(monkeypatch):
     def gd(points):
         return bm.stack([points[:, 0] - 2.0, 0.5 * points[:, 1]], axis=1)
 
-    actual = DirichletBC(mesh, gd).apply_convection(
+    actual = _dirichlet(geometry, gd).apply_convection(
         bm.zeros(2 * mesh.number_of_cells()),
         coef,
+        components=2,
     )
 
     expected = np.zeros(2 * mesh.number_of_cells())
@@ -250,9 +257,10 @@ def test_dirichlet_convection_rejects_boundary_face_wise_coef():
     boundary_faces = _boundary_faces(geometry)
 
     with pytest.raises(ValueError, match="face-wise"):
-        DirichletBC(mesh, lambda p: p[:, 0], geometry=geometry).apply_convection(
+        _dirichlet(geometry, lambda p: p[:, 0]).apply_convection(
             bm.zeros(mesh.number_of_cells()),
             bm.ones(boundary_faces.shape[0]),
+            components=1,
         )
 
 
@@ -265,11 +273,15 @@ def test_pde_boundary_conditions_use_fvm_geometry_for_boundary_velocity():
     shifted_bc = PDEBoundaryConditions(
         mesh,
         dirichlet_velocity=lambda p: bm.ones_like(p),
-        dirichlet_velocity_threshold=lambda p: p[:, 0] > 4.0,
+        dirichlet_velocity_selector=lambda p: p[..., 0] > 4.0,
         geometry=ShiftedBoundaryGeometry(mesh),
     )
 
-    selected_faces, selected_values = shifted_bc.boundary_face_velocity()
+    selected_faces = shifted_bc.velocity.dirichlet_faces
+    points = shifted_bc.geometry.face_center[selected_faces]
+    selected_values = shifted_bc.velocity.dirichlet_value(
+        points
+    )
 
     np.testing.assert_array_equal(np.asarray(selected_faces), boundary_faces)
     np.testing.assert_allclose(

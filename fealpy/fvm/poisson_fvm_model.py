@@ -10,8 +10,11 @@ from .cell_average_error import cell_average_l2_error
 from .dirichlet_bc import DirichletBC
 from .face_gradient import reconstruct_face_gradient
 from .fvm_geometry import FVMGeometry
-from .fvm_linear_solver import init_fvm_linear_solver
-from .gradient_reconstruct import GradientReconstruct
+from .fvm_linear_solver import FVMLinearSolver
+from .gradient_reconstruct import (
+    GradientReconstruct,
+    ResolvedGradientBoundary,
+)
 from .scalar_cross_diffusion_integrator import ScalarCrossDiffusionIntegrator
 from .scalar_diffusion_integrator import ScalarDiffusionIntegrator
 from .scalar_source_integrator import ScalarSourceIntegrator
@@ -61,26 +64,52 @@ class PoissonFVMModel(ComputationalModel):
             if mesh_refine > 0:
                 if not hasattr(self.mesh, "uniform_refine"):
                     raise ValueError("mesh does not provide uniform_refine().")
-                self.mesh.uniform_refine(mesh_refine)
+                for _ in range(mesh_refine):
+                    self.mesh.uniform_refine()
 
         self.p = self.controls.space_degree
         self.space = ScaledMonomialSpace(self.mesh, self.p)
         self.fvm_geometry = FVMGeometry(self.mesh)
         self.cell_measure = self.fvm_geometry.cell_measure
+        boundary_faces = bm.nonzero(self.fvm_geometry.is_boundary)[0]
+        boundary_values = bm.array(
+            self.pde.dirichlet(
+                self.fvm_geometry.face_center[boundary_faces]
+            ),
+            dtype=self.fvm_geometry.cell_center.dtype,
+            device=bm.get_device(self.fvm_geometry.cell_center),
+        )
+        empty_faces = boundary_faces[:0]
+        self.gradient_boundary = ResolvedGradientBoundary(
+            dirichlet_faces=boundary_faces,
+            dirichlet_values=boundary_values,
+            neumann_faces=empty_faces,
+            neumann_sn_grad=bm.zeros(
+                0,
+                dtype=self.fvm_geometry.cell_center.dtype,
+                device=bm.get_device(self.fvm_geometry.cell_center),
+            ),
+        )
+        self.face_gradient_boundary = ResolvedGradientBoundary.empty(
+            self.fvm_geometry,
+        )
         self.gradient = GradientReconstruct(
-            self.mesh,
+            self.fvm_geometry,
+            self.gradient_boundary,
             method=self.controls.gradient_method,
-            boundary_value=self.pde.dirichlet,
-            boundary_type="dirichlet",
             layer_weights=self.controls.gradient_layer_weights,
             boundary_weight=self.controls.gradient_boundary_weight,
-            geometry=self.fvm_geometry,
         )
-        self.linear_solver = init_fvm_linear_solver(
-            options.get("linear_solver"),
-            options.get("linear_solver_config"),
-            reference=self.cell_measure,
+        self.dirichlet_boundary = DirichletBC(
+            self.fvm_geometry,
+            boundary_faces,
+            boundary_values,
+            diffusion_method=self.controls.diffusion_method,
+            nonorthogonal_eps=self.controls.diffusion_nonorthogonal_eps,
         )
+        self.linear_solver = options.get("linear_solver")
+        if self.linear_solver is None:
+            self.linear_solver = FVMLinearSolver("scipy")
 
     def _validate_options(self) -> None:
         allowed = set(PoissonSolverControls.option_names()) | {
@@ -92,7 +121,6 @@ class PoissonFVMModel(ComputationalModel):
             "nz",
             "error_quadrature_order",
             "linear_solver",
-            "linear_solver_config",
             "pbar_log",
             "log_level",
         }
@@ -130,23 +158,21 @@ class PoissonFVMModel(ComputationalModel):
             )
         )
         rhs = lform.assembly()
-        boundary = DirichletBC(
-            self.mesh,
-            self.pde.dirichlet,
-            geometry=self.fvm_geometry,
-            diffusion_method=self.controls.diffusion_method,
-            nonorthogonal_eps=self.controls.diffusion_nonorthogonal_eps,
+        return self.dirichlet_boundary.apply_diffusion(
+            matrix,
+            rhs,
+            components=1,
         )
-        return boundary.apply_diffusion(matrix, rhs)
 
     def compute_cross_diffusion(self, cell_values) -> TensorLike:
         """Assemble the explicit non-orthogonal diffusion correction."""
         gradient = self.gradient.cell_gradient(cell_values)
         face_gradient = reconstruct_face_gradient(
-            self.mesh,
+            self.fvm_geometry,
             gradient,
-            geometry=self.fvm_geometry,
+            cell_values,
             interpolation_method="average",
+            boundary=self.face_gradient_boundary,
         )
         lform = LinearForm(self.space)
         lform.add_integrator(
@@ -173,11 +199,7 @@ class PoissonFVMModel(ComputationalModel):
         """Solve the full deferred-correction equation to configured tolerance."""
         controls = self.controls
         matrix, rhs = self.assemble_base_system()
-        solution = self.linear_solver.solve(
-            matrix,
-            rhs,
-            solver=controls.diffusion_linear_solver,
-        )
+        solution = self.linear_solver.solve(matrix, rhs).solution
         initial_residual = None
         relative_update = 0.0
 
@@ -186,8 +208,8 @@ class PoissonFVMModel(ComputationalModel):
             lhs = matrix @ solution
             corrected_rhs = rhs + cross
             metrics = normalized_equation_residual(lhs, corrected_rhs)
-            absolute = metrics["absolute"]
-            relative = metrics["relative"]
+            absolute = metrics.absolute
+            relative = metrics.relative
             if initial_residual is None:
                 initial_residual = absolute
 
@@ -221,8 +243,7 @@ class PoissonFVMModel(ComputationalModel):
             trial = self.linear_solver.solve(
                 matrix,
                 corrected_rhs,
-                solver=controls.diffusion_linear_solver,
-            )
+            ).solution
             relaxation = controls.nonorthogonal_relaxation
             next_solution = (1.0 - relaxation) * solution + relaxation * trial
             update_norm = float(

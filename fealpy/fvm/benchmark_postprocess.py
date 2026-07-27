@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Iterable
 
@@ -33,7 +34,16 @@ def scalarize_value(value):
 
 def scalarize_rows(rows: Iterable[dict]) -> list[dict]:
     """Convert backend scalar values in dictionaries to CSV-friendly objects."""
-    return [{key: scalarize_value(value) for key, value in row.items()} for row in rows]
+    result = []
+    for row in rows:
+        values = asdict(row) if is_dataclass(row) else row
+        result.append(
+            {
+                key: scalarize_value(value)
+                for key, value in values.items()
+            }
+        )
+    return result
 
 
 def write_dict_csv(path: str | Path, rows: Iterable[dict]) -> None:

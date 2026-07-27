@@ -55,15 +55,24 @@ class ScalarSourceIntegrator(LinearInt, SrcInt, CellInt):
 
         if callable(source):
             def integrand(points, _cell_slice):
-                values = bm.array(source(points))
+                values = bm.array(
+                    source(points),
+                    device=bm.get_device(points),
+                )
                 point_shape = tuple(points.shape[:-1])
                 if values.ndim == 0:
-                    return bm.ones(point_shape, dtype=points.dtype) * values
+                    return bm.ones(
+                        point_shape,
+                        dtype=points.dtype,
+                        device=bm.get_device(points),
+                    ) * values
                 if tuple(values.shape[:len(point_shape)]) == point_shape:
                     return values
                 if values.ndim == 1:
                     return bm.ones(
-                        point_shape + (values.shape[0],), dtype=points.dtype
+                        point_shape + (values.shape[0],),
+                        dtype=points.dtype,
+                        device=bm.get_device(points),
                     ) * values
                 raise ValueError(
                     "callable source must return scalar or vector values at "
@@ -74,7 +83,11 @@ class ScalarSourceIntegrator(LinearInt, SrcInt, CellInt):
         else:
             if source is None:
                 source = 0.0
-            source = bm.array(source)
+            source = bm.array(
+                source,
+                dtype=geometry.cell_center.dtype,
+                device=bm.get_device(geometry.cell_center),
+            )
             if source.ndim == 0:
                 values = geometry.cell_measure * source
             else:

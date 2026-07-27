@@ -150,8 +150,14 @@ def test_strouhal_summary_rejects_tiny_lift_ripple():
 
 
 def test_write_cylinder_outputs_creates_summary_and_vtu(tmp_path: Path):
+    from dataclasses import replace
+
     bm.set_backend("numpy")
-    from fealpy.fvm import CylinderFlowCase, FVMLinearSolverConfig, NSFVMSimpleModel
+    from fealpy.fvm import (
+        CylinderFlowCase,
+        NSFVMSimpleModel,
+        steady_ns_high_accuracy_simple_profile,
+    )
     from fealpy.fvm.cylinder_flow_postprocess import write_cylinder_outputs
 
     case = CylinderFlowCase(
@@ -159,24 +165,43 @@ def test_write_cylinder_outputs_creates_summary_and_vtu(tmp_path: Path):
         cylinder_mesh_size=0.04,
         wake_mesh_size=0.08,
     )
+    base = steady_ns_high_accuracy_simple_profile()
+    profile = replace(
+        base,
+        discretization=replace(
+            base.discretization,
+            face_flux_correction_scheme="none",
+            face_flux_quadrature_order=3,
+        ),
+        iteration=replace(
+            base.iteration,
+            max_iterations=2,
+            momentum_equation_relaxation=0.7,
+            momentum_relative_tolerance=1.0e-3,
+            mass_relative_tolerance=1.0e-3,
+        ),
+    )
     model = NSFVMSimpleModel(
         {
             "pde": case,
             "mesh_type": "improved_tri",
-            "space_degree": 0,
+            "profile": profile,
             "boundary_conditions": case.engineering_boundary_conditions,
-            "linear_solver_config": FVMLinearSolverConfig(solver="scipy"),
             "log_level": "ERROR",
             "pbar_log": False,
         }
     )
-    model.solve(max_iter=2, tol=1.0e-3)
+    solve_result = model.solve()
 
     result = write_cylinder_outputs(
         model,
         case,
+        solve_result,
         tmp_path,
-        residuals=model.residuals,
+        velocity_gradient=(
+            model.solver.spatial_face_velocity.boundary.gradient
+        ),
+        residuals=solve_result.residual_history,
         run_summary={"solver": "NSFVMSimpleModel"},
     )
 

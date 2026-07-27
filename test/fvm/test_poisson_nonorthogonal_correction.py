@@ -15,7 +15,11 @@ from fealpy.mesh.storage import EntitySector, MeshBlock
 from fealpy.mesh.topology.builder import TopologyBuilder
 from fealpy.mesh.view import Mesh
 
-from fealpy.fvm import PoissonFVMModel, PoissonSolverControls
+from fealpy.fvm import (
+    FVMLinearSolver,
+    PoissonFVMModel,
+    PoissonSolverControls,
+)
 
 
 def _bad_two_triangle_mesh():
@@ -115,7 +119,7 @@ def test_poisson_affine_solution_is_exact_across_mesh_families(mesh_factory):
         {
             "pde": pde,
             "mesh_type": "test",
-            "linear_solver": "scipy",
+                "linear_solver": FVMLinearSolver("scipy"),
             "nonorthogonal_max_iter": 100,
             "nonorthogonal_rtol": 1.0e-10,
             "nonorthogonal_atol": 1.0e-12,
@@ -170,8 +174,20 @@ def test_poisson_affine_cross_diffusion_uses_boundary_faces(method):
 
 
 class IdentityLinearSolver:
-    def solve(self, matrix, rhs, *, solver=None):
-        return np.asarray(rhs)
+    def solve(self, matrix, rhs):
+        from fealpy.fvm import LinearSolveDiagnostics, LinearSolveResult
+
+        return LinearSolveResult(
+            solution=np.asarray(rhs),
+            diagnostics=LinearSolveDiagnostics(
+                provider="test",
+                solver="identity",
+                iterations=None,
+                converged=True,
+                provider_code=None,
+                relative_residual=0.0,
+            ),
+        )
 
 
 def test_poisson_nonorthogonal_solve_stops_on_full_residual():
