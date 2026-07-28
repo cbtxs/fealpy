@@ -760,7 +760,7 @@ class Mesh(MeshView):
     def find_node(
         self,
         ax,
-        color = 'r',
+        color = '#990000',
         showindex: bool = False,
         multiindex = None,
         fontcolor: str = 'k',
@@ -770,6 +770,66 @@ class Mesh(MeshView):
         return EntityFinder(self)(
             ax,
             etype='node',
+            color=color,
+            showindex=showindex,
+            multiindex=multiindex,
+            fontcolor=fontcolor,
+            fontsize=fontsize
+        )
+
+    def find_edge(
+        self,
+        ax,
+        color = '#009900',
+        showindex: bool = False,
+        multiindex = None,
+        fontcolor: str = 'k',
+        fontsize: int = 24
+    ):
+        from ..plotting.classic import EntityFinder
+        return EntityFinder(self)(
+            ax,
+            etype='edge',
+            color=color,
+            showindex=showindex,
+            multiindex=multiindex,
+            fontcolor=fontcolor,
+            fontsize=fontsize
+        )
+
+    def find_face(
+        self,
+        ax,
+        color = '#009999',
+        showindex: bool = False,
+        multiindex = None,
+        fontcolor: str = 'k',
+        fontsize: int = 24
+    ):
+        from ..plotting.classic import EntityFinder
+        return EntityFinder(self)(
+            ax,
+            etype='face',
+            color=color,
+            showindex=showindex,
+            multiindex=multiindex,
+            fontcolor=fontcolor,
+            fontsize=fontsize
+        )
+
+    def find_cell(
+        self,
+        ax,
+        color = '#0000CC',
+        showindex: bool = False,
+        multiindex = None,
+        fontcolor: str = 'k',
+        fontsize: int = 24
+    ):
+        from ..plotting.classic import EntityFinder
+        return EntityFinder(self)(
+            ax,
+            etype='cell',
             color=color,
             showindex=showindex,
             multiindex=multiindex,
