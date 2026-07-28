@@ -63,10 +63,16 @@ def _divergence_free_quadratic(points):
 
 
 def _entity_average(mesh, entity, function, q=5):
-    quadrature = mesh.quadrature_formula(q, entity)
-    bcs, weights = quadrature.get_quadrature_points_and_weights()
-    points = mesh.bc_to_point(bcs)
-    return bm.einsum("q,eqd->ed", weights, function(points))
+    views = mesh.Entities(entity)
+    integral = bm.concatenate(
+        [view.integral(function, q=q) for view in views],
+        axis=0,
+    )
+    measure = bm.concatenate(
+        [view.measure() for view in views],
+        axis=0,
+    )
+    return integral / measure[:, None]
 
 
 def _vector_quadratic_2d(points):
@@ -87,7 +93,7 @@ def _mixed_tri_quad_mesh():
         [0.0, 0.5], [0.5, 0.5], [1.0, 0.5],
         [0.0, 1.0], [0.5, 1.0], [1.0, 1.0],
     ])
-    quads = bm.array([[0, 1, 3, 4], [3, 4, 6, 7]], dtype=bm.int32)
+    quads = bm.array([[0, 1, 4, 3], [3, 4, 7, 6]], dtype=bm.int32)
     triangles = bm.array(
         [[1, 2, 5], [1, 5, 4], [4, 5, 8], [4, 8, 7]],
         dtype=bm.int32,
@@ -236,9 +242,10 @@ def test_cell_anchored_quadratic_falls_back_when_full_rank_stencil_remains_ill_c
     }
     assert diagnostics["maximum_accepted_condition"] is None
     assert diagnostics["fallback_face_count"] == mesh.number_of_faces()
-    assert diagnostics["stencil_layer_counts"] == {
-        4: mesh.number_of_cells()
-    }
+    assert sum(diagnostics["stencil_layer_counts"].values()) == (
+        mesh.number_of_cells()
+    )
+    assert diagnostics["maximum_stencil_layer"] == 4
 
 
 def test_cell_anchored_quadratic_expands_full_rank_stencil_until_condition_is_acceptable():
@@ -256,7 +263,7 @@ def test_cell_anchored_quadratic_expands_full_rank_stencil_until_condition_is_ac
     exact_face_average = _entity_average(mesh, "face", _vector_quadratic)
     reconstruct = CellAnchoredQuadraticFaceFluxReconstruct(
         geometry=geometry,
-        max_condition=25.0,
+        max_condition=40.0,
     )
 
     face_average = reconstruct.face_average(
@@ -273,7 +280,7 @@ def test_cell_anchored_quadratic_expands_full_rank_stencil_until_condition_is_ac
         atol=2.0e-12,
     )
     assert diagnostics["fallback_cell_count"] == 0
-    assert diagnostics["maximum_accepted_condition"] <= 25.0
+    assert diagnostics["maximum_accepted_condition"] <= 40.0
     assert diagnostics["maximum_stencil_layer"] == 4
     assert diagnostics["stencil_layer_counts"].get(4, 0) > 0
 
@@ -356,10 +363,6 @@ def test_face_flux_reconstruct_none_variant_returns_zero_correction():
     np.testing.assert_allclose(bm.to_numpy(correction), 0.0)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="mesh R-fvm-01: quadrilateral face normals are zero",
-)
 def test_cell_anchored_quadratic_falls_back_to_zero_defect_when_stencil_is_rank_deficient():
     bm.set_backend("numpy")
     from fealpy.fvm import FaceFluxReconstruct

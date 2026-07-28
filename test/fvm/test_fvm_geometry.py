@@ -42,7 +42,7 @@ def _mixed_tri_quad_mesh():
         dtype=np.float64,
     )
     triangles = np.array([[0, 1, 3], [0, 3, 2]], dtype=np.int32)
-    quadrilaterals = np.array([[1, 4, 3, 5]], dtype=np.int32)
+    quadrilaterals = np.array([[1, 4, 5, 3]], dtype=np.int32)
 
     block = MeshBlock(positions=points)
     block.add_sector(EntitySector("tri", triangles), root=True)

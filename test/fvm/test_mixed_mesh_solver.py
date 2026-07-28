@@ -41,7 +41,7 @@ def _mixed_tri_quad_mesh():
     block.add_sector(
         EntitySector(
             "quad",
-            np.array([[1, 4, 3, 5]], dtype=np.int32),
+            np.array([[1, 4, 5, 3]], dtype=np.int32),
         ),
         root=True,
     )

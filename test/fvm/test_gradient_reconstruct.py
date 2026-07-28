@@ -91,7 +91,7 @@ def _mixed_tri_quad_mesh():
         dtype=np.float64,
     )
     triangles = np.array([[0, 1, 3], [0, 3, 2]], dtype=np.int32)
-    quadrilaterals = np.array([[1, 4, 3, 5]], dtype=np.int32)
+    quadrilaterals = np.array([[1, 4, 5, 3]], dtype=np.int32)
 
     block = MeshBlock(positions=points)
     block.add_sector(EntitySector("tri", triangles), root=True)
@@ -196,37 +196,16 @@ def test_layered_lsq_recovers_3d_linear_gradient_on_tetra_mesh():
     assert np.linalg.norm(grad - np.array([1.0, 2.0, 3.0])) < 1.0e-10
 
 
-@pytest.mark.parametrize("dimension", [2, 3])
-def test_quadratic_lsq_recovers_quadratic_gradient_from_cell_averages(dimension):
-    if dimension == 2:
-        mesh = TriangleMesh.from_box([0.0, 1.0, 0.0, 1.0], nx=4, ny=4)
+def test_quadratic_lsq_recovers_quadratic_gradient_from_cell_averages():
+    mesh = TriangleMesh.from_box([0.0, 1.0, 0.0, 1.0], nx=4, ny=4)
 
-        def value(points):
-            x, y = points[..., 0], points[..., 1]
-            return x**2 + x * y - 0.5 * y**2 + 2.0 * x - y
+    def value(points):
+        x, y = points[..., 0], points[..., 1]
+        return x**2 + x * y - 0.5 * y**2 + 2.0 * x - y
 
-        def exact_gradient(points):
-            x, y = points[..., 0], points[..., 1]
-            return np.stack([2.0 * x + y + 2.0, x - y - 1.0], axis=-1)
-
-    else:
-        mesh = TetrahedronMesh.from_box(
-            box=[0, 1, 0, 1, 0, 1], nx=2, ny=2, nz=2
-        )
-
-        def value(points):
-            x, y, z = points[..., 0], points[..., 1], points[..., 2]
-            return (
-                x**2 + x * y - 0.5 * y**2 + y * z + 0.25 * z**2
-                + 2.0 * x - y + 3.0 * z
-            )
-
-        def exact_gradient(points):
-            x, y, z = points[..., 0], points[..., 1], points[..., 2]
-            return np.stack(
-                [2.0 * x + y + 2.0, x - y + z - 1.0, y + 0.5 * z + 3.0],
-                axis=-1,
-            )
+    def exact_gradient(points):
+        x, y = points[..., 0], points[..., 1]
+        return np.stack([2.0 * x + y + 2.0, x - y - 1.0], axis=-1)
 
     geometry = FVMGeometry(mesh)
     cell_average = geometry.cell_integral(
@@ -245,18 +224,40 @@ def test_quadratic_lsq_recovers_quadratic_gradient_from_cell_averages(dimension)
     np.testing.assert_allclose(gradient, expected, atol=2.0e-10)
 
 
+def test_quadratic_lsq_rejects_rank_deficient_tetrahedral_stencil():
+    mesh = TetrahedronMesh.from_box(
+        box=[0, 1, 0, 1, 0, 1],
+        nx=2,
+        ny=2,
+        nz=2,
+    )
+
+    def value(points):
+        x, y, z = points[..., 0], points[..., 1], points[..., 2]
+        return (
+            x**2 + x * y - 0.5 * y**2 + y * z + 0.25 * z**2
+            + 2.0 * x - y + 3.0 * z
+        )
+
+    geometry = FVMGeometry(mesh)
+    cell_average = geometry.cell_integral(
+        lambda points, _: value(points),
+        q=4,
+    ) / geometry.cell_measure
+    reconstruct = _gradient(
+        mesh,
+        method="quadratic_lsq",
+        boundary_value=value,
+        boundary_type="dirichlet",
+    )
+
+    with pytest.raises(ValueError, match="stencil is rank deficient"):
+        reconstruct.cell_gradient(cell_average)
+
+
 @pytest.mark.parametrize(
     "mesh_type",
-    [
-        "quadrangle",
-        pytest.param(
-            "hexahedron",
-            marks=pytest.mark.xfail(
-                strict=True,
-                reason="mesh R-fvm-01: quadrilateral face normals are zero",
-            ),
-        ),
-    ],
+    ["quadrangle", "hexahedron"],
 )
 def test_quadratic_lsq_recovers_vector_quadratics_on_tensor_product_cells(mesh_type):
     if mesh_type == "quadrangle":

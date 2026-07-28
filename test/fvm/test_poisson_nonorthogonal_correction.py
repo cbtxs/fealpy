@@ -81,7 +81,7 @@ def _mixed_tri_quad_mesh():
         dtype=np.float64,
     )
     triangles = np.array([[0, 1, 3], [0, 3, 2]], dtype=np.int32)
-    quadrilaterals = np.array([[1, 4, 3, 5]], dtype=np.int32)
+    quadrilaterals = np.array([[1, 4, 5, 3]], dtype=np.int32)
 
     block = MeshBlock(positions=node)
     block.add_sector(EntitySector("tri", triangles), root=True)
@@ -99,14 +99,8 @@ def _mixed_tri_quad_mesh():
         lambda: TetrahedronMesh.from_box(
             [0.0, 1.0, 0.0, 1.0, 0.0, 1.0], nx=2, ny=2, nz=2
         ),
-        pytest.param(
-            lambda: HexahedronMesh.from_box(
-                [0.0, 1.0, 0.0, 1.0, 0.0, 1.0], nx=2, ny=2, nz=2
-            ),
-            marks=pytest.mark.xfail(
-                strict=True,
-                reason="new-mesh hexahedron face normals are not yet valid (R-fvm-01)",
-            ),
+        lambda: HexahedronMesh.from_box(
+            [0.0, 1.0, 0.0, 1.0, 0.0, 1.0], nx=2, ny=2, nz=2
         ),
     ],
     ids=["triangle", "quadrangle", "mixed_tri_quad", "tetrahedron", "hexahedron"],
@@ -121,7 +115,7 @@ def test_poisson_affine_solution_is_exact_across_mesh_families(mesh_factory):
             "mesh_type": "test",
                 "linear_solver": FVMLinearSolver("scipy"),
             "nonorthogonal_max_iter": 100,
-            "nonorthogonal_rtol": 1.0e-10,
+            "nonorthogonal_rtol": 1.0e-11,
             "nonorthogonal_atol": 1.0e-12,
         }
     )
