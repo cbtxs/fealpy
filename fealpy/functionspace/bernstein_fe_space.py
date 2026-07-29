@@ -6,7 +6,7 @@ from ..backend import backend_manager as bm
 from ..mesh.mesh_base import Mesh
 from ..decorator import barycentric
 from .space import FunctionSpace
-from .dofs import LinearMeshCFEDof
+from .dofs import LinearMeshCFEDof, LinearMeshDFEDof
 from .functional import*
 from scipy.special import factorial, comb
 
@@ -27,6 +27,10 @@ class BernsteinFESpace(FunctionSpace, Generic[_MT]):
 
         if ctype == 'C':
             self.dof = LinearMeshCFEDof(mesh, p)
+        elif ctype == 'D':
+            self.dof = LinearMeshDFEDof(mesh, p)
+        else:
+            raise ValueError(f"Unknown type: {ctype}")
 
         self.ftype = mesh.ftype
         self.itype = mesh.itype

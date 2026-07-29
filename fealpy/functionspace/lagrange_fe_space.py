@@ -33,6 +33,8 @@ class LagrangeFESpace(FunctionSpace, Generic[_MT]):
         self.itype = mesh.itype
         # self.multi_index_matrix = mesh.multi_index_matrix(p,2)
 
+        self.c2d = self.dof.cell_to_dof()
+
         #TODO:JAX
         self.device = mesh.device
         self.TD = mesh.top_dimension()

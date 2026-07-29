@@ -9,6 +9,7 @@ from fealpy.functionspace import FunctionSpace
 from fealpy.functionspace.function import Function
 from fealpy.functionspace.functional import symmetry_span_array, symmetry_index
 from fealpy.decorator import barycentric, cartesian
+from fealpy.functionspace import BernsteinFESpace
 
 from scipy.special import factorial, comb
 
@@ -393,6 +394,14 @@ class HuZhangFESpace3d(FunctionSpace):
         self.TD = mesh.top_dimension()
         self.GD = mesh.geo_dimension()
 
+        bernspace = BernsteinFESpace(mesh, p) 
+
+        self.scalar_basis = mesh.shape_function
+        self.grad_scalar_basis = mesh.grad_shape_function
+
+        self.scalar_basis = bernspace.basis 
+        self.grad_scalar_basis = bernspace.grad_basis
+
     def __str__(self):
         return "HuZhangFESpace on {} with p={}".format(self.mesh, self.p)
 
@@ -551,7 +560,6 @@ class HuZhangFESpace3d(FunctionSpace):
         ifdofs = dof.cell_dofs.get_internal_dof_from_dim(2)
         icdofs = dof.cell_dofs.get_internal_dof_from_dim(3)
 
-
         NN = mesh.number_of_nodes()
         NE = mesh.number_of_edges()
         NC = mesh.number_of_cells()
@@ -562,9 +570,8 @@ class HuZhangFESpace3d(FunctionSpace):
         nsframe, esframe, fsframe, csframe = self.basis_frame_of_S() 
         dnsframe, desframe, dfsframe, dcsframe = self.dof_frame_of_S()
 
-
-
-        phi_s = self.mesh.shape_function(bc, self.p, index=index) # (NC, NQ, ldof)
+        #phi_s = self.mesh.shape_function(bc, self.p, index=index) # (NC, NQ, ldof)
+        phi_s = self.scalar_basis(bc, self.p)[0] # (NC, NQ, ldof)
 
         NQ = bc.shape[0]
         phi = bm.zeros((NC, NQ, ldof, 6), dtype=self.ftype)
@@ -634,7 +641,6 @@ class HuZhangFESpace3d(FunctionSpace):
         ifdofs = dof.cell_dofs.get_internal_dof_from_dim(2)
         icdofs = dof.cell_dofs.get_internal_dof_from_dim(3)
 
-
         NN = mesh.number_of_nodes()
         NE = mesh.number_of_edges()
         NC = mesh.number_of_cells()
@@ -644,7 +650,8 @@ class HuZhangFESpace3d(FunctionSpace):
 
         nsframe, esframe, fsframe, csframe = self.basis_frame_of_S() 
 
-        gphi_s = self.mesh.grad_shape_function(bc, self.p, variables='x') # (NC, ldof, GD)
+        #gphi_s = self.mesh.grad_shape_function(bc, self.p, variables='x') # (NC, ldof, GD)
+        gphi_s = self.grad_scalar_basis(bc, p=self.p, variable='x') # (NC, ldof, GD)
 
         NQ = bc.shape[0]
         dphi = bm.zeros((NC, NQ, ldof, 3), dtype=self.ftype)
