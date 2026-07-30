@@ -372,7 +372,8 @@ class HuZhangFESpace2d(FunctionSpace):
         cframe[:, 0] = bm.array([[1, 0]], dtype=mesh.ftype)
         cframe[:, 1] = bm.array([[0, 1]], dtype=mesh.ftype)
 
-        eframe[:, 0] = mesh.edge_unit_normal()
+        # A two-dimensional face is an edge in the unified mesh API.
+        eframe[:, 0] = mesh.face_unit_normal()
         eframe[:, 1] = mesh.edge_unit_tangent()
         return nframe, eframe, cframe
 
@@ -490,7 +491,9 @@ class HuZhangFESpace2d(FunctionSpace):
 
         nsframe, esframe, csframe = self.basis_frame_of_S()
 
-        gphi_s = self.mesh.grad_shape_function(bc, self.p) # (NC, ldof, GD)
+        gphi_s = self.mesh.grad_shape_function(
+            bc, self.p, variables='x'
+        ) # (NC, NQ, ldof, GD)
 
         NQ = bc.shape[0]
         dphi = bm.zeros((NC, NQ, ldof, 2), dtype=self.ftype)
@@ -543,9 +546,9 @@ class HuZhangFESpace2d(FunctionSpace):
     @barycentric
     def value(self, uh: TensorLike, bc: TensorLike, index: Index=_S) -> TensorLike: 
         if isinstance(bc, tuple):
-            TD = len(bc)
-        else :
-            TD = bc.shape[-1] - 1
+            if len(bc) != 1:
+                raise ValueError("HuZhangFESpace2d expects simplex barycentric coordinates")
+            bc = bc[0]
         phi = self.basis(bc, index=index)
         e2dof = self.dof.cell_to_dof()
         val = bm.einsum('cqld, ...cl -> ...cqd', phi, uh[..., e2dof])
@@ -554,9 +557,10 @@ class HuZhangFESpace2d(FunctionSpace):
     @barycentric
     def div_value(self, uh: TensorLike, bc: TensorLike, index: Index=_S) -> TensorLike:
         if isinstance(bc, tuple):
-            TD = len(bc)
-        else :
-            TD = bc.shape[-1] - 1
+            if len(bc) != 1:
+                raise ValueError("HuZhangFESpace2d expects simplex barycentric coordinates")
+            bc = bc[0]
+        TD = bc.shape[-1] - 1
         gphi = self.grad_basis(bc, index=index)
         e2dof = self.dof.entity_to_dof(TD, index=index)
         val = bm.einsum('cilm, cl -> cim', gphi, uh[e2dof])
