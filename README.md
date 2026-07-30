@@ -7,16 +7,16 @@
 While beginning with the finite element algorithm, FEALPy's sights are set on
 exploring vast horizons.
 
-We hope FEALPy will be an open-source library for intelligent CAE simulation
-algorithms, integrating CAE fundamentals with AI to support advanced algorithm
+We hope FEALPy will be an open-source library for intelligent CAX 
+algorithms, integrating CAX fundamentals with AI to support advanced algorithm
 research and the cultivation of versatile talent.
 
 We also hope FEALPy can accelerate the creation and testing of next-gen
-intelligent CAE apps, paving the way for advanced algorithms in industrial
+intelligent CAX apps, paving the way for advanced algorithms in industrial
 applications.
 
-So FEALPy's development goal is to become the next generation intelligent CAE
-simulation computing engine.
+So FEALPy's development goal is to become the next generation intelligent CAX
+computing engine.
 
 The word "FEAL" is an archaic or poetic term in English, meaning faithful or
 loyal. Though not commonly used in modern English, it carries strong
@@ -24,10 +24,10 @@ connotations of unwavering dedication and reliability.
 
 The name "FEALPy" embodies this essence of loyalty and faithfulness. It
 signifies the software's commitment to being a dependable and trustworthy tool
-in the field of intelligent CAE simulation. Just as "FEAL" suggests
+in the field of intelligent CAX computation. Just as "FEAL" suggests
 steadfastness, FEALPy aims to provide consistent, reliable support for
 researchers, engineers, and developers in their pursuit of innovative solutions
-and advancements in CAE simulations. The name reflects the software's mission to
+and advancements in CAX computation. The name reflects the software's mission to
 be a loyal companion in the journey toward groundbreaking discoveries and
 industrial applications.
 
@@ -44,14 +44,13 @@ rm -rf ~/miniconda3/miniconda.sh
 ```
 
 ```bash
-conda create -n gpufealpy310 python=3.10
-conda activate gpufealpy310
-conda install numpy=2.0.1 -c conda-forge #2.0.1
+conda create -n fealpy-dev-gpu python=3.12
+conda activate fealpy-dev-gpu 
+conda install numpy -c conda-forge 
 conda install ipython notebook -c conda-forge
-conda install jaxlib=*=*cuda* jax cuda-nvcc -c conda-forge -c nvidia # 0.4.31
+conda install jaxlib=*=*cuda* jax cuda-nvcc -c conda-forge -c nvidia 
 conda install cupy -c conda-forge  -c nvidia
-conda install pytorch=2.3.1 -c conda-forge -c nvidia
-
+conda install pytorch -c conda-forge -c nvidia
 ```
 
 ## From Source (Recommanded)
@@ -62,7 +61,7 @@ First, clone the FEALPy repository from GitHub
 git clone https://github.com/weihuayi/fealpy.git
 ```
 
-If you can't acess GitHub, you can clone it from Gitee
+If you can't access GitHub, you can clone it from Gitee
 ```bash
 git clone https://gitee.com/whymath/fealpy
 ```
@@ -82,12 +81,12 @@ pip install -e .
 If you want to install optional dependencies, such as `pypardiso`, `pyamg`,
 `meshpy` and so on, you can do so by specifying the [optional] extra:
 ```
-pip install -e .[optional]
+pip install -e ".[optional]"
 ```
 
 To install both development and optional dependencies, use:
 ```bash
-pip install -e .[dev,optional]
+pip install -e ".[dev,optional]"
 ```
 To verify that FEALPy is installed correctly, you can run the following command:
 
@@ -131,7 +130,7 @@ git merge upstream/master
 After local development, push the modifications to your own remote repository:
 ```bash
 git add modified_files_name
-git commit -m"Explanation on modifications"
+git commit -m "Explanation on modifications"
 git push
 ```
 
@@ -168,7 +167,7 @@ H. Wei and Y. Huang, FEALPy: Finite Element Analysis Library in Python, https://
 	url = {https://github.com/weihuayi/fealpy},
 	author = {Wei, Huayi and Huang, Yunqing},
     institution = {Xiangtan University},
-	year = {Xiangtan University, 2017-2024},
+	year = {Xiangtan University, 2017-2026},
 }
 ```
 

@@ -1,17 +1,17 @@
+from . import plotting
 
-from .mesh_data_structure import MeshDS
-from .mesh_base import Mesh, HomogeneousMesh, SimplexMesh, TensorMesh, StructuredMesh
+from .join import *
+from .merge import *
+from .schema import *
+from .storage import *
+from .view import *
+from .vtk_writter import write_mesh_to_vtu
+from .vtk_reader import read_mesh_from_vtu
+from .mesh_io import read, write
 
-from .interval_mesh import IntervalMesh
-from .triangle_mesh import TriangleMesh
-from .tetrahedron_mesh import TetrahedronMesh
-from .quadrangle_mesh import QuadrangleMesh
-from .hexahedron_mesh import HexahedronMesh
-from .polygon_mesh import PolygonMesh
-from .halfedge_mesh import HalfEdgeMesh2d
+from .factory import *
 
-from .uniform_mesh_2d import UniformMesh2d
-from .uniform_mesh_3d import UniformMesh3d
+from .uniform_mesh import *
 
-from .lagrange_triangle_mesh import LagrangeTriangleMesh
-from .lagrange_quadrangle_mesh import LagrangeQuadrangleMesh
+# legacy imports
+from .mesh_base import *

@@ -1,5 +1,23 @@
 
-from .conjugate_gradient import cg
-from .direct_solver import spsolve, spsolve_triangular
-from .gmres_solver import gmres
 from .gamg_solver import GAMGSolver
+
+from .direct import spsolve, spsolve_triangular
+from .gauss_seidel import gauss_seidel 
+from .jacobi import jacobi
+from .cg import cg
+from .minres import minres
+from .gmres import gmres
+from .lgmres import lgmres
+from .direct_solver_manger import DirectSolverManager
+from .iterative_solver_manger import IterativeSolverManager
+from .bicgstab import bicgstab
+from .bicg import bicg
+
+from .mgstokes import MGStokes
+
+from .transferP1red import transferP1red, indofP1
+from .transferP2red import transferP2red, indofP2
+
+from .tpdv import DarcyForchheimerTPDv
+from .fast_solver import LinearElasticityHZFEMFastSolver
+

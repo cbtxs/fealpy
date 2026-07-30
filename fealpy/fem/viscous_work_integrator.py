@@ -10,7 +10,7 @@
 from typing import Optional, Literal
 
 from ..backend import backend_manager as bm
-from ..typing import TensorLike, Index, _S
+from ..typing import TensorLike, Index, _S, CoefLike
 
 from ..mesh import HomogeneousMesh
 from ..functionspace.space import FunctionSpace as _FS
@@ -18,22 +18,19 @@ from ..utils import process_coef_func
 from ..functional import bilinear_integral, linear_integral, get_semilinear_coef
 from .integrator import (
     LinearInt, OpInt, CellInt,
-    enable_cache,
-    assemblymethod,
-    CoefLike
+    enable_cache
 )
 
 
 class ViscousWorkIntegrator(LinearInt, OpInt, CellInt):
     """
-    construct the mu * (epslion(u), epslion(v)) fem matrix
+    construct the 2 * mu * (epslion(u), epslion(v)) fem matrix
     epsion(u) = 1/2*(\\nabla u+ (\\nabla u).T)
     """
     def __init__(self, coef: Optional[CoefLike] = None, q: Optional[int] = None, *,
                  region: Optional[TensorLike] = None,
-                 batched: bool = False,
-                 method: Optional[str]=None) -> None:
-        super().__init__(method=method if method else 'assembly')
+                 batched: bool = False) -> None:
+        super().__init__()
         self.coef = coef
         self.q = q
         self.set_region(region)
@@ -61,6 +58,6 @@ class ViscousWorkIntegrator(LinearInt, OpInt, CellInt):
         index=self.entity_selection(indices)
         coef = process_coef_func(coef, bcs=bcs, mesh=mesh, etype='cell', index=index)
         sym_gphi = 0.5*(bm.swapaxes(gphi, -2, -1) + gphi)
-        result = bilinear_integral(sym_gphi, sym_gphi, ws, cm, coef, batched=self.batched)
+        result = 2*bilinear_integral(sym_gphi, sym_gphi, ws, cm, coef, batched=self.batched)
         return result
 

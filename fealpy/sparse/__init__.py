@@ -8,7 +8,7 @@ from .sparse_tensor import SparseTensor
 from .coo_tensor import COOTensor
 from .csr_tensor import CSRTensor
 
-from .ops import spdiags
+from .ops import spdiags, speye
 
 
 
@@ -17,13 +17,13 @@ def coo_matrix(arg1: _DT, /, itype=None) -> COOTensor: ...
 @overload
 def coo_matrix(arg1: SparseTensor, /) -> COOTensor: ...
 @overload
-def coo_matrix(arg1: Size, /, *, itype=None, ftype=None, device=None) -> COOTensor: ...
+def coo_matrix(arg1: Size, /, *, itype=None, dtype=None, device=None) -> COOTensor: ...
 @overload
 def coo_matrix(arg1: Tuple[_DT, Tuple[_DT, ...]], /, *,
                shape: Optional[Size] = None) -> COOTensor: ...
 def coo_matrix(arg1, /, *,
                shape: Optional[Size] = None,
-               itype=None, ftype=None, device=None) -> COOTensor:
+               itype=None, dtype=None, device=None) -> COOTensor:
     """A sparse matrix in COOrdinate format.
     (A Scipy-like API to generate sparse tensors without batch.)
 
@@ -54,7 +54,7 @@ def coo_matrix(arg1, /, *,
         arg1 (_type_): _description_
         shape (Size | None, optional): _description_
         itype (dtype | None, optional): Scalar type of indices
-        ftype (dtype | None, optional): Scalar type of data
+        dtype (dtype | None, optional): Scalar type of data
         device (str | device | None, optional): _description_
     """
     if isinstance(arg1, _DT):
@@ -71,11 +71,13 @@ def coo_matrix(arg1, /, *,
     elif isinstance(arg1, (tuple, list)):
         if isinstance(arg1[0], int):
             ndim = len(arg1)
+            if itype is None:
+                itype = bm.int64
             indices = bm.empty((ndim, 0), dtype=itype, device=device)
-            values = bm.empty((0,), dtype=ftype, device=device)
+            values = bm.empty((0,), dtype=dtype, device=device)
             return COOTensor(indices, values, spshape=arg1)
 
-        elif isinstance(arg1[0], _DT):
+        elif isinstance(arg1[0], _DT) or arg1[0] is None:
             assert len(arg1) == 2
             values = arg1[0] # non-zero elements
             indices = bm.stack(arg1[1], axis=0)
@@ -89,7 +91,7 @@ def csr_matrix(arg1: _DT, /, itype=None) -> CSRTensor: ...
 @overload
 def csr_matrix(arg1: SparseTensor, /) -> CSRTensor: ...
 @overload
-def csr_matrix(arg1: Size, /, *, itype=None, ftype=None, device=None) -> CSRTensor: ...
+def csr_matrix(arg1: Size, /, *, itype=None, dtype=None, device=None) -> CSRTensor: ...
 @overload
 def csr_matrix(arg1: Tuple[_DT, Tuple[_DT, _DT]], /, *,
                shape: Optional[Size] = None) -> CSRTensor: ...
@@ -98,7 +100,7 @@ def csr_matrix(arg1: Tuple[_DT, _DT, _DT], /, *,
                shape: Optional[Size] = None) -> CSRTensor: ...
 def csr_matrix(arg1,
                shape: Optional[Size] = None,
-               itype=None, ftype=None, device=None) -> CSRTensor:
+               itype=None, dtype=None, device=None) -> CSRTensor:
     """Compressed Sparse Row matrix.
     (A Scipy-like API to generate sparse tensors without batch.)
 
@@ -124,9 +126,12 @@ def csr_matrix(arg1,
         arg1 (_type_): _description_
         shape (Size): _description_
         itype (dtype | None, optional): Scalar type of indices
-        ftype (dtype | None, optional): Scalar type of data
+        dtype (dtype | None, optional): Scalar type of data
         device (str | device | None, optional): _description_
     """
+    if itype is None:
+        itype = bm.int64
+
     if isinstance(arg1, _DT): # From a dense tensor
         indices_tuple = bm.nonzero(arg1)
         indices = bm.stack(indices_tuple, axis=0)
@@ -141,12 +146,14 @@ def csr_matrix(arg1,
     elif isinstance(arg1, (tuple, list)):
         if isinstance(arg1[0], int): # Build an empty sparse tensor
             assert len(arg1) == 2
+            if itype is None:
+                itype = bm.int64
             indptr = bm.zeros((arg1[0]+1,), dtype=itype, device=device)
             indices = bm.empty((0,), dtype=itype, device=device)
-            data = bm.empty((0,), dtype=ftype, device=device)
+            data = bm.empty((0,), dtype=dtype, device=device)
             return CSRTensor(indptr, indices, data, spshape=arg1)
 
-        elif isinstance(arg1[0], _DT):
+        elif isinstance(arg1[0], _DT) or arg1[0] is None:
             if len(arg1) == 2: # From a COO-like format
                 values = arg1[0]
                 indices = bm.stack(arg1[1], axis=0)
@@ -161,7 +168,7 @@ def csr_matrix(arg1,
 # NOTE: APIs for Sparse Tensors
 
 # 1. Data Fetching:
-# itype, ftype, nnz,
+# itype, dtype, nnz,
 # shape, dense_shape, sparse_shape,
 # ndim, dense_ndim, sparse_ndim,
 # size,

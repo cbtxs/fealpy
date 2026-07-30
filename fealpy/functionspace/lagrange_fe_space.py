@@ -90,8 +90,6 @@ class LagrangeFESpace(FunctionSpace, Generic[_MT]):
 
         return self.function(uh/nn)
 
-
-
     def interpolate(self, u: Union[Callable[..., TensorLike], TensorLike],) -> TensorLike:
         assert callable(u)
 
@@ -131,13 +129,15 @@ class LagrangeFESpace(FunctionSpace, Generic[_MT]):
             assert len(gd) == self.number_of_global_dofs()
             if uh is None:
                 uh = bm.zeros_like(gd)
-            uh[isDDof] = gd[isDDof] 
-            return uh,isDDof 
-        if callable(gd):
+            uh = bm.set_at(uh, (..., isDDof), gd[isDDof])
+        elif callable(gd):
             gd = gd(ipoints[isDDof])
-        if uh is None:
-            uh = self.function()
-        uh[:] = bm.set_at(uh[:], (..., isDDof), gd)
+            if uh is None:
+                kwargs = bm.context(gd)
+                uh = self.array(**kwargs)
+            uh = bm.set_at(uh, (..., isDDof), gd)
+        else:
+            raise TypeError("gd must be a tensor or a callable function")
         
         return self.function(uh), isDDof
 
@@ -190,11 +190,26 @@ class LagrangeFESpace(FunctionSpace, Generic[_MT]):
         else :
             c_index  = face2cell[:,1]
             e_local_index = face2cell[:,3]
+        
+        Xf = self.mesh.bc_to_point(bc[[0, -1]], index=eindex)   # (NF, 2, GD)
 
         for i in range(NLF):
-            gphi = self.grad_basis(cbcs[i], c_index)
-            tag = bm.where(e_local_index==i)
-            result[tag] = gphi[tag]
+            gphi = self.grad_basis(cbcs[i], c_index)        # (NF, NQ, ldof, TD)
+            tag = bm.where(e_local_index == i)
+            if tag[0].size == 0:
+                continue
+            gi = gphi[tag]                                  # (nF, NQ, ldof, TD)
+            
+            Xc = self.mesh.bc_to_point(cbcs[i][[0, -1]], index=c_index[tag])  # (nF, 2, GD)
+            Xf_tag = Xf[tag]                                                  # (nF, 2, GD)
+            # 选择与面参数顺序更接近的方向
+            d0 = bm.linalg.norm(Xc - Xf_tag, axis=-1).sum(axis=1)          # (nF,)
+            d1 = bm.linalg.norm(Xc[:, ::-1, :] - Xf_tag, axis=-1).sum(axis=1)
+            flip = d1 < d0
+            if bm.any(flip):
+                gi = bm.where(flip[:, None, None, None], gi[:, ::-1, ...], gi)
+            result[tag] = gi
+        
         return result
     
     @barycentric
@@ -218,4 +233,28 @@ class LagrangeFESpace(FunctionSpace, Generic[_MT]):
         e2dof = self.dof.entity_to_dof(TD, index=index)
         val = bm.einsum('cilm, cl -> cim', gphi, uh[e2dof])
         return val
+    
+    def prolongation_matrix(self, cdegree=[1]):
+        """
+        Generate a list of interpolation matrices from lower-order spaces to higher-order spaces,
+        from the highest to the lowest.
+        
+        Parameters:
+            cdegree[list]: list of the degree of the needed space,from low space to high space
+        
+        Returns:
+            IM[list]: list of the prolongation matrix,from high space to low space
+        """
+        assert isinstance(cdegree, list), "cdegree must be a list"
+        assert all(isinstance(c, int) for c in cdegree), "All in elements cdegree must be integers"
+        assert all(c < self.p for c in cdegree), "All elements in cdegree must be less than self.p"
+        assert cdegree == sorted(cdegree), "cdegree must be in ascending order"
+        assert self.ctype == 'C'
+        p = self.p
+        Ps = []
+        for c in cdegree[-1::-1]:
+            Ps.append(self.mesh.prolongation_matrix(c, p))
+            p = c
+        return Ps
+
     

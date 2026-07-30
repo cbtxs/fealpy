@@ -12,13 +12,14 @@ doc/project
 *.inp
 *.mtx
 *.mexa64
+*.mphtxt
 
 meviewer
 
 *.mat
 meshdata
 result*
-build
+/build
 __pycache__
 results
 results1
@@ -72,3 +73,10 @@ tags
 
 .DS_Store
 .DS_Store
+*env
+tmp
+*.msh
+/agents/
+AGENTS.md
+.codex
+.codex/

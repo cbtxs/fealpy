@@ -4,7 +4,7 @@ from ..typing import TensorLike, SourceLike, Threshold
 from ..mesh import HomogeneousMesh
 from ..functionspace.space import FunctionSpace as _FS
 from ..functional import linear_integral
-from .integrator import LinearInt, SrcInt, FaceInt, enable_cache, assemblymethod
+from .integrator import LinearInt, SrcInt, FaceInt, enable_cache
 from ..utils import process_coef_func
 
 
@@ -40,7 +40,7 @@ class _FaceSourceIntegrator(LinearInt, SrcInt, FaceInt):
         q = space.p+3 if self.q is None else self.q
         qf = mesh.quadrature_formula(q, 'face')
         bcs, ws = qf.get_quadrature_points_and_weights()
-        phi = space.face_basis(bcs) # just for simplex mesh, TODO: consider othter type mesh
+        phi = space.face_basis(bcs, index=index) # just for simplex mesh, TODO: consider othter type mesh
 
         return bcs, ws, phi, facemeasure, index, n
 

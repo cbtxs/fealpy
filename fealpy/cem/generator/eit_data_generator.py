@@ -17,7 +17,7 @@ from fealpy.solver import cg, spsolve
 class EITDataGenerator():
     """Generate boundary voltage and current data for EIT.
     """
-    def __init__(self, mesh: Mesh, p: int=1, q: Optional[int]=None) -> None:
+    def __init__(self, mesh: Mesh, p: int = 1, q: Optional[int] = None) -> None:
         """Create a new EIT data generator.
 
         Args:
@@ -78,8 +78,29 @@ class EITDataGenerator():
 
         cdata_indices = self.cdata_indices
         cdataT_indices = bm.flip(cdata_indices, axis=0)
-        A_n_indices = bm.concat([self._A.indices(), cdata_indices, cdataT_indices], axis=1)
-        A_n_values = bm.concat([self._A.values(), self.cdata, self.cdata], axis=-1)
+        A_n_indices = bm.concat([self._A.indices, cdata_indices, cdataT_indices], axis=1)
+        A_n_values = bm.concat([self._A.values, self.cdata, self.cdata], axis=-1)
+        A_n = COOTensor(A_n_indices, A_n_values, spshape=(self.gdof+1, self.gdof+1))
+        self.A_n = A_n.tocsr()
+
+    def set_sigma(self, sigma: Callable[[Tensor], Tensor]) -> None:
+        """Set the conductivity distribution.
+
+        Args:
+            sigma (Callable[[Tensor], Tensor]): Conductivity function.
+        """
+        space = self.space
+
+        bform = BilinearForm(space)
+        self._di.coef = sigma
+        self._di.clear() # clear the cached result as the coef has changed
+        bform.add_integrator(self._di)
+        self._A = bform.assembly(format='coo')
+
+        cdata_indices = self.cdata_indices
+        cdataT_indices = bm.flip(cdata_indices, axis=0)
+        A_n_indices = bm.concat([self._A.indices, cdata_indices, cdataT_indices], axis=1)
+        A_n_values = bm.concat([self._A.values, self.cdata, self.cdata], axis=-1)
         A_n = COOTensor(A_n_indices, A_n_values, spshape=(self.gdof+1, self.gdof+1))
         self.A_n = A_n.tocsr()
 
@@ -105,18 +126,24 @@ class EITDataGenerator():
         # NOTE: The value measured on the node is actually 'current', not the
         # 'current density'. We assume the the current measured by the electric
         # node is the integral of the current density function.
-        lform = LinearForm(self.space, batch_size=batch_size)
-        self._bsi.gn = gn_source
-        self._bsi.batched = (batch_size > 0)
-        self._bsi.clear()
-        lform.add_integrator(self._bsi)
-        b_ = lform.assembly()
+        if callable(gn_source):
+            lform = LinearForm(self.space, batch_size=batch_size)
+            self._bsi.source = gn_source
+            self._bsi.batched = (batch_size > 0)
+            self._bsi.clear()
+            lform.add_integrator(self._bsi)
+            b_ = lform.assembly()
+            kwargs = bm.context(b_)
+            current = b_[..., self._bd_node_index]
+        else:
+            current = gn_source
+            kwargs = bm.context(current)
+            shape = (self.gdof,) if batch_size == 0 else (batch_size, self.gdof)
+            b_ = bm.zeros(shape, **kwargs)
+            b_ = bm.set_at(b_, (slice(None), self._bd_node_index), current)
 
         if zero_integral:
             b_ = b_ - bm.mean(b_, axis=0)
-
-        current = b_[..., self._bd_node_index]
-        kwargs = bm.context(b_)
 
         if b_.ndim == 1:
             ZERO = bm.zeros((1,), **kwargs)
@@ -140,7 +167,7 @@ class EITDataGenerator():
         uh = spsolve(self.A_n, self.b_.T, solver='scipy').T
 
         if return_full:
-            return uh[:-1]
+            return uh[..., :-1]
 
         # NOTE: interpolation points on nodes are arranged firstly,
         # therefore the value on the boundary nodes can be fetched like this:

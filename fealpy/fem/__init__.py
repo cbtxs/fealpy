@@ -14,14 +14,24 @@ from .scalar_nonlinear_diffusion_integrator import ScalarNonlinearDiffusionInteg
 from .scalar_mass_integrator import ScalarMassIntegrator
 from .scalar_nonlinear_mass_integrator import ScalarNonlinearMassIntegrator
 from .scalar_convection_integrator import ScalarConvectionIntegrator
-from .linear_elastic_integrator import LinearElasticIntegrator
+from .linear_elasticity_integrator import LinearElasticityIntegrator
 from .press_work_integrator import PressWorkIntegrator, PressWorkIntegratorX, PressWorkIntegratorY
-from .vector_mass_integrator import VectorMassIntegrator
 from .curlcurl_integrator import CurlCurlIntegrator
 from .nonlinear_elastic_integrator import NonlinearElasticIntegrator
 from .div_integrator import DivIntegrator
 from .viscous_work_integrator import ViscousWorkIntegrator
 from .scalar_biharmonic_integrator import ScalarBiharmonicIntegrator
+from .polyharmonic_integrator import PolyharmonicIntegrator
+from .mass_integrator import MassIntegrator
+from .diffusion_integrator import DiffusionIntegrator
+from .optimal_control_integrator import OPCIntegrator
+from .optimal_control_source_integrator import OPCSIntegrator
+from .curl_jump_penalty_intergrator import CurlJumpPenaltyIntergrator
+from .jump_penalty_intergrator import JumpPenaltyIntergrator
+from .spacetime_residual_integrator import SpaceTimeResidualIntegrator
+from .spacetime_source_residual_integrator import SpaceTimeSourceResidualIntegrator
+from .coupling_mass_integrator import CouplingMassIntegrator
+from .grad_pressure_integrator import GradPressureIntegrator
 
 ### Cell Source
 from .cell_source_integrator import CellSourceIntegrator
@@ -36,14 +46,20 @@ from .scalar_robin_bc_integrator import ScalarRobinBCIntegrator
 from .face_mass_integrator import BoundaryFaceMassIntegrator, InterFaceMassIntegrator
 from .fluid_boundary_friction_integrator import FluidBoundaryFrictionIntegrator
 from .scalar_interior_penalty_integrator import ScalarInteriorPenaltyIntegrator
+from .press_work_integrator import BoundaryPressWorkIntegrator
 
 ### Face Source
-from .scalar_neumann_bc_integrator import ScalarNeumannBCIntegrator, ScalarRobinSourceIntegrator
 from .face_source_integrator import BoundaryFaceSourceIntegrator, InterFaceSourceIntegrator
+ScalarNeumannBCIntegrator = BoundaryFaceSourceIntegrator
+ScalarRobinSourceIntegrator = BoundaryFaceSourceIntegrator
+from .tangent_face_mass_integrator import TangentFaceMassIntegrator
 
 ### Dirichlet BC
 from .dirichlet_bc import DirichletBC
 from .dirichlet_bc_operator import DirichletBCOperator
+
+### Periodic BC
+from .periodic_bc import PeriodicBC
 
 ### recovery estimate
 from .recovery_alg import RecoveryAlg
@@ -51,7 +67,21 @@ from .recovery_alg import RecoveryAlg
 ### Other
 from .nonlinear_wrapper import NonlinearWrapperInt
 
-
-### solver
-from .poisson_lfem_solver import PoissonLFEMSolver
-from .linear_elasticity_lfem_solver import LinearElasticityLFEMSolver
+### computational model 
+from .poisson_lfem_model import PoissonLFEMModel
+from .level_set_lfem_model import LevelSetLFEMModel, LevelSetReinitModel
+from .interface_poisson_lfem_model import InterfacePoissonLFEMModel
+from .elliptic_mixed_fem_model import EllipticMixedFEMModel
+from .allencahn_lfem_model import AllenCahnLFEMModel
+from .optimal_contron_mixed_fem_model import OPCMixedFEMModel
+from .surface_poisson_lfem_model import SurfacePoissonLFEMModel
+from .helmholtz_lfem_model import HelmholtzLFEMModel
+from .curlcurl_lfem_model import CurlCurlLFEMModel
+from .parabolic_stfem_model import ParabolicSTFEMModel
+from .linear_elasticity_eigen_lfem_model import LinearElasticityEigenLFEMModel
+from .stokes_lfem_model import StokesLFEMModel
+from .dld_microfluidic_chip_lfem_model import DLDMicrofluidicChipLFEMModel
+from .dld_microfluidic_chip_lfem_model_3d import DLDMicrofluidicChipLFEMModel3D
+from .curlcurl_upml_model import CurlCurlUPMLModel
+from .mgtensor_possion_lfem_model import MGTensorPossionLFEMModel
+from .wpr_lfem_model import WPRLFEMModel
