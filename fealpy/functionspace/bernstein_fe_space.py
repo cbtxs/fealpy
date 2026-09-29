@@ -182,7 +182,7 @@ class BernsteinFESpace(FunctionSpace, Generic[_MT]):
         return hval
 
     @barycentric
-    def grad_m_basis(self, bcs: TensorLike, m: int, index = _S):
+    def grad_m_basis(self, bcs: TensorLike, m: int, index = _S, variable='x'):
         """
         @brief Compute the m-th order gradient of the basis function values at
                the barycentric point `bc`. The gradient is a GD-dim and m-th
@@ -242,8 +242,12 @@ class BernsteinFESpace(FunctionSpace, Generic[_MT]):
             c = (factorial(m)**2)*comb(p, m)/bm.prod(fbeta,axis=0,dtype=self.itype) # 数
             Bi = bm.set_at(Bi,(slice(None),idx),c*phi[:, num])
             midxp_0 += beta[None, :]
-        gmphi = bm.einsum('iql, icn->cqln', B, symLambdaBeta[:, index])
-        return gmphi
+
+        if variable == 'lambda':
+            return B, symLambdaBeta
+        elif variable == 'x':
+            gmphi = bm.einsum('iql, icn->cqln', B, symLambdaBeta[:, index])
+            return gmphi
 
     @barycentric
     def boundary_edge_basis(self, bcs: TensorLike, index: Index=_S, p=None)-> TensorLike:

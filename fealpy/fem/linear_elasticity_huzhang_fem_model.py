@@ -11,7 +11,7 @@ from ..fem.huzhang_stress_integrator import HuZhangStressIntegrator
 from ..fem.huzhang_mix_integrator import HuZhangMixIntegrator
 from ..model import PDEModelManager, ComputationalModel
 from ..model.linear_elasticity import LinearElasticityPDEDataT
-from ..decorator import variantmethod
+from ..decorator import barycentric, variantmethod
 from ..solver import spsolve,LinearElasticityHZFEMFastSolver
 from ..tools.show import show_error_table, showmultirate
 
@@ -66,6 +66,17 @@ class LinearElasticityHuzhangFEMModel(ComputationalModel):
     def set_space_degree(self, p: int):
         self.p = p
 
+    def displacement_error(self, u_h):
+        @barycentric
+        def value(bcs):
+            if isinstance(bcs, tuple):
+                if len(bcs) != 1:
+                    raise ValueError("Expected simplex barycentric coordinates")
+                bcs = bcs[0]
+            return u_h(bcs)
+
+        return self.mesh.error(value, self.pde.displacement)
+
     def linear_system(self, mesh, p):
         GD = self.mesh.geo_dimension()
         lambda0, lambda1 = self.pde.stress_matrix_coefficient() 
@@ -119,7 +130,7 @@ class LinearElasticityHuzhangFEMModel(ComputationalModel):
     @variantmethod('onestep')
     def run(self):
         sigma_h, u_h = self.solve()
-        l2_u = self.mesh.error(u_h, self.pde.displacement)
+        l2_u = self.displacement_error(u_h)
         l2_sigma = self.mesh.error(sigma_h, self.pde.stress)
 
         self.logger.info(f"u L2 error (u): {l2_u}, L2 error (σ): {l2_sigma}")
@@ -136,7 +147,7 @@ class LinearElasticityHuzhangFEMModel(ComputationalModel):
         for i in range(maxit):
             N =  2**(i+1)
             sigma_h, u_h = self.solve()
-            l2_u = self.mesh.error(u_h, self.pde.displacement)
+            l2_u = self.displacement_error(u_h)
             l2_sigma = self.mesh.error(sigma_h, self.pde.stress)
 
             h[i] = 1 / N
@@ -258,12 +269,12 @@ class LinearElasticityHuzhangFEMModel(ComputationalModel):
         h = bm.zeros(maxit, dtype=bm.float64)
 
         for i in range(maxit):
-            N =  2**(i+1)
             sigma_h, u_h,_ = self.solve()
-            l2_u = self.mesh.error(u_h, self.pde.displacement)
+            l2_u = self.displacement_error(u_h)
             l2_sigma = self.mesh.error(sigma_h, self.pde.stress)
 
-            h[i] = 1 / N
+            GD = self.mesh.geo_dimension()
+            h[i] = bm.max(self.mesh.entity_measure('cell'))**(1/GD)
             errorMatrix[0, i] = l2_sigma
             errorMatrix[1, i] = l2_u 
 
@@ -271,8 +282,9 @@ class LinearElasticityHuzhangFEMModel(ComputationalModel):
                 self.mesh.uniform_refine()
     
         show_error_table(h, errorType, errorMatrix)
-        showmultirate(plt, 2, h, errorMatrix,  errorType, propsize=20)
-        plt.show()
+        if maxit > 1:
+            showmultirate(plt, 0, h, errorMatrix, errorType, propsize=20)
+            plt.show()
         
     
     @run.register('performance')
